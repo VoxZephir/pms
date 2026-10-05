@@ -1,0 +1,12 @@
+{% extends "layout.html.j2" %}
+{% block title %}Aucune donnée · Relevé Swissquote{% endblock %}
+{% block body %}
+<main class="wrap" id="main" tabindex="-1">
+  <div class="empty-state">
+    <h1 class="mb-3">Aucune donnée à afficher</h1>
+    <p>Le ledger <code>{{ ledger }}</code> est vide ou absent.</p>
+    <p>Déposez un relevé PDF dans <code>inbox/</code> puis lancez <code>run.bat</code>
+       (ou <code>python -m pms</code>) pour l'ingérer.</p>
+  </div>
+</main>
+{% endblock %}

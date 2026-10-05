@@ -1,0 +1,7 @@
+# PDF text + geometry extraction (word bounding boxes)
+pdfplumber==0.11.10
+
+# HTML report templating -- shared with the future Flask app
+Jinja2==3.1.6
+
+# Future: `pip install -r requirements-web.txt` for the Flask front-end

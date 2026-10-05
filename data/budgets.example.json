@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "budgets": {
+    "Alimentation": 400.0,
+    "Restaurants": 150.0,
+    "Logement": 2500.0
+  }
+}

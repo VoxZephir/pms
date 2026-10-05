@@ -1,0 +1,210 @@
+<div class="muted note mb-3">
+  Glissez une ligne sur une catégorie, ou sur un bloc besoin/envie/épargne, pour la
+  reclasser — vous choisirez ensuite si la correction ne vise que ce mouvement ou tous
+  les paiements au même bénéficiaire.
+  Une ligne <span class="ovr-key">corrigée</span> porte un liseré vert et une pastille
+  disant ce qui a été fixé à la main.
+  <a href="{{ url_for('dashboard.rules') }}">Voir les corrections en place</a>.
+</div>
+{# Rendered server-side on first paint and re-fetched on filter changes, so the
+   list works with JavaScript off and the two paths share one template. #}
+{# Every link in this partial is built from the resolved period and filters
+   rather than echoing request.args, so the fragment render does not leak
+   `fragment=1` into the URLs and the two render paths stay identical. #}
+{% set base = {'from': period.start.isoformat(), 'to': period.end.isoformat(),
+               'q': query.q, 'category': query.category,
+               'bucket': query.bucket, 'dir': query.dir, 'per': query.per} %}
+<form class="toolbar" method="get" action="{{ url_for('dashboard.transactions') }}" data-tx-form>
+  <input type="hidden" name="from" value="{{ period.start.isoformat() }}">
+  <input type="hidden" name="to" value="{{ period.end.isoformat() }}">
+  <input type="hidden" name="sort" value="{{ query.sort }}">
+  <input type="hidden" name="dir_sort" value="{{ query.dir_sort }}">
+  {% if query.per %}<input type="hidden" name="per" value="{{ query.per }}">{% endif %}
+  {# A filter row is read by its options, not by a stack of headings above it:
+     visible labels here would double the toolbar's height for text every
+     select already states. Hidden labels, but real ones. #}
+  <label class="sr-only" for="tx-q">Rechercher un bénéficiaire ou un lieu</label>
+  <input type="search" name="q" id="tx-q" value="{{ query.q }}" placeholder="Rechercher un bénéficiaire, un lieu…" autocomplete="off">
+  <label class="sr-only" for="tx-category">Filtrer par catégorie</label>
+  <select name="category" id="tx-category">
+    <option value="">Toutes les catégories</option>
+    {% for c in filter_categories %}
+    <option value="{{ c }}" {{ 'selected' if query.category == c }}>{{ c }}</option>
+    {% endfor %}
+  </select>
+  <label class="sr-only" for="tx-bucket">Filtrer par besoin ou envie</label>
+  <select name="bucket" id="tx-bucket">
+    <option value="">Besoins et envies</option>
+    {% for b in ['Need', 'Want', 'Non classé', 'Save'] %}
+    <option value="{{ b }}" {{ 'selected' if query.bucket == b }}>{{ b }}</option>
+    {% endfor %}
+  </select>
+  <label class="sr-only" for="tx-dir">Filtrer par sens du mouvement</label>
+  <select name="dir" id="tx-dir">
+    <option value="">Entrées et sorties</option>
+    <option value="out" {{ 'selected' if query.dir == 'out' }}>Sorties</option>
+    <option value="in" {{ 'selected' if query.dir == 'in' }}>Entrées</option>
+  </select>
+  <button class="btn" type="submit">Filtrer</button>
+  {# Plain links, deliberately without data-nav: they download a file rather
+     than swapping <main>, and the browser handles that on its own. They carry
+     the resolved window and filters, so what you get is what you see. #}
+  <span class="toolbar-gap"></span>
+  <a class="btn ghost" download
+     href="{{ url_for('dashboard.export', fmt='csv', sort=query.sort, dir_sort=query.dir_sort, **base) }}"
+     title="Les {{ total }} lignes du filtre courant, en CSV">Exporter CSV</a>
+  <a class="btn ghost" download
+     href="{{ url_for('dashboard.export', fmt='xlsx', sort=query.sort, dir_sort=query.dir_sort, **base) }}"
+     title="Les {{ total }} lignes du filtre courant, en tableur">Excel</a>
+</form>
+
+{# The active filters, each one a chip that removes just itself. Built by the
+   backend from the resolved filters, so the fragment and the full page agree. #}
+{% if filter_chips %}
+<div class="filter-chips">
+  {% for c in filter_chips %}
+  <a class="chip chip-link" data-tx-page href="{{ c.href }}" title="Retirer ce filtre">{{ c.label }} : {{ c.value }} <span aria-hidden="true">×</span></a>
+  {% endfor %}
+  <a class="chip chip-link muted" data-tx-page href="{{ clear_filters }}">Effacer les filtres</a>
+</div>
+{% endif %}
+
+{# One form for the whole table: the row checkboxes live in the <table> but
+   belong to it via form="bulkForm", so the markup stays a plain table and the
+   action still submits without JavaScript. #}
+<form id="bulkForm" class="bulkbar" method="post"
+      action="{{ url_for('dashboard.reclassify_bulk_form') }}">
+  <input type="hidden" name="from" value="{{ period.start.isoformat() }}">
+  <input type="hidden" name="to" value="{{ period.end.isoformat() }}">
+  <input type="hidden" name="q" value="{{ query.q }}">
+  <input type="hidden" name="category" value="{{ query.category }}">
+  <input type="hidden" name="bucket" value="{{ query.bucket }}">
+  <input type="hidden" name="dir" value="{{ query.dir }}">
+  {# Rebuilt from the resolved filters rather than request.full_path, which
+     carries `fragment=1` on the fragment render and would make the two paths
+     emit different markup. #}
+  <input type="hidden" name="back"
+         value="{{ url_for('dashboard.transactions', sort=query.sort, dir_sort=query.dir_sort, **base) }}">
+
+  <span class="bulk-count" id="bulkCount">0 sélectionnée</span>
+
+  <label class="bulk-all">
+    <input type="checkbox" name="scope_all" value="1" id="bulkAll">
+    tout le filtre ({{ total }})
+  </label>
+
+  <label class="sr-only" for="bulk-category">Catégorie cible</label>
+  <select name="to_category" id="bulk-category">
+    <option value="">— catégorie inchangée —</option>
+    {% for c in filter_categories %}
+    <option value="{{ c }}">{{ c }}</option>
+    {% endfor %}
+  </select>
+
+  <label class="sr-only" for="bulk-bucket">Besoin, envie ou épargne cible</label>
+  <select name="to_bucket" id="bulk-bucket">
+    <option value="">— besoin/envie/épargne inchangé —</option>
+    {% for b in ['Need', 'Want', 'Non classé', 'Save'] %}
+    <option value="{{ b }}">{{ b }}</option>
+    {% endfor %}
+  </select>
+
+  <label class="sr-only" for="bulk-scope">Portée de la correction</label>
+  <select name="apply_as" id="bulk-scope">
+    <option value="merchant">et les paiements futurs (règles)</option>
+    <option value="pin">ces mouvements seulement</option>
+  </select>
+
+  <button class="btn" type="submit">Appliquer</button>
+</form>
+
+<div class="tbl-wrap">
+  <table class="data">
+    <thead>
+      <tr>
+        {# Real links, so sorting survives a page reload and works without JS.
+           Clicking the active column flips the direction. #}
+        <th class="pick" data-type="none">
+          {# Not a row control: it has an id of its own, so it gets a real
+             label rather than the aria-label the row checkboxes must use. #}
+          <label class="sr-only" for="pickAll">Tout sélectionner sur cette page</label>
+          <input type="checkbox" id="pickAll" form="bulkForm">
+        </th>
+        {% for col in columns %}
+        {% set active = query.sort == col.key %}
+        {% set next_dir = 'asc' if active and query.dir_sort == 'desc' else 'desc' %}
+        <th class="{{ 'r' if col.numeric }} sortable {{ 'on' if active }}"
+            aria-sort="{{ ('descending' if query.dir_sort == 'desc' else 'ascending') if active else 'none' }}">
+          <a data-tx-sort href="{{ url_for('dashboard.transactions',
+                sort=col.key, dir_sort=next_dir, page=1, **base) }}">
+            {{ col.label }}<span class="arrow">{{ ('▾' if query.dir_sort == 'desc' else '▴') if active else '' }}</span>
+          </a>
+        </th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in rows %}
+      {% set key = t.reference ~ ':' ~ t.currency %}
+      <tr draggable="true" data-key="{{ key }}" data-label="{{ t.label }}"
+          data-category="{{ t.category }}" data-bucket="{{ t.bucket }}"
+          class="{{ 'is-overridden' if t.overridden }}">
+        <td class="pick">
+          <input type="checkbox" name="keys" value="{{ key }}" form="bulkForm"
+                 aria-label="Sélectionner {{ t.label }}">
+        </td>
+        <td class="num">
+          <span class="grip" aria-hidden="true" title="Glisser pour reclasser">⠿</span>
+          <a class="daylink" href="{{ url_for('dashboard.day', iso=t.date.isoformat()) }}">{{ t.date|fr_date }}</a>
+        </td>
+        <td>
+          <div class="t-lab">{{ t.label }}</div>
+          {% if t.subcategory or t.location %}
+          <div class="t-sub">{{ t.subcategory }}{% if t.subcategory and t.location %} · {% endif %}{{ t.location }}</div>
+          {% endif %}
+        </td>
+        <td>
+          <span class="chip">{{ t.category }}</span>
+          {# A bucket-only correction changes nothing in the category cell, so
+             show the bucket explicitly -- otherwise the reclassification you
+             just made appears to have done nothing. #}
+          {% if t.bucket_override %}
+          <span class="chip ovr" title="Besoin/envie/épargne fixé manuellement">{{ t.bucket_override }}</span>
+          {% elif t.overridden %}
+          <span class="chip ovr" title="Catégorie fixée manuellement">corrigé</span>
+          {% endif %}
+          <a class="reclass" href="{{ url_for('dashboard.reclassify_form', key=key) }}"
+             title="Reclasser ce mouvement">Reclasser</a>
+        </td>
+        <td class="r num {{ 'pos' if t.amount >= 0 }}">{{ t.amount|chf(2) }} {{ t.currency }}</td>
+        <td class="r num">{{ t.amount_chf|chf(2) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted empty-row">Aucune transaction ne correspond.{% if filter_chips %} <a class="chip chip-link" href="{{ clear_filters }}">Effacer les filtres</a>{% endif %}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<nav class="pager" aria-label="Pagination">
+  <span>
+    {% if total %}{{ (page - 1) * page_size + 1 }}–{{ [page * page_size, total] | min }}{% else %}0{% endif %}
+    sur {{ total }} ligne{{ 's' if total != 1 }} · {{ debit_total|chf(2) }} CHF de débits
+    (transferts de change inclus)
+  </span>
+  {% if pages > 1 %}
+  <span class="flex-row gap-2">
+    {% if page > 1 %}
+    <a class="btn" data-tx-page aria-label="Page précédente"
+       href="{{ url_for('dashboard.transactions', page=page - 1,
+                sort=query.sort, dir_sort=query.dir_sort, **base) }}">Précédent</a>
+    {% endif %}
+    <span class="muted num" aria-current="page">Page {{ page }} sur {{ pages }}</span>
+    {% if page < pages %}
+    <a class="btn" data-tx-page aria-label="Page suivante"
+       href="{{ url_for('dashboard.transactions', page=page + 1,
+                sort=query.sort, dir_sort=query.dir_sort, **base) }}">Suivant</a>
+    {% endif %}
+  </span>
+  {% endif %}
+</nav>

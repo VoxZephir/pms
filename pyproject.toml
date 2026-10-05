@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pms"
+version = "0.2.0"
+description = "Analyse de relevés de transactions Swissquote"
+requires-python = ">=3.11"
+dependencies = [
+    "pdfplumber>=0.11",
+    "Jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+web = ["Flask>=3.1"]
+dev = ["pytest>=8", "ruff>=0.16", "playwright>=1.50"]
+
+[project.scripts]
+pms = "pms.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pms = ["web/templates/*.j2", "web/templates/**/*.j2", "web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+# Bugs, not style. Each family is here because this project shipped its bug:
+# a name read before its local assignment (F823: `balance_chart =
+# balance_chart(...)`), an import shadowed by a function of the same name
+# (F811: a route called `analysis`), and a control character that made a
+# regex alternative never match (PLE2510: a backspace after "Régie").
+select = ["F", "E9", "B", "PLE"]
+# zip(strict=True) would turn the pairwise `zip(rows, rows[1:])` idiom into
+# an error.
+ignore = ["B905"]

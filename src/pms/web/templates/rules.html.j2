@@ -1,0 +1,266 @@
+{% extends "layout.html.j2" %}
+{% block title %}Reclassements · Relevé Swissquote{% endblock %}
+
+{% block body %}
+<main class="wrap pt-5" id="main" tabindex="-1">
+  {# Same left rail as the dashboard: the page has three distinct sections,
+     and the rail keeps their headings a tab stop away. #}
+  <nav class="toc" aria-label="Sommaire de la page">
+    <span class="toc-title">Sommaire</span>
+    {% for item in toc %}
+    <a href="#{{ item.id }}">{{ item.label }}</a>
+    {% endfor %}
+  </nav>
+  <div class="title-row">
+    <h1>Reclassements</h1>
+    <span class="sub">
+      {{ total }} correction{{ 's' if total > 1 }} ·
+      {{ touched }} mouvement{{ 's' if touched > 1 }} affecté{{ 's' if touched > 1 }}
+    </span>
+  </div>
+
+  <div class="callout mb-5">
+    <b>Les corrections vivent hors du relevé.</b> Elles sont écrites dans
+    <code>data/overrides.json</code>, séparé du ledger — qui est reconstruit depuis les PDF
+    à chaque ingestion et doit rester une copie fidèle de ce que la banque a imprimé.
+    Une <b>règle</b> vise un bénéficiaire et attrape aussi ses paiements futurs ;
+    une <b>épingle</b> ne vise qu'un mouvement et l'emporte sur la règle de son bénéficiaire.
+  </div>
+
+  {% if twint_left %}
+  <div class="callout mb-5">
+    <b>{{ twint_left }} Twint à identifier.</b> Le relevé n'en imprime que le
+    montant ; <a href="{{ url_for('dashboard.twint_triage') }}">les trier un par un</a>,
+    une touche par catégorie, ou par montant récurrent.
+  </div>
+  {% endif %}
+
+  {% if entries %}
+  {# 228 corrections in one table were sixteen screens. Grouped by kind, each
+     group folded past ten rows with its count on the summary; the search
+     narrows every group at once and unfolds the ones it finds something in.
+     Without JavaScript the groups still open by hand. #}
+  <section class="card pad" id="corrections">
+    <div class="chart-head mb-2">
+      <h3>Corrections en place</h3>
+      <div class="hint">{{ entries|length }} en tout</div>
+    </div>
+    <div class="field mb-3" hidden data-filter-wrap>
+      <label class="sr-only" for="corrections-filter">Chercher une correction</label>
+      <input type="search" id="corrections-filter" data-filter-rows="#corrections"
+             placeholder="Chercher un bénéficiaire, une catégorie…" autocomplete="off">
+    </div>
+    {% for kind, title, hint in [
+         ('rule', 'Règles par bénéficiaire', 'attrapent aussi les paiements futurs'),
+         ('pin', 'Épingles', 'un seul mouvement chacune ; l’emportent sur la règle'),
+         ('alias', 'Fusions', 'plusieurs orthographes, un seul bénéficiaire')] %}
+    {% set rows = entries | selectattr('kind', 'equalto', kind) | list %}
+    {% if rows %}
+    <details class="fold group-fold"{% if rows|length <= 10 %} open{% endif %} data-group="{{ kind }}">
+      <summary>
+        <span class="chev" aria-hidden="true">▸</span>
+        <h4>{{ title }} <span class="muted num">({{ rows|length }})</span></h4>
+        <span class="hint">{{ hint }}</span>
+      </summary>
+      <div class="tbl-wrap">
+        <table class="data sortable-table">
+          <thead>
+            <tr>
+              <th>Cible</th><th>Devient</th>
+              <th class="r" data-type="num">Mouvements</th>
+              <th class="r" data-type="num">Montant</th>
+              <th>Posée le</th><th data-type="none"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for e in rows %}
+            <tr>
+              <td>
+                <div class="t-lab">{{ e.match }}</div>
+                {% if e.kind == 'alias' and e.pattern %}
+                <div class="t-sub">tous les bénéficiaires correspondant à ce motif</div>
+                {% elif e.kind == 'rule' and e.mode == 'contains' %}
+                <div class="t-sub">tout bénéficiaire contenant ce texte</div>
+                {% elif e.kind == 'pin' %}
+                <div class="t-sub">{{ e.date|fr_date if e.date else 'mouvement absent du ledger' }}</div>
+                {% endif %}
+              </td>
+              <td>
+                {% if e.kind == 'alias' %}
+                <span class="chip">{{ e.canonical }}</span>
+                {% endif %}
+                {% if e.category %}<span class="chip">{{ e.category }}</span>{% endif %}
+                {% if e.subcategory %}<span class="t-sub">{{ e.subcategory }}</span>{% endif %}
+                {% if e.bucket %}<span class="chip">{{ e.bucket }}</span>{% endif %}
+              </td>
+              <td class="r num {{ 'muted' if not e.count }}">{{ e.count }}</td>
+              <td class="r num">{{ e.amount|chf(2) }}</td>
+              <td class="t-sub">{{ e.at[:16]|replace('T', ' ') }}</td>
+              <td class="r">
+                <form method="post" class="d-inline">
+                  <input type="hidden" name="action" value="delete">
+                  <input type="hidden" name="kind" value="{{ e.kind }}">
+                  {% if e.kind in ('rule', 'alias') %}
+                  <input type="hidden" name="match" value="{{ e.match }}">
+                  <input type="hidden" name="mode" value="{{ e.mode }}">
+                  {% else %}
+                  <input type="hidden" name="key" value="{{ e.key }}">
+                  {% endif %}
+                  <button class="btn" type="submit">Retirer</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
+    {% endfor %}
+    <p class="muted f-sm mt-3" hidden data-filter-empty>Aucune correction ne correspond.</p>
+  </section>
+  {% else %}
+  <section class="card pad" id="corrections">
+    <div class="chart-head mb-2">
+      <h3>Corrections en place</h3>
+    </div>
+    <div class="empty-state compact">
+      <p><b>Aucune correction pour l'instant.</b></p>
+      <p>Dans le tableau des transactions, faites glisser une ligne sur une catégorie —
+         ou utilisez le lien <em>Reclasser</em> de la ligne si vous préférez un formulaire.</p>
+    </div>
+  </section>
+  {% endif %}
+  <section class="card pad mt-5" id="local-rules">
+    <div class="chart-head">
+      <h3>Règles personnelles</h3>
+      <div class="hint">écrites dans <code>data/local_rules.json</code> — gitignoré, comme les relevés</div>
+    </div>
+    <p class="muted note mb-3">
+      Des règles qui nomment un employeur, une régie, un praticien ou une personne.
+      Ce sont des <b>catégorisations</b>, pas des exceptions : elles s'appliquent
+      avant les règles publiques (Coop, SBB, Swisscom) et l'emportent sur elles.
+    </p>
+    {% include "partials/error_summary.html.j2" %}
+    <form method="post" action="{{ url_for('dashboard.rules') }}" class="row-form mb-4">
+      <input type="hidden" name="action" value="lr-add">
+      <div class="field{% if form_errors.get('lr-pattern') %} field-invalid{% endif %}">
+        <label class="f-label" for="lr-pattern">Motif</label>
+        {% if form_errors.get('lr-pattern') %}
+        <p class="field-error" id="lr-pattern-error">{{ form_errors['lr-pattern'] }}</p>
+        {% endif %}
+        <input type="text" name="pattern" id="lr-pattern" required
+               value="{{ form_values.get('lr-pattern', '') }}"
+               aria-describedby="{{ 'lr-pattern-error' if form_errors.get('lr-pattern') else 'lr-pattern-hint' }}"
+               {% if form_errors.get('lr-pattern') %}aria-invalid="true"{% endif %}>
+        <span class="f-hint" id="lr-pattern-hint">Une alternative : <code>Coop|Migros</code>. Comparé sans tenir compte de la casse.</span>
+      </div>
+      <div class="field{% if form_errors.get('lr-category') %} field-invalid{% endif %}">
+        <label class="f-label" for="lr-category">Catégorie</label>
+        {% if form_errors.get('lr-category') %}
+        <p class="field-error" id="lr-category-error">{{ form_errors['lr-category'] }}</p>
+        {% endif %}
+        <select name="category" id="lr-category" required
+                {% if form_errors.get('lr-category') %}aria-invalid="true" aria-describedby="lr-category-error"{% endif %}>
+          <option value="">— choisir —</option>
+          {% for c in choices.categories %}
+          <option value="{{ c }}" {{ 'selected' if form_values.get('lr-category') == c }}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field">
+        <label class="f-label" for="lr-subcategory">Sous-catégorie (facultative)</label>
+        <input type="text" name="subcategory" id="lr-subcategory"
+               value="{{ form_values.get('lr-subcategory', '') }}">
+      </div>
+      <button class="btn" type="submit">Ajouter la règle</button>
+    </form>
+
+    {% if local_rules %}
+    <div class="tbl-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th>Motif</th><th>Catégorie</th><th>Sous-catégorie</th>
+            <th data-type="none"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rule in local_rules %}
+          <tr>
+            <td><code>{{ rule.pattern }}</code></td>
+            <td><span class="chip">{{ rule.category }}</span></td>
+            <td class="t-sub">{{ rule.subcategory }}</td>
+            <td class="r">
+              <form method="post" class="d-inline">
+                <input type="hidden" name="action" value="lr-delete">
+                <input type="hidden" name="pattern" value="{{ rule.pattern }}">
+                <input type="hidden" name="category" value="{{ rule.category }}">
+                <input type="hidden" name="subcategory" value="{{ rule.subcategory }}">
+                <button class="btn small danger" type="submit">Retirer</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted note">Aucune règle personnelle pour l'instant — la catégorisation tient sur les règles publiques.</p>
+    {% endif %}
+  </section>
+
+  <div class="card pad mt-5" id="merges">
+    <div class="chart-head">
+      <h3>Fusionner deux bénéficiaires</h3>
+      <div class="hint">quand la banque écrit le même nom de deux façons</div>
+    </div>
+    <form method="post" action="{{ url_for('dashboard.merge_labels') }}" class="flex-row mb-4">
+      {# The form reads as a sentence, so the labels stay out of sight rather
+         than breaking it in two -- but they are real labels, not aria-label. #}
+      <label class="sr-only" for="merge-variant">Bénéficiaire à fusionner</label>
+      <select name="variant" id="merge-variant" required class="merge-select">
+        <option value="">— bénéficiaire à fusionner —</option>
+        {% for c in counterparties %}
+        <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+      <span class="muted" aria-hidden="true">devient</span>
+      <label class="sr-only" for="merge-canonical">Nom à conserver</label>
+      <select name="canonical" id="merge-canonical" required class="merge-select">
+        <option value="">— nom à conserver —</option>
+        {% for c in counterparties %}
+        <option value="{{ c }}">{{ c }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Fusionner</button>
+    </form>
+
+    <div class="chart-head mb-2">
+      <h3 class="f-md">Fusionner toute une enseigne</h3>
+      <div class="hint">une succursale par caisse : 40 orthographes de Coop sur ce relevé</div>
+    </div>
+    <form method="post" action="{{ url_for('dashboard.merge_labels') }}" class="flex-row">
+      {# Here the sentence's own words are the labels, so they become <label>
+         elements rather than being duplicated out of sight. #}
+      <label class="muted" for="merge-prefix">tout ce qui commence par</label>
+      <input type="text" name="prefix" id="merge-prefix" required placeholder="Coop" class="merge-input">
+      <label class="muted" for="merge-prefix-canonical">devient</label>
+      <input type="text" name="canonical" id="merge-prefix-canonical" required placeholder="Coop" class="merge-input">
+      <button class="btn" type="submit">Fusionner l'enseigne</button>
+    </form>
+    <div class="muted note mt-3">
+      Les noms fusionnés comptent ensuite comme un seul dans les totaux, les classements et
+      les règles — et une règle écrite sur le nom conservé attrape aussi les autres. Une
+      fusion d'enseigne rattrape les succursales qui apparaîtront plus tard. Les catégories,
+      elles, sont déterminées avant la fusion : une station-service Coop reste en transport.
+    </div>
+  </div>
+</main>
+
+<footer class="wrap">
+  Les corrections survivent à la réimportation : une épingle est indexée sur
+  <code>(référence, devise)</code>, la même identité que le ledger utilise pour dédoublonner,
+  et une règle est indexée sur le nom du bénéficiaire.
+</footer>
+{% endblock %}

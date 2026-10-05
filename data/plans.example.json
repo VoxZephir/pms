@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "income": {
+    "amount": 8000.0
+  },
+  "rate": 0.05,
+  "rate_segments": [
+    [6, 0.05],
+    [6, 0.02]
+  ],
+  "vol": null,
+  "scenarios": {
+    "Exemple de scénario": {
+      "rate_segments": [
+        [12, 0.04]
+      ],
+      "vol": null,
+      "months": 0
+    }
+  },
+  "contributions": [
+    {
+      "pocket": "3a",
+      "amount": 1000.0,
+      "every": "quarter",
+      "months": 24,
+      "start": ""
+    }
+  ],
+  "one_offs": [
+    {
+      "month": "2026-12",
+      "label": "Assurance maladie",
+      "amount": 6200.0,
+      "seasonal": {"category": "Santé & assurance", "month": 12}
+    },
+    {
+      "date": "2027-05-15",
+      "label": "Impôts 2026",
+      "amount": 4100.0
+    },
+    {
+      "month": "2027-08",
+      "label": "Versement 3a",
+      "amount": 3000.0,
+      "transfer": "3a"
+    }
+  ],
+  "ignored_seasonal": [
+    ["Cadeaux", 12]
+  ]
+}

@@ -1,0 +1,633 @@
+{# The whole of /previsions' <main> content, in one place. The full page wraps
+   it in <main id="main">; the fragment response serves it bare, and the
+   JavaScript swap replaces <main>'s innerHTML with it -- the dashboard's
+   pattern, so switching the wealth view or the horizon never bounces the
+   reader back to the top of the page. #}
+{% if toc %}
+<nav class="toc" aria-label="Sommaire de la page">
+  <span class="toc-title">Sommaire</span>
+  {% for item in toc %}
+  <a href="#{{ item.id }}">{{ item.label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+<script id="chartData" type="application/json">{{ chart_data_json|safe }}</script>
+<div class="title-row">
+  <h1>Prévisions de trésorerie</h1>
+  <span class="sub">
+    {{ months_label(projection.months) }} à partir du solde CHF au {{ as_of|fr_date }} — une
+    estimation, pas un relevé de banque
+  </span>
+  {# The horizon is view state like the wealth view: a real GET form, so it
+     works without JavaScript. The action carries no months key -- the select's
+     value is the only one that reaches the server. #}
+  <form method="get" action="{{ horizon_action }}" class="row-form horizon-form">
+    <label class="sr-only" for="horizon-select">Horizon de projection</label>
+    <select id="horizon-select" name="months">
+      {% for n in horizon_presets %}
+      <option value="{{ n }}" {{ 'selected' if months == n }}>{{ months_label(n) }}</option>
+      {% endfor %}
+      {% if months not in horizon_presets %}
+      <option value="{{ months }}" selected>{{ months_label(months) }}</option>
+      {% endif %}
+    </select>
+    <button class="btn small" type="submit">Voir</button>
+  </form>
+</div>
+
+{# One summary for the whole page, at the top: the forms it covers now sit in
+   two sections (the rate lives with the curve it moves), and two summaries
+   would announce the same failure twice. #}
+{% include "partials/error_summary.html.j2" %}
+
+<div class="kpis">
+  {% for k in kpis %}
+  <div class="card kpi">
+    <div class="k-label">{{ k.label }}</div>
+    <div class="k-val {{ 'pos' if k.positive is defined and k.positive }}">{{ k.value }}<small>CHF</small></div>
+    <div class="k-note">{{ k.note }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if chart %}
+<section class="block card pad" id="p-projection">
+  <div class="chart-head">
+    <h3>Solde projeté</h3>
+    <div class="hint">traitillé = prévu · chaque palier est la fin d'un mois</div>
+  </div>
+  <div class="chart-scroll">
+    <svg class="chart" id="projChart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img"
+         aria-label="Évolution prévue du solde mois par mois">
+      {% for t in chart.ticks %}
+      <line class="gridline" x1="{{ chart.pad_left }}" x2="{{ chart.width - 12 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick" x="{{ chart.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|chf(0) }}</text>
+      {% endfor %}
+      <line class="crosshair" id="projCross" y1="{{ chart.pad_top }}" y2="{{ chart.baseline }}"/>
+      {% if chart.zero_y %}
+      <line class="axisline" x1="{{ chart.pad_left }}" x2="{{ chart.width - 12 }}"
+            y1="{{ chart.zero_y }}" y2="{{ chart.zero_y }}"
+            stroke-dasharray="2 3" opacity=".7"/>
+      <text class="tick" x="{{ chart.pad_left - 8 }}" y="{{ chart.zero_y - 4 }}" text-anchor="end">0</text>
+      {% endif %}
+      <polyline points="{{ chart.line }}" fill="none" stroke="var(--s0)"
+                stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+                stroke-dasharray="4 3"/>
+      {% for p in chart.points %}
+      {% if p.x == chart.low.x %}
+      {% set at_left = p.x == chart.pad_left %}
+      <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4.5" fill="var(--s0)"
+              stroke="var(--surface)" stroke-width="2"/>
+      <text class="dlabel" x="{{ p.x + 8 if at_left else p.x }}" y="{{ p.y - 11 }}"
+            text-anchor="{{ 'start' if at_left else ('end' if p.x > chart.width - 130 else 'middle') }}">
+        bas {{ p.value|chf(0) }} CHF · {{ chart.low.label }}
+      </text>
+      {% endif %}
+      {% endfor %}
+      <line class="axisline" x1="{{ chart.pad_left }}" x2="{{ chart.width - 12 }}"
+            y1="{{ chart.baseline }}" y2="{{ chart.baseline }}"/>
+      {% for p in chart.points %}
+      {% if loop.first or loop.last or loop.index0 % chart.label_every == 0 %}
+      <text class="tick" x="{{ p.x }}" y="{{ chart.baseline + 18 }}"
+            text-anchor="{{ 'end' if loop.last else 'middle' }}">
+        {{ 'auj.' if loop.first else p.label|replace(' 20', ' ')|truncate(12, true, '') }}
+      </text>
+      {% endif %}
+      {% endfor %}
+      <circle class="focus-dot" data-slot="0" r="4.5" fill="var(--s0)"
+              stroke="var(--surface)" stroke-width="2"/>
+      <rect id="projHit" x="{{ chart.pad_left }}" y="{{ chart.pad_top }}" width="{{ chart.width - 12 - chart.pad_left }}" height="{{ chart.plot_h }}" fill="transparent"/>
+    </svg>
+  </div>
+  <div class="hint mt-2">survoler la courbe pour le détail de chaque mois</div>
+  <div class="muted note mt-3">
+    Cash initial + revenus mensuels − dépense de base − ponctuels. Les montants
+    sont des médianes du passé ; la seule certitude est le solde du relevé.
+  </div>
+</section>
+{% endif %}
+
+{% if wealth_chart %}
+<section class="block card pad" id="p-wealth">
+  <div class="chart-head">
+    <h3>Patrimoine</h3>
+    <div class="hint">
+      trait plein = mesuré · traitillé = projeté{% if wealth.vol %} · la zone
+      est ±1 écart-type{% endif %}{% if yscale == 'log' and wealth_chart.yscale != 'log' %}
+      · échelle linéaire : le log exige des valeurs strictement positives{% endif %}
+    </div>
+    {# Same money, two sides of the wealth tax. A real link, so the choice
+       is in the URL and survives a reload -- like the timeline's stack.
+       data-nav sits after aria-current: the swap keeps the scroll position. #}
+    <span class="seg" role="group" aria-label="Portée fiscale du patrimoine">
+      {% for v in wealth_views %}
+      <a class="{{ 'on' if v.active }}" href="{{ v.url }}"
+         {{ 'aria-current="page"' if v.active }} data-nav title="{{ v.note }}">{{ v.label }}</a>
+      {% endfor %}
+    </span>
+    {# The y axis of the same curve: log is the mode a multi-decade horizon
+       needs. A view-state link like the rest, swapped in place. #}
+    <span class="seg" role="group" aria-label="Échelle de l'axe du patrimoine">
+      {% for y in yscale_options %}
+      <a class="{{ 'on' if y.active }}" href="{{ y.url }}"
+         {{ 'aria-current="page"' if y.active }} data-nav>{{ y.label }}</a>
+      {% endfor %}
+    </span>
+  </div>
+  <div class="callout mb-3">
+    <b>{{ wealth_views | selectattr('active') | map(attribute='note') | first }}</b>
+    {% if wealth_view == 'sheltered' %}
+    · le 3a sort de la fortune imposable jusqu'au retrait, où il est taxé
+    séparément à taux réduit.
+    {% elif wealth_view == 'taxable' %}
+    · c'est cette assiette que l'impôt cantonal sur la fortune regarde.
+    {% endif %}
+  </div>
+
+  {% include "partials/rate_form.html.j2" %}
+  <div class="chart-scroll">
+    <svg class="chart" id="wealthChart" viewBox="0 0 {{ wealth_chart.width }} {{ wealth_chart.height }}"
+         role="img" aria-label="{{ wealth_views | selectattr('active') | map(attribute='aria') | first }}, {{ wealth_observed }} mois observés puis {{ projection.rows | length }} mois projetés">
+      {% for t in wealth_chart.ticks %}
+      <line class="gridline" x1="{{ wealth_chart.pad_left }}" x2="{{ wealth_chart.width - 12 }}"
+            y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick" x="{{ wealth_chart.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|chf(0) }}</text>
+      {% endfor %}
+      {% if wealth_chart.band %}
+      <polygon points="{{ wealth_chart.band }}" fill="var(--s1)" opacity=".1"/>
+      {% endif %}
+      <line class="crosshair" id="wealthCross" y1="{{ wealth_chart.pad_top }}" y2="{{ wealth_chart.baseline }}"/>
+      {# The rule marks where measurement stops and assumption starts. #}
+      <line class="axisline" x1="{{ wealth_chart.today.x }}" x2="{{ wealth_chart.today.x }}"
+            y1="{{ wealth_chart.pad_top }}" y2="{{ wealth_chart.baseline }}" opacity=".55"/>
+      <text class="tick" x="{{ wealth_chart.today.x + 6 }}" y="{{ wealth_chart.pad_top + 10 }}"
+            text-anchor="start">aujourd'hui</text>
+      <polyline points="{{ wealth_chart.projected_line }}" fill="none" stroke="var(--s1)"
+                stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+                stroke-dasharray="4 3"/>
+      <polyline points="{{ wealth_chart.observed_line }}" fill="none" stroke="var(--s1)"
+                stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="{{ wealth_chart.today.x }}" cy="{{ wealth_chart.today.y }}" r="4.5"
+              fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+      <text class="dlabel" x="{{ wealth_chart.final.x }}" y="{{ wealth_chart.final.y - 11 }}"
+            text-anchor="end">{{ wealth_chart.final.value|chf(0) }} CHF</text>
+      <line class="axisline" x1="{{ wealth_chart.pad_left }}" x2="{{ wealth_chart.width - 12 }}"
+            y1="{{ wealth_chart.baseline }}" y2="{{ wealth_chart.baseline }}"/>
+      <circle class="focus-dot" data-slot="1" r="4.5" fill="var(--s1)"
+              stroke="var(--surface)" stroke-width="2"/>
+      <rect id="wealthHit" x="{{ wealth_chart.pad_left }}" y="{{ wealth_chart.pad_top }}" width="{{ wealth_chart.width - 12 - wealth_chart.pad_left }}" height="{{ wealth_chart.plot_h }}" fill="transparent"/>
+    </svg>
+  </div>
+  <div class="muted note mt-3">
+    Solde Swissquote + IBKR + 3a. La moitié gauche est mesurée ; la droite ajoute
+    la projection de trésorerie au-dessus des placements
+    {% if wealth.rate is not none %}
+    capitalisés selon votre barème — votre hypothèse, pas celle de l'app.
+    {% else %}
+    <b>figés à leur dernière valeur</b> : aucun rendement n'est supposé tant que vous
+    n'en déclarez pas un, ci-dessus.
+    {% endif %}
+    {% if wealth.vol %}
+    La zone est ±1 écart-type, soit {{ (wealth.vol * 100)|round(1) }} % annualisés
+    {% if wealth.vol_source == 'declared' %}déclarés par vous{% else %}mesurés sur
+    l'historique de vos poches{% endif %}, élargi en √t.
+    {% endif %}
+    {% if wealth.moved %}
+    {{ wealth.moved|chf(0) }} CHF de virements déclarés — ponctuels et versements
+    programmés confondus — sortent de la trésorerie sans quitter le patrimoine.
+    {% else %}
+    Aucun versement n'est supposé. Un ponctuel ou un versement programmé qui part
+    vers un placement doit être déclaré comme virement, sinon la courbe le compte
+    comme dépensé.
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<section class="block card pad" id="p-forecast">
+  <div class="chart-head mb-3">
+    <h3>Mois par mois</h3>
+    <div class="hint">le solde le plus bas de l'horizon est mis en évidence · les années se replient, la première est ouverte</div>
+  </div>
+
+  {# One table per year, folded inside its year (and decade on long horizons)
+     with native <details>: folding without JavaScript, and the near term
+     stays in view because the first group opens. Each month row carries its
+     wealth partner, attached server-side -- never paired by index. #}
+  {% macro kinds_sentence(k) %}
+  {% if k.get('declared') %} · {{ k['declared'] }} ponctuel{{ 's' if k['declared'] > 1 }}{% endif %}
+  {% if k.get('contribution') %} · {{ k['contribution'] }} versement{{ 's' if k['contribution'] > 1 }} programmé{{ 's' if k['contribution'] > 1 }}{% endif %}
+  {% if k.get('suggestion') %} · {{ k['suggestion'] }} suggestion{{ 's' if k['suggestion'] > 1 }}{% endif %}
+  {% endmacro %}
+  {% macro year_block(y) %}
+  <details class="month-group year" {% if y.open %}open{% endif %}>
+    <summary>
+      <span class="chev" aria-hidden="true">▶</span>
+      <b>{{ y.label }}</b>
+      <span class="muted">· {{ y.start|chf(0) }} → {{ y.end|chf(0) }} CHF
+        {{ kinds_sentence(y.kinds) }}
+      </span>
+    </summary>
+    <div class="tbl-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th class="l">Mois</th>
+            <th class="r">Solde au début</th>
+            <th class="r">Revenus</th>
+            <th class="r">Dépenses</th>
+            <th class="l">Ponctuels et virements</th>
+            <th class="r">Solde à la fin</th>
+            {% if wealth %}
+            <th class="r">Placements</th>
+            <th class="r">Patrimoine</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in y.rows %}
+          {% set is_low = projection.low.key and r.key == projection.low.key %}
+          <tr {% if is_low %}class="hl-row"{% endif %}>
+            <td>{{ r.label }}
+              {% if r.partial %}
+              <span class="chip" title="Le relevé couvre déjà le début de ce mois : cette ligne ne compte que ce qu'il reste à venir">reste du mois</span>
+              {% endif %}
+            </td>
+            <td class="r num">{{ r.start|chf(0) }}</td>
+            <td class="r num">{{ r.income|chf(0) }}</td>
+            <td class="r num">{{ r.spend|chf(0) }}</td>
+            <td>
+              {% for o in r.one_offs %}
+              <span class="chip {{ 'sugg' if o.source == 'suggestion' }}"
+                    {% if o.source == 'suggestion' %}title="Suggéré par l'historique — à confirmer ou ignorer plus bas"
+                    {% elif o.source == 'contribution' %}title="Versement programmé : {{ o.amount|chf(0) }} CHF {{ every_labels[o.every] }} pendant {{ o.months }} mois vers {{ 'le 3a (hors impôt sur la fortune)' if o.transfer == '3a' else 'un placement imposable' }} — sort de la trésorerie, reste dans le patrimoine"
+                    {% elif o.transfer %}title="Virement vers {{ 'le 3a (hors impôt sur la fortune)' if o.transfer == '3a' else 'un placement imposable' }} : sort de la trésorerie, reste dans le patrimoine"{% endif %}>
+                {% if o.date %}{{ o.date[8:10] }}.{{ o.date[5:7] }} · {% endif %}{{ o.label }} −{{ o.amount|chf(0) }}
+              </span>
+              {% endfor %}
+            </td>
+            <td class="r num {{ 'pos' if r.end >= 0 else 'neg' }}">{{ r.end|chf(0) }}</td>
+            {% if wealth %}
+            <td class="r num">{{ r.wealth.invested|chf(0) }}</td>
+            <td class="r num">{{ r.wealth.total|chf(0) }}{% if wealth.vol %}
+              <small class="muted">± {{ ((r.wealth.high - r.wealth.total))|chf(0) }}</small>{% endif %}</td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  {% endmacro %}
+
+  {% for d in month_groups %}
+  {% if d.decade is defined %}
+  <details class="month-group decade" {% if d.open %}open{% endif %}>
+    <summary>
+      <span class="chev" aria-hidden="true">▶</span>
+      <b>{{ d.label }}</b>
+      <span class="muted">· {{ d.start|chf(0) }} → {{ d.end|chf(0) }} CHF
+        {{ kinds_sentence(d.kinds) }}
+      </span>
+    </summary>
+    {% for y in d.years %}
+    {{ year_block(y) }}
+    {% endfor %}
+  </details>
+  {% else %}
+  {{ year_block(d) }}
+  {% endif %}
+  {% endfor %}
+</section>
+
+{% if monthly_analysis %}
+<section class="block card pad" id="p-analysis">
+  <div class="chart-head mb-3">
+    <h3>Analyse mensuelle</h3>
+    <div class="hint">la médiane des mois observés — la part claire est le pic saisonnier retiré de la baseline</div>
+  </div>
+  {% include "partials/monthly_season_svg.html.j2" %}
+  {% include "partials/monthly_profile_table.html.j2" %}
+  <div class="muted note mt-3">
+    Chaque barre est la médiane des mois observés de ce mois calendaire. La
+    part claire est ce que les pics saisonniers — les factures annuelles que
+    l'historique a détectées — retirent, la même soustraction que la dépense
+    mensuelle de base du KPI ; le pointillé est cette baseline globale, la
+    médiane de tous les mois ajustés confondus.
+  </div>
+</section>
+{% endif %}
+
+<section class="block" id="p-plan">
+  <div class="chart-head mb-3">
+    <h3>Le plan</h3>
+    <div class="hint">déclaré dans data/plans.json — hors du dépôt, comme le reste des données personnelles</div>
+  </div>
+  <div class="grid-2">
+    {# Without a brokerage snapshot the net-worth card is absent, and with it
+       the rate and volatility fields would be too -- so they fall back here
+       rather than becoming unreachable. Exactly one of the two renders. #}
+    {% if not wealth_chart %}
+    <div class="card pad">
+      {% include "partials/rate_form.html.j2" %}
+    </div>
+    {% endif %}
+    <div class="card pad">
+      <h4>Revenu mensuel</h4>
+      <p class="muted f-sm">
+        {% if income_declared %}
+        Déclaré : {{ income_declared|chf(0) }} CHF par mois.
+        {% else %}
+        Non déclaré — l'app projette la médiane de l'historique
+        ({{ projection.income|chf(0) }} CHF/mois).
+        {% endif %}
+      </p>
+      <form method="post" action="{{ plan_action }}" class="row-form">
+        <input type="hidden" name="action" value="income">
+        <div class="field{% if form_errors.get('plan-income') %} field-invalid{% endif %}">
+          <label class="f-label" for="plan-income">Montant mensuel, en CHF</label>
+          {% if form_errors.get('plan-income') %}
+          <p class="field-error" id="plan-income-error">{{ form_errors['plan-income'] }}</p>
+          {% endif %}
+          <input type="number" name="amount" id="plan-income" step="0.01" min="0"
+                 value="{{ form_values.get('plan-income', income_declared or '') }}"
+                 aria-describedby="{{ 'plan-income-error' if form_errors.get('plan-income') else 'plan-income-hint' }}"
+                 {% if form_errors.get('plan-income') %}aria-invalid="true"{% endif %}>
+          <span class="f-hint" id="plan-income-hint">Laisser vide pour reprendre la médiane de l'historique.</span>
+        </div>
+        <button class="btn" type="submit">Enregistrer</button>
+      </form>
+    </div>
+
+    <div class="card pad">
+      <h4>Ajouter un ponctuel</h4>
+      <p class="muted f-sm">
+        Impôts, assurance, virement au 3a — une ligne par occurrence, à sa date.
+        Une date au 28 reste dans la projection tant que le relevé ne l'a pas
+        dépassée : c'est ce qui garde un versement de fin de mois visible début
+        du mois.
+      </p>
+      <form method="post" action="{{ plan_action }}" class="row-form">
+        <input type="hidden" name="action" value="add">
+        <div class="field{% if form_errors.get('oneoff-date') %} field-invalid{% endif %}">
+          <label class="f-label" for="oneoff-date">Date</label>
+          {% if form_errors.get('oneoff-date') %}
+          <p class="field-error" id="oneoff-date-error">{{ form_errors['oneoff-date'] }}</p>
+          {% endif %}
+          <input type="date" name="date" id="oneoff-date" required
+                 value="{{ form_values.get('oneoff-date', '') }}"
+                 {% if form_errors.get('oneoff-date') %}aria-invalid="true" aria-describedby="oneoff-date-error"{% endif %}>
+        </div>
+        <div class="field{% if form_errors.get('oneoff-label') %} field-invalid{% endif %}">
+          <label class="f-label" for="oneoff-label">Libellé</label>
+          {% if form_errors.get('oneoff-label') %}
+          <p class="field-error" id="oneoff-label-error">{{ form_errors['oneoff-label'] }}</p>
+          {% endif %}
+          <input type="text" name="label" id="oneoff-label" required
+                 value="{{ form_values.get('oneoff-label', '') }}"
+                 {% if form_errors.get('oneoff-label') %}aria-invalid="true" aria-describedby="oneoff-label-error"{% endif %}>
+        </div>
+        <div class="field{% if form_errors.get('oneoff-amount') %} field-invalid{% endif %}">
+          <label class="f-label" for="oneoff-amount">Montant, en CHF</label>
+          {% if form_errors.get('oneoff-amount') %}
+          <p class="field-error" id="oneoff-amount-error">{{ form_errors['oneoff-amount'] }}</p>
+          {% endif %}
+          <input type="number" name="amount" id="oneoff-amount" step="0.01" min="0.01" required
+                 value="{{ form_values.get('oneoff-amount', '') }}"
+                 {% if form_errors.get('oneoff-amount') %}aria-invalid="true" aria-describedby="oneoff-amount-error"{% endif %}>
+        </div>
+        {# Where the money goes, declared -- never guessed from the label.
+           It decides both whether net worth keeps it and which side of the
+           wealth tax it lands on. #}
+        <div class="field">
+          <label class="f-label" for="oneoff-destination">Nature</label>
+          <select name="destination" id="oneoff-destination">
+            {% for d in destinations %}
+            <option value="{{ d.id }}">{{ d.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <button class="btn" type="submit">Ajouter</button>
+      </form>
+    </div>
+  </div>
+
+  {% if declared %}
+  <div class="card pad mt-3">
+    <h4>Ponctuels déclarés</h4>
+    <table class="data">
+      <tbody>
+        {% for e in declared %}
+        <tr>
+          <td>{{ e.label }}
+            {% if e.transfer == '3a' %}
+            <span class="chip" title="Virement vers le 3a : sort de la trésorerie, reste dans le patrimoine, hors fortune imposable">3a · hors impôt</span>
+            {% elif e.transfer %}
+            <span class="chip" title="Virement vers un placement imposable : sort de la trésorerie, reste dans le patrimoine">placement · imposable</span>
+            {% endif %}
+          </td>
+          <td class="num">
+            {% if e.date %}{{ e.date[8:10] }}.{{ e.date[5:7] }}.{{ e.date[0:4] }}
+            {% else %}{{ e.month|replace('-', ' · ') }}
+              <span class="chip" title="Aucun jour déclaré : compté tant que le mois n'est pas passé">mois entier</span>
+            {% endif %}
+          </td>
+          {# The amount edits in place: (month, label) name the row, and the
+             error state is keyed to its table index so the summary link lands
+             on this input. Editing never re-creates the entry -- its seasonal
+             provenance, precise date and destination must survive. #}
+          <td class="r">
+            {% if form_errors.get('amount-' ~ loop.index) %}
+            <p class="field-error" id="amount-{{ loop.index }}-error">{{ form_errors['amount-' ~ loop.index] }}</p>
+            {% endif %}
+            <form method="post" action="{{ plan_action }}" class="row-form amount-form">
+              <input type="hidden" name="action" value="amount">
+              <input type="hidden" name="month" value="{{ e.month }}">
+              <input type="hidden" name="label" value="{{ e.label }}">
+              <label class="sr-only" for="amount-{{ loop.index }}">Montant de « {{ e.label }} », en CHF</label>
+              <input type="number" name="amount" id="amount-{{ loop.index }}" step="0.01"
+                     min="0.01" required
+                     value="{{ form_values.get('amount-' ~ loop.index, e.amount) }}"
+                     {% if form_errors.get('amount-' ~ loop.index) %}aria-invalid="true"
+                     aria-describedby="amount-{{ loop.index }}-error"{% endif %}>
+              <button class="btn small" type="submit">Modifier</button>
+            </form>
+          </td>
+          <td class="r">
+            <form method="post" action="{{ plan_action }}" class="flex-row gap-2 d-inline">
+              <input type="hidden" name="action" value="destination">
+              <input type="hidden" name="month" value="{{ e.month }}">
+              <input type="hidden" name="label" value="{{ e.label }}">
+              <label class="sr-only" for="dest-{{ loop.index }}">Nature de « {{ e.label }} »</label>
+              <select name="destination" id="dest-{{ loop.index }}">
+                {% for d in destinations %}
+                <option value="{{ d.id }}" {{ 'selected' if (e.transfer or '') == d.id }}>{{ d.label }}</option>
+                {% endfor %}
+              </select>
+              <button class="btn small" type="submit"
+                      title="Un virement sort de la trésorerie sans quitter le patrimoine">Appliquer</button>
+            </form>
+            <form method="post" action="{{ plan_action }}" class="d-inline">
+              <input type="hidden" name="action" value="delete">
+              <input type="hidden" name="month" value="{{ e.month }}">
+              <input type="hidden" name="label" value="{{ e.label }}">
+              <button class="btn small danger" type="submit">Supprimer</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="card pad mt-3">
+    <h4>Versements programmés</h4>
+    <p class="muted f-sm">
+      Une série de virements vers une poche : « 1 000 CHF chaque trimestre
+      pendant 2 ans vers le 3a ». Laisser la date vide pour commencer le mois
+      prochain — une échéance du mois en cours serait comptée même si le relevé
+      l'a déjà enregistrée.
+    </p>
+    <form method="post" action="{{ plan_action }}" class="row-form">
+      <input type="hidden" name="action" value="contrib">
+      <div class="field{% if form_errors.get('contrib-amount') %} field-invalid{% endif %}">
+        <label class="f-label" for="contrib-amount">Montant, en CHF</label>
+        {% if form_errors.get('contrib-amount') %}
+        <p class="field-error" id="contrib-amount-error">{{ form_errors['contrib-amount'] }}</p>
+        {% endif %}
+        <input type="number" name="amount" id="contrib-amount" step="0.01" min="0.01" required
+               value="{{ form_values.get('contrib-amount', '') }}"
+               {% if form_errors.get('contrib-amount') %}aria-invalid="true" aria-describedby="contrib-amount-error"{% endif %}>
+      </div>
+      <div class="field{% if form_errors.get('contrib-every') %} field-invalid{% endif %}">
+        <label class="f-label" for="contrib-every">chaque</label>
+        {% if form_errors.get('contrib-every') %}
+        <p class="field-error" id="contrib-every-error">{{ form_errors['contrib-every'] }}</p>
+        {% endif %}
+        <select name="every" id="contrib-every"
+                {% if form_errors.get('contrib-every') %}aria-invalid="true" aria-describedby="contrib-every-error"{% endif %}>
+          {% for e in every_options %}
+          <option value="{{ e.id }}" {{ 'selected' if form_values.get('contrib-every') == e.id }}>{{ e.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="field{% if form_errors.get('contrib-months') %} field-invalid{% endif %}">
+        <label class="f-label" for="contrib-months">pendant, en mois</label>
+        {% if form_errors.get('contrib-months') %}
+        <p class="field-error" id="contrib-months-error">{{ form_errors['contrib-months'] }}</p>
+        {% endif %}
+        <input type="number" name="months" id="contrib-months" min="1" step="1" required
+               value="{{ form_values.get('contrib-months', '') }}"
+               {% if form_errors.get('contrib-months') %}aria-invalid="true" aria-describedby="contrib-months-error"{% endif %}>
+      </div>
+      <div class="field{% if form_errors.get('contrib-start') %} field-invalid{% endif %}">
+        <label class="f-label" for="contrib-start">dès (vide = mois prochain)</label>
+        {% if form_errors.get('contrib-start') %}
+        <p class="field-error" id="contrib-start-error">{{ form_errors['contrib-start'] }}</p>
+        {% endif %}
+        <input type="month" name="start" id="contrib-start"
+               value="{{ form_values.get('contrib-start', '') }}"
+               {% if form_errors.get('contrib-start') %}aria-invalid="true" aria-describedby="contrib-start-error"{% endif %}>
+      </div>
+      <div class="field{% if form_errors.get('contrib-pocket') %} field-invalid{% endif %}">
+        <label class="f-label" for="contrib-pocket">vers</label>
+        {% if form_errors.get('contrib-pocket') %}
+        <p class="field-error" id="contrib-pocket-error">{{ form_errors['contrib-pocket'] }}</p>
+        {% endif %}
+        <select name="pocket" id="contrib-pocket"
+                {% if form_errors.get('contrib-pocket') %}aria-invalid="true" aria-describedby="contrib-pocket-error"{% endif %}>
+          {% for p in pockets %}
+          <option value="{{ p.id }}" {{ 'selected' if form_values.get('contrib-pocket') == p.id }}>{{ p.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="btn" type="submit">Ajouter la série</button>
+    </form>
+
+    {% if contributions %}
+    <div class="contrib-list mt-3">
+      {% for c in contributions %}
+      <div class="sugg-row">
+        <div>
+          <b>{{ c.amount|chf(0) }} CHF</b>
+          <span class="muted">· {{ c.every_label }} pendant {{ c.months }} mois vers {{ c.pocket_label }}{% if c.start %} · dès {{ c.start_label }}{% endif %}</span>
+        </div>
+        <form method="post" action="{{ plan_action }}" class="d-inline">
+          <input type="hidden" name="action" value="contrib-del">
+          <input type="hidden" name="pocket" value="{{ c.pocket }}">
+          <input type="hidden" name="amount" value="{{ c.amount }}">
+          <input type="hidden" name="every" value="{{ c.every }}">
+          <input type="hidden" name="months" value="{{ c.months }}">
+          <input type="hidden" name="start" value="{{ c.start }}">
+          <button class="btn small danger" type="submit">Retirer</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if suggestions %}
+  <div class="card pad mt-3">
+    <h4>Suggérés par l'historique</h4>
+    <p class="muted f-sm">
+      Une même catégorie a porté une grosse dépense au même mois, deux années
+      de suite. Confirmer la reprend dans le plan (le montant se modifie) ;
+      ignorer la retire de la projection.
+    </p>
+    {% for s in suggestions %}
+    <div class="sugg-row">
+      <div>
+        <b>{{ s.category }}</b>
+        <span class="muted">· chaque {{ s.month_label }}</span>
+      </div>
+      <div class="muted">
+        ~{{ s.amount|chf(0) }} CHF en moyenne
+        ({{ s.years|join(', ') }})
+      </div>
+      <div class="row-form">
+        <form method="post" action="{{ plan_action }}" class="row-form">
+          <input type="hidden" name="action" value="add">
+          <input type="hidden" name="month" value="{{ s.target }}">
+          <input type="hidden" name="seasonal" value="{{ s.category }}|{{ s.month }}">
+          {# The row already names the category in bold, so a visible label
+             on each field would repeat it. Hidden from sight, not from the
+             accessibility tree. #}
+          <label class="sr-only" for="sugg-label-{{ loop.index }}">Libellé de {{ s.category }}</label>
+          <input type="text" name="label" id="sugg-label-{{ loop.index }}"
+                 value="{{ s.category }}">
+          <label class="sr-only" for="sugg-amount-{{ loop.index }}">Montant de {{ s.category }}, en CHF</label>
+          <input type="number" name="amount" id="sugg-amount-{{ loop.index }}"
+                 step="0.01" min="0.01" value="{{ s.amount }}">
+          <button class="btn" type="submit">Confirmer</button>
+        </form>
+        <form method="post" action="{{ plan_action }}" class="d-inline">
+          <input type="hidden" name="action" value="ignore">
+          <input type="hidden" name="category" value="{{ s.category }}">
+          <input type="hidden" name="month_no" value="{{ s.month }}">
+          <button class="btn small" type="submit">Ignorer</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if ignored %}
+  <div class="card pad mt-3">
+    <h4>Suggestions ignorées</h4>
+    {% for g in ignored %}
+    <div class="sugg-row">
+      <div><b>{{ g.category }}</b> <span class="muted">· {{ g.label }}</span></div>
+      <form method="post" action="{{ plan_action }}" class="d-inline">
+        <input type="hidden" name="action" value="restore">
+        <input type="hidden" name="category" value="{{ g.category }}">
+        <input type="hidden" name="month_no" value="{{ g.month }}">
+        <button class="btn small" type="submit">Restaurer</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>

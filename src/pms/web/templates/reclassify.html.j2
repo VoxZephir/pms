@@ -1,0 +1,84 @@
+{% extends "layout.html.j2" %}
+{% block title %}Reclasser {{ txn.label }} · Relevé Swissquote{% endblock %}
+
+{% block body %}
+{# The no-JavaScript path. The drag-and-drop posts the same fields to the same
+   endpoint, so this form is not a second implementation -- it is the same one
+   without the pointer sugar. #}
+<main class="wrap pt-5 narrow-page" id="main" tabindex="-1">
+  <div class="title-row">
+    <h1>Reclasser</h1>
+    <span class="sub">{{ txn.date|fr_date }} · {{ txn.amount|chf(2) }} {{ txn.currency }}</span>
+  </div>
+
+  <div class="card pad mb-5">
+    <div class="t-lab f-lg">{{ txn.label }}</div>
+    {% if txn.location %}<div class="t-sub">{{ txn.location }}</div>{% endif %}
+    <div class="mt-3 flex-row gap-2">
+      <span class="chip">{{ txn.category }}</span>
+      {% if txn.subcategory %}<span class="chip">{{ txn.subcategory }}</span>{% endif %}
+      <span class="chip">{{ txn.bucket }}</span>
+      {% if txn.overridden %}<span class="chip">déjà corrigé</span>{% endif %}
+    </div>
+  </div>
+
+  <form class="card pad" method="post" action="{{ url_for('dashboard.rules') }}">
+    <input type="hidden" name="key" value="{{ key }}">
+
+    <div class="grid-gap">
+      <label>
+        <div class="k-label mb-1">Catégorie</div>
+        <select name="category" class="w-full">
+          <option value="">— inchangée —</option>
+          {% for c in choices.categories %}
+          <option value="{{ c }}" {{ 'selected' if c == txn.category }}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label>
+        <div class="k-label mb-1">Sous-catégorie (facultatif)</div>
+        <input type="text" name="subcategory" value="{{ txn.subcategory }}" class="w-full">
+      </label>
+
+      <label>
+        <div class="k-label mb-1">Besoin / envie / épargne</div>
+        <select name="bucket" class="w-full">
+          <option value="">— déduit de la catégorie —</option>
+          {% for b in choices.buckets %}
+          <option value="{{ b }}" {{ 'selected' if b == txn.bucket_override }}>{{ b }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <fieldset class="fs-box">
+        <legend class="k-label px-2">Portée</legend>
+        <label class="flex-row items-start mb-3">
+          <input type="radio" name="scope" value="merchant" checked class="mt-1">
+          <span>
+            <b>Tous les paiements à « {{ txn.label }} »</b>
+            <div class="t-sub">
+              {{ siblings|length }} mouvement{{ 's' if siblings|length > 1 }} sur le relevé,
+              plus tous ceux à venir. C'est ce qui rend la correction permanente.
+            </div>
+          </span>
+        </label>
+        <label class="flex-row items-start">
+          <input type="radio" name="scope" value="pin" class="mt-1">
+          <span>
+            <b>Ce mouvement seulement</b>
+            <div class="t-sub">
+              Une épingle sur cette ligne. Elle l'emporte sur la règle du bénéficiaire.
+            </div>
+          </span>
+        </label>
+      </fieldset>
+
+      <div class="flex-row">
+        <button class="btn" type="submit">Appliquer</button>
+        <a class="btn" href="{{ url_for('dashboard.dashboard') }}">Annuler</a>
+      </div>
+    </div>
+  </form>
+</main>
+{% endblock %}

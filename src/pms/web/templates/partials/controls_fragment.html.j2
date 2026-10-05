@@ -1,0 +1,5 @@
+{# The period bar alone, for the swap to refresh after <main> -- the same
+   partial the full page includes, so the two cannot drift apart. The title
+   comes along: a stale tab title would announce a page no longer showing. #}
+<title>{{ period.title }} · Relevé Swissquote</title>
+{% include "partials/controls.html.j2" %}

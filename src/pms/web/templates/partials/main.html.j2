@@ -1,0 +1,403 @@
+{# Everything below the controls. Served standalone as a fragment too, so the
+   JS path and the no-JS path render byte-identical markup. #}
+
+{% if toc %}
+<nav class="toc" aria-label="Sommaire de la page">
+  <span class="toc-title">Sommaire</span>
+  {% for item in toc %}
+  <a href="#{{ item.id }}">{{ item.label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+<div class="title-row">
+  <h1>{{ period.title }}</h1>
+  <span class="sub">
+    {{ period.start|fr_date }} → {{ period.end|fr_date }} ·
+    {{ period.days }} jours · {{ window.transactions|length }} mouvements
+    · par {{ grains | selectattr('active') | map(attribute='label') | first | lower }}
+    {% if previous.exists %}
+    · comparé au {{ previous.start|fr_date }} → {{ previous.end|fr_date }}
+    {% endif %}
+  </span>
+</div>
+
+{# A statement that just came in, and the month it completes. Dismissible
+   (app.js remembers it per statement); without JavaScript it goes away on
+   its own once that month is viewed or the week is over. #}
+{% if news %}
+<div class="callout news mb-5" data-news="{{ news.id }}" role="status">
+  <b>Nouveau relevé</b> importé le {{ news.when.strftime('%d.%m.%Y') }} :
+  {{ news.added }} mouvement{{ 's' if news.added > 1 }} ajouté{{ 's' if news.added > 1 }},
+  jusqu'au {{ news.until|fr_date }}.
+  <a data-nav href="{{ dash_url(**{'from': news.start.isoformat(), 'to': news.end.isoformat()}) }}">Voir la revue de {{ news.label }} →</a>
+  <button class="icon-btn news-close" type="button" hidden aria-label="Masquer cette annonce">×</button>
+</div>
+{% endif %}
+
+{# G123: once the heading is done, a keyboard user can jump straight to the
+   transaction table instead of tabbing through every chart and panel. #}
+<a class="skip-link-tx" href="#tx">Aller aux transactions</a>
+
+{% if not window.transactions %}
+<div class="callout warn mb-5">
+  <b>Aucun mouvement sur cette période.</b> Le relevé court de {{ bounds.low|fr_date }} à {{ bounds.high|fr_date }}.
+  <a href="{{ url_for('dashboard.dashboard', preset='12m') }}">Revenir aux 12 derniers mois</a>.
+</div>
+{% endif %}
+
+{% if gaps %}
+<div class="callout warn mb-5">
+  <b>Historique incomplet.</b> {{ gaps|length }} rupture(s) dans la chaîne des soldes —
+  des mouvements manquent entre
+  {{ gaps[0].after|fr_date }} et {{ gaps[0].before|fr_date }}. Les totaux sous-estiment la réalité.
+</div>
+{% endif %}
+
+<div class="kpis">
+  {% for k in kpis %}
+  <div class="card kpi">
+    <div class="k-label">{{ k.label }}</div>
+    <div class="k-val {{ 'pos' if k.positive is defined and k.positive }}">{{ k.value }}<small>{{ k.unit }}</small></div>
+    {% if k.delta %}
+    {% set improving = (k.delta.up and not k.good_when_down) or (not k.delta.up and k.good_when_down) %}
+    <div class="k-delta {{ 'pos' if improving else 'neg' }}">
+      <span class="arrow">{{ '▲' if k.delta.up else '▼' }}</span>
+      <span class="num">{{ k.delta.pct|abs|round(1) }} %</span>
+      <span class="muted">vs période précédente</span>
+    </div>
+    {% else %}
+    <div class="k-delta muted">&nbsp;</div>
+    {% endif %}
+    {% if k.note %}<div class="k-note">{{ k.note }}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+{% include "partials/review_panel.html.j2" %}
+
+{% if timeline %}
+<section class="block card pad">
+  <div class="chart-head">
+    <h3>Dépenses par {{ grains | selectattr('active') | map(attribute='label') | first | lower }}</h3>
+    <div class="hint">{{ drill_hint }} · ou glissez pour sélectionner une plage</div>
+    {# Same money, sliced two ways. A real link rather than a JS toggle, so the
+       choice is in the URL: it survives a reload, it is shareable, and it rides
+       along when you zoom into a column. #}
+    <span class="seg" role="group" aria-label="Découpage des colonnes">
+      {% for s in stacks %}
+      <a class="{{ 'on' if s.active }}" data-nav
+         href="{{ dash_url(**{'from': period.start.isoformat(), 'to': period.end.isoformat(),
+                              'grain': 'auto' if period.auto_grain else period.grain,
+                              'stack': s.id}) }}">{{ s.label }}</a>
+      {% endfor %}
+    </span>
+  </div>
+  <div class="chart-scroll">
+    {# Not role="img": the columns are real links, and role="img" would hide
+       them from assistive tech. The text labels are decoration -- the links
+       and their aria-labels carry the meaning. #}
+    <svg class="chart" id="timelineChart" viewBox="0 0 {{ timeline.width }} {{ timeline.height }}">
+      {% for t in timeline.ticks %}
+      <line class="gridline" x1="{{ timeline.pad_left }}" x2="{{ timeline.width - 14 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick" x="{{ timeline.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end" aria-hidden="true">{{ t.value|chf(0) }}</text>
+      {% endfor %}
+
+      {% for col in timeline.columns %}
+      {% if col.detail %}
+      {% set href = url_for('dashboard.day', iso=col.start.isoformat()) %}
+      {% else %}
+      {% set href = dash_url(**{'from': col.start.isoformat(), 'to': col.end.isoformat(), 'grain': 'auto'}) %}
+      {% endif %}
+      {% if col.drillable %}
+      <a href="{{ href }}"{% if not col.detail %} data-nav{% endif %} data-band="{{ loop.index0 }}"
+         aria-label="{{ col.label }} : {{ col.spending|chf(0) }} CHF dépensés — {{ 'ouvrir la journée' if col.detail else 'zoomer' }}">
+        <g class="col-group drill" data-band="{{ loop.index0 }}">
+          <rect class="colhl" x="{{ col.band_x }}" y="{{ timeline.pad_top }}"
+                width="{{ col.band_w }}" height="{{ timeline.plot_h }}" rx="6"/>
+          {% for s in col.segments %}
+          <rect x="{{ s.x }}" y="{{ s.y }}" width="{{ s.w }}" height="{{ s.h }}"
+                fill="{{ s.fill }}" rx="{{ 4 if loop.first else 0 }}"/>
+          {% endfor %}
+          {% if col.income > 0 %}
+          <line class="income-mark" x1="{{ col.income_x1 }}" x2="{{ col.income_x2 }}"
+                y1="{{ col.income_y }}" y2="{{ col.income_y }}"/>
+          {% endif %}
+          <rect class="hitbox" x="{{ col.band_x }}" y="{{ timeline.pad_top }}"
+                width="{{ col.band_w }}" height="{{ timeline.plot_h }}"
+                data-tip data-title="{{ col.label }}"
+                data-rows='[{% for s in col.segments %}["{{ s.name }}","{{ s.amount|chf(0) }} CHF","{{ s.fill }}"]{{ ',' if not loop.last }}{% endfor %}]'
+                data-total="{{ col.spending|chf(2) }}" data-income="{{ col.income|chf(2) }}"
+                data-count="{{ col.count }}"
+                data-hint="{{ ('Ouvrir la journée' if col.detail else 'Cliquer pour zoomer') if col.drillable else '' }}"/>
+        </g>
+      </a>
+      {% else %}
+      {# No link where there is nothing to drill into: a disabled-looking link
+         would still read as a promise to a keyboard or screen-reader user. #}
+      <g class="col-group" data-band="{{ loop.index0 }}">
+        <rect class="colhl" x="{{ col.band_x }}" y="{{ timeline.pad_top }}"
+              width="{{ col.band_w }}" height="{{ timeline.plot_h }}" rx="6"/>
+        {% for s in col.segments %}
+        <rect x="{{ s.x }}" y="{{ s.y }}" width="{{ s.w }}" height="{{ s.h }}"
+              fill="{{ s.fill }}" rx="{{ 4 if loop.first else 0 }}"/>
+        {% endfor %}
+        {% if col.income > 0 %}
+        <line class="income-mark" x1="{{ col.income_x1 }}" x2="{{ col.income_x2 }}"
+              y1="{{ col.income_y }}" y2="{{ col.income_y }}"/>
+        {% endif %}
+        <rect class="hitbox" x="{{ col.band_x }}" y="{{ timeline.pad_top }}"
+              width="{{ col.band_w }}" height="{{ timeline.plot_h }}"
+              data-tip data-title="{{ col.label }}"
+              data-rows='[{% for s in col.segments %}["{{ s.name }}","{{ s.amount|chf(0) }} CHF","{{ s.fill }}"]{{ ',' if not loop.last }}{% endfor %}]'
+              data-total="{{ col.spending|chf(2) }}" data-income="{{ col.income|chf(2) }}"
+              data-count="{{ col.count }}"
+              data-hint="{{ ('Ouvrir la journée' if col.detail else 'Cliquer pour zoomer') if col.drillable else '' }}"/>
+      </g>
+      {% endif %}
+      {% if loop.index0 % timeline.label_every == 0 %}
+      <text class="xlab" x="{{ col.x + col.w / 2 }}" y="{{ timeline.baseline + 18 }}" aria-hidden="true">{{ col.label }}</text>
+      {% endif %}
+      {% endfor %}
+
+      <line class="axisline" x1="{{ timeline.pad_left }}" x2="{{ timeline.width - 14 }}"
+            y1="{{ timeline.baseline }}" y2="{{ timeline.baseline }}"/>
+    </svg>
+  </div>
+  <div class="legend">
+    {% for l in stack_legend %}
+    <b><i style="background:{{ l.fill }}"></i>{{ l.name }}</b>
+    {% endfor %}
+    <b><i class="income-key"></i>Encaissé (repère)</b>
+  </div>
+  {% if stack == 'bucket' %}
+  <div class="muted note mt-3">
+    Ici « Save » ne compte que les versements sortants vers l'épargne. Le solde non
+    dépensé en fait aussi partie, mais n'a pas de transaction propre — il n'apparaît
+    donc que dans le bloc « Besoins, envies, épargne ».
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if day_strip %}
+<section class="block card pad">
+  <div class="chart-head">
+    <h3>Jour par jour</h3>
+    <div class="hint">cliquez une case pour le détail de la journée</div>
+  </div>
+  <div class="strip">
+    {% for c in day_strip.cells %}
+    <a class="{{ 'empty' if not c.level }}"
+       href="{{ url_for('dashboard.day', iso=c.start.isoformat()) }}"
+       style="background:var(--h{{ c.level }})"
+       data-tip data-title="{{ c.start|fr_date }}"
+       data-rows='[["Dépensé","{{ c.amount|chf(2) }} CHF",""],["Transactions","{{ c.count }}",""]]'
+       data-hint="Ouvrir la journée"
+       aria-label="{{ c.start|fr_date }} : {{ c.amount|chf(2) }} CHF"></a>
+    {% endfor %}
+  </div>
+  <div class="strip-scale">
+    <span>moins</span>
+    {% for i in range(6) %}<i class="{{ 'empty' if not i }}" style="background:var(--h{{ i }})"></i>{% endfor %}
+    <span>plus</span>
+    <span class="ml-3">seuils : {% for c in day_strip.cuts %}{{ c|chf(0) }}{{ ' · ' if not loop.last }}{% endfor %} CHF</span>
+  </div>
+</section>
+{% endif %}
+
+<section class="block grid-2">
+  <div class="card pad">
+    <div class="chart-head">
+      <h3>Où part l'argent</h3>
+      <div class="hint">{{ categories|length }} catégories</div>
+    </div>
+    {# Each category folds open on its subcategories and its main payees.
+       `by_category` returns both already; the app used to throw them away. The
+       row itself stays the drop target: `data-drop-category` is found with
+       closest(), so a dropped row lands in the category whether the block is
+       open or shut. #}
+    <div class="cat-list">
+      {% for c in category_bars %}
+      <details class="cat">
+        <summary class="cat-row" data-drop-category="{{ c.category }}">
+          <span class="chev" aria-hidden="true">▶</span>
+          <span class="b-name"><i class="dot" style="background:var(--s{{ c.slot }})"></i><span>{{ c.category }}</span></span>
+          <span class="b-track" data-tip data-title="{{ c.category }}"
+                data-rows='[["Total","{{ c.amount|chf(2) }} CHF","var(--s{{ c.slot }})"],["Part","{{ c.share|round(1) }} %",""],["Transactions","{{ c.count }}",""],["Moyenne","{{ c.average|chf(2) }} CHF",""]]'
+                data-hint="Déplier le détail"><i style="width:{{ c.pct|round(2) }}%;background:var(--s{{ c.slot }})"></i></span>
+          <span class="b-amt num">{{ c.amount|chf(0) }} CHF</span>
+          <span class="b-pct num">{{ c.share|round(1) }} %</span>
+        </summary>
+        <div class="cat-body">
+          <div>
+            <div class="mini-h">Sous-postes</div>
+            <table class="mini">
+              {% for s in c.subcategories %}
+              <tr>
+                <td class="m-name">{{ s.name }}</td>
+                <td class="num">{{ s.amount|chf(0) }} CHF · {{ s.count }}×</td>
+              </tr>
+              {% endfor %}
+            </table>
+          </div>
+          <div>
+            <div class="mini-h">Principaux bénéficiaires</div>
+            <table class="mini">
+              {% for m in c.top_merchants %}
+              <tr>
+                <td class="m-name">{{ m.name }}</td>
+                <td class="num">{{ m.amount|chf(0) }} CHF · {{ m.count }}×</td>
+              </tr>
+              {% endfor %}
+            </table>
+          </div>
+          <a class="btn ghost cat-link"
+             href="{{ url_for('dashboard.transactions', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'category': c.category}) }}">Voir les {{ c.count }} transactions</a>
+        </div>
+      </details>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="card pad">
+      <div class="chart-head">
+        <h3>Besoins, envies, épargne</h3>
+        <div class="hint">cliquez pour voir le détail, ou déposez-y une ligne</div>
+      </div>
+      <div class="bucket-bar">
+        {% for r in buckets.rows %}
+        {# `Save` splits into what was moved out and what merely stayed. The
+           unspent half is drawn hollow and is not a link: it has no transaction
+           behind it, so a click would land on an empty table. #}
+        {% for p in r.parts %}
+        {% if p.hollow %}
+        <span class="bucket-seg hollow" style="width:{{ p.share|round(2) }}%"
+              data-tip data-title="{{ r.name }} — {{ p.name }}"
+              data-rows='[["Part des revenus","{{ p.share|round(1) }} %",""],["Montant","{{ p.amount|chf(2) }} CHF",""],["Transactions","aucune — c’est le solde resté sur le compte",""]]'
+              aria-label="{{ r.name }} — {{ p.name }}, {{ p.share|round(1) }} % des revenus"></span>
+        {% else %}
+        <a class="bucket-seg" style="width:{{ p.share|round(2) }}%;background:{{ bucket_fill[r.name] }}"
+           data-drop-bucket="{{ r.name }}"
+           href="{{ url_for('dashboard.transactions', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'bucket': r.name}) }}"
+           data-tip data-title="{{ r.name }} — {{ p.name }}"
+           data-rows='[["Part des revenus","{{ p.share|round(1) }} %","{{ bucket_fill[r.name] }}"],["Montant","{{ p.amount|chf(2) }} CHF",""],["Transactions","{{ p.count }}",""]]'
+           data-hint="Voir les transactions"
+           aria-label="{{ r.name }} — {{ p.name }}, voir les transactions"></a>
+        {% endif %}
+        {% endfor %}
+        {% if not r.parts and r.share > 0 %}
+        <a class="bucket-seg" style="width:{{ r.share|round(2) }}%;background:{{ bucket_fill[r.name] }}"
+           data-drop-bucket="{{ r.name }}"
+           href="{{ url_for('dashboard.transactions', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'bucket': r.name}) }}"
+           data-tip data-title="{{ r.name }}"
+           data-rows='[["Part des revenus","{{ r.share|round(1) }} %","{{ bucket_fill[r.name] }}"],["Montant","{{ r.amount|chf(2) }} CHF",""],["Transactions","{{ r.count }}",""]]'
+           data-hint="Voir les transactions"
+           aria-label="{{ r.name }} — voir les transactions"></a>
+        {% endif %}
+        {% endfor %}
+      </div>
+      <div class="bucket-list">
+        {% for r in buckets.rows %}
+        <a class="bucket-row" data-drop-bucket="{{ r.name }}"
+           href="{{ url_for('dashboard.transactions', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'bucket': r.name}) }}"
+           title="{% if r.name == 'Save' and buckets.residual > 0 %}L'essentiel de l'épargne est le solde non dépensé, qui n'a pas de transaction propre{% else %}Voir les {{ r.count }} transactions — ou y déposer une ligne pour l'y classer{% endif %}">
+          <i class="dot" style="background:{{ bucket_fill[r.name] }}"></i>
+          <span>{{ r.name }} <em class="muted no-italic f-sm">{{ r.count }}×</em></span>
+          <span class="b-pct num">{{ r.share|round(1) }} %</span>
+          <span class="b-amt num">{{ r.amount|chf(0) }} CHF</span>
+        </a>
+        {# Only when the split says something the row does not: a lone part
+           carries the row's own figures, and repeating them is noise. #}
+        {% for p in (r.parts if r.parts|length > 1 else []) %}
+        <div class="bucket-row bucket-sub">
+          <i class="dot{% if p.hollow %} hollow{% endif %}"
+             style="{% if not p.hollow %}background:{{ bucket_fill[r.name] }}{% endif %}"></i>
+          <span>{{ p.name }}</span>
+          <span class="b-pct num">{{ p.share|round(1) }} %</span>
+          <span class="b-amt num">{{ p.amount|chf(0) }} CHF</span>
+        </div>
+        {% endfor %}
+        {% endfor %}
+      </div>
+      <div class="muted note mt-3">
+        En part des revenus de la période ({{ buckets.income|chf(0) }} CHF), donc les quatre blocs
+        totalisent 100 %.
+        {% if buckets.residual > 0 %}
+        {% if buckets.transferred_to_savings > 0 %}
+        L'épargne se lit en deux temps : {{ buckets.transferred_to_savings|chf(0) }} CHF versés
+        vers un placement, et {{ buckets.residual|chf(0) }} CHF simplement restés sur le compte.
+        {% else %}
+        Aucun versement vers un placement sur cette période : les {{ buckets.residual|chf(0) }} CHF
+        d'épargne sont entièrement du solde non dépensé, resté en liquide sur le compte.
+        {% endif %}
+        Ce solde n'a pas de transaction propre, donc son détail est vide.
+        {% endif %}
+      </div>
+      {% if panels.shares %}
+      {# A plain link, not data-nav: the swap does not follow an anchor, and the
+         point is to land on the chart, unfolded. #}
+      <p class="mt-3 f-sm">
+        <a href="{{ dash_url(shares=shares.base, **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'grain': 'auto' if period.auto_grain else period.grain}) }}#p-shares">Voir l'évolution mois par mois ↓</a>
+      </p>
+      {% endif %}
+    </div>
+
+    <div class="card pad">
+      <div class="chart-head"><h3>Coût du custodian</h3></div>
+      {% if custodian.count %}
+      <div class="bucket-row grid-1fr-auto mb-2">
+        <span>Marge de change</span>
+        <span class="b-amt num">{{ custodian.markup_chf|chf(2) }} CHF</span>
+      </div>
+      <div class="bucket-row grid-1fr-auto mb-2">
+        <span class="muted">Taux effectif</span>
+        <span class="b-amt num muted">{{ custodian.effective_pct|round(2) }} %</span>
+      </div>
+      <div class="bucket-row grid-1fr-auto">
+        <span class="muted">Volume converti</span>
+        <span class="b-amt num muted">{{ custodian.volume_chf|chf(0) }} CHF sur {{ custodian.count }} opérations</span>
+      </div>
+      {% else %}
+      <div class="muted f-md">Aucune conversion de devise sur cette période.</div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% include "partials/shares_panel.html.j2" %}
+
+<section class="block card pad">
+  <div class="chart-head">
+    <h3>Principaux bénéficiaires</h3>
+    <div class="hint">sur la période</div>
+  </div>
+  <div class="bars">
+    {% set mtop = top_merchants[0].amount if top_merchants else 1 %}
+    {% for m in top_merchants %}
+    <a class="bar"
+       href="{{ url_for('dashboard.transactions', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'q': m.name}) }}"
+       data-tip data-title="{{ m.name }}"
+       data-rows='[["Total","{{ m.amount|chf(2) }} CHF",""],["Paiements","{{ m.count }}",""],["Moyenne","{{ m.average|chf(2) }} CHF",""],["Médiane","{{ m.median|chf(2) }} CHF",""],["Catégorie","{{ m.category }}{% if m.mixed %} ({{ m.category_share|round(0)|int }} %){% endif %}",""]{% if m.mixed %},["Réparti sur","{{ m.categories }} catégories",""]{% endif %}]'
+       data-hint="Voir les transactions">
+      <span class="b-name"><span>{{ m.name }}</span></span>
+      <span class="b-track"><i style="width:{{ (m.amount / mtop * 100)|round(2) }}%;background:var(--s0)"></i></span>
+      <span class="b-amt num">{{ m.amount|chf(0) }} CHF</span>
+      <span class="b-pct num">{{ m.count }}×</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+
+{% include "partials/panels.html.j2" %}
+
+<section class="block card pad" id="tx">
+  <div class="chart-head">
+    <h3>Transactions</h3>
+    <div class="hint">de la période affichée</div>
+  </div>
+  <div id="txPanel">
+    {% include "partials/transactions.html.j2" %}
+  </div>
+</section>

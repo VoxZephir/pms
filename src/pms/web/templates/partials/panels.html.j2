@@ -1,0 +1,1032 @@
+<script id="chartData" type="application/json">{{ chart_data_json|safe }}</script>
+
+{# The analytical panels, each scoped to the selected window.
+   Each one is conditional: a seasonality chart over three weeks would be noise
+   dressed as a finding, so a panel that cannot say anything is simply absent. #}
+
+{% if panels.balance and charts.balance %}
+{% set bal = charts.balance %}
+<section class="block card pad" id="p-balance">
+  <div class="chart-head">
+    <h3>Évolution du solde</h3>
+    <div class="hint">{{ bal.start|fr_date }} → {{ bal.end|fr_date }}</div>
+  </div>
+  <div class="chart-scroll">
+    <svg class="chart" id="balChart" viewBox="0 0 {{ bal.width }} {{ bal.height }}" role="img"
+         aria-label="Évolution du solde du compte en francs suisses">
+      {% for t in bal.ticks %}
+      <line class="gridline" x1="{{ bal.pad_left }}" x2="{{ bal.width - 12 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick" x="{{ bal.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|chf(0) }}</text>
+      {% endfor %}
+      <line class="crosshair" id="balCross" y1="{{ bal.pad_top }}" y2="{{ bal.baseline }}"/>
+      <polygon points="{{ bal.area }}" fill="var(--s0)" opacity=".10"/>
+      <polyline points="{{ bal.line }}" fill="none" stroke="var(--s0)" stroke-width="2"
+                stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="{{ bal.peak.x }}" cy="{{ bal.peak.y }}" r="4.5" fill="var(--s0)"
+              stroke="var(--surface)" stroke-width="2"/>
+      <text class="dlabel" x="{{ bal.peak.x }}" y="{{ bal.peak.y - 11 }}"
+            text-anchor="{{ 'end' if bal.peak.x > bal.width - 130 else 'middle' }}">
+        pic {{ bal.peak.value|chf(0) }} CHF
+      </text>
+      <text class="tick" x="{{ bal.pad_left }}" y="{{ bal.baseline + 18 }}">{{ bal.start.strftime('%m.%Y') }}</text>
+      <text class="tick" x="{{ bal.width - 12 }}" y="{{ bal.baseline + 18 }}" text-anchor="end">{{ bal.end.strftime('%m.%Y') }}</text>
+      <line class="axisline" x1="{{ bal.pad_left }}" x2="{{ bal.width - 12 }}" y1="{{ bal.baseline }}" y2="{{ bal.baseline }}"/>
+      <circle class="focus-dot" data-slot="0" r="4.5" fill="var(--s0)" stroke="var(--surface)" stroke-width="2"/>
+      <rect id="balHit" x="{{ bal.pad_left }}" y="{{ bal.pad_top }}" width="{{ bal.width - 12 - bal.pad_left }}" height="{{ bal.plot_h }}" fill="transparent"/>
+    </svg>
+  </div>
+  <div class="muted note mt-3">
+    Solde du compte CHF après chaque mouvement, tel qu'imprimé par la banque.
+  </div>
+</section>
+{% endif %}
+
+{% if panels.ibkr %}
+{% set ib = charts.ibkr %}
+{% set h = ibkr.hero %}
+{% set mwr = ibkr.perf == 'mwr' %}
+{% set here = {'from': period.start.isoformat(), 'to': period.end.isoformat(),
+               'grain': 'auto' if period.auto_grain else period.grain} %}
+{% macro signed_pct(rate, digits=1) %}{% if rate is none %}—{% else %}{{ '+' if rate > 0 }}{{ (rate * 100)|round(digits) }} %{% endif %}{% endmacro %}
+{% macro signed_chf(v) %}{% set r = v|round(0)|int %}{{ '+' if r > 0 }}{{ r|chf(0) }}{% endmacro %}
+{# Coloured only when what is printed is not zero: −0.3 CHF prints "0", and
+   a red 0 reads as a loss. `tone` for rates (printed to 0.1 %), `tone_chf`
+   for francs (printed to the franc). #}
+{% macro tone(v) %}{{ 'pos' if v is not none and v >= 0.0005 else 'neg' if v is not none and v <= -0.0005 else '' }}{% endmacro %}
+{% macro tone_chf(v) %}{{ 'pos' if v is not none and v >= 0.5 else 'neg' if v is not none and v <= -0.5 else '' }}{% endmacro %}
+{# The savings: the money outside the spending, all three pockets. Read top
+   down: what it is worth and why it moved (the headline), what it is made
+   of, how each pocket did, how it evolved -- and, folded, the risk figures
+   for whoever wants them. One pocket picker, labelled, instead of value
+   boxes that were clickable without saying so; every control is a link, so
+   the view is in the URL. #}
+<section class="block card pad" id="p-ibkr">
+  <div class="chart-head">
+    <h3>Épargne</h3>
+    <div class="hint">au {{ period.end|fr_date }}</div>
+    <span class="seg" role="group" aria-label="Poche affichée">
+      {% for f in focuses %}
+      <a class="{{ 'on' if f.active }}" data-nav {% if f.active %}aria-current="true"{% endif %}
+         href="{{ dash_url(**dict(here, focus=f.id)) }}">{{ f.label }}</a>
+      {% endfor %}
+    </span>
+  </div>
+
+  {% if ibkr.stale %}
+  {# A snapshot carries its last value forward, so a stale figure reads like
+     a current one; say which pocket is behind rather than let it pass. #}
+  <div class="callout warn mb-3" data-stale>
+    <b>Données en retard.</b>
+    {% for note in ibkr.stale %}{{ note }}{{ ' · ' if not loop.last }}{% endfor %}.
+    À recapturer en session Claude Code : <code>/epargne</code>.
+  </div>
+  {% endif %}
+
+  {# The headline answers the question the panel is opened for: what is it
+     worth, how much did it move, and how much of that was money put in
+     rather than earned. #}
+  <div class="savings-hero" data-hero="{{ h.pocket }}">
+    <div>
+      <div class="k-label">{{ h.name }}</div>
+      <div class="hero-val">{{ h.value|chf(0) }}<small>CHF</small></div>
+      <div class="k-note">au {{ period.end|fr_date }}</div>
+    </div>
+    <div>
+      <div class="k-label">Sur la période</div>
+      <div class="hero-val {{ tone_chf(h.change) }}">{{ signed_chf(h.change) }}<small>CHF</small></div>
+      <div class="k-note">
+        <b>{{ signed_chf(h.put_in) }}</b>
+        {% if h.pocket == 'total' %}mis de côté (entrées − dépenses)
+        {% elif h.pocket == 'swissquote' %}d'entrées nettes (salaires − dépenses − virements)
+        {% else %}versés{% endif %}
+        · <b class="{{ tone_chf(h.gain) }}">{{ signed_chf(h.gain) }}</b>
+        {{ "d'intérêts" if h.pocket == 'swissquote' else 'de rendement' }}
+      </div>
+    </div>
+    <div data-perf="{{ ibkr.perf }}">
+      <div class="k-label flex-row gap-2">Performance
+        <span class="seg seg-sm" role="group" aria-label="Mesure de la performance">
+          {% for p in perfs %}
+          <a class="{{ 'on' if p.active }}" data-nav title="{{ p.aria }}"
+             href="{{ dash_url(**dict(here, perf=p.id)) }}">{{ p.label }}</a>
+          {% endfor %}
+        </span>
+      </div>
+      {% if h.pocket == 'swissquote' %}
+      <div class="hero-val">—</div>
+      <div class="k-note">un compte courant n'a pas de rendement à mesurer : son solde suit les entrées et les dépenses</div>
+      {% else %}
+      {% set rate = h.mwr if mwr else h.twr %}
+      {% set annual = h.mwr_annual if mwr else h.twr_annual %}
+      <div class="hero-val {{ tone(rate) }}">{{ signed_pct(rate) }}</div>
+      <div class="k-note">
+        {% if mwr %}l'argent placé, chaque versement pondéré par sa durée
+        {% else %}les placements, versements retirés{% endif %}
+        {% if annual is not none %} · {{ signed_pct(annual) }} par an{% endif %}
+      </div>
+      {% if ibkr.bench %}
+      {# The yardsticks over the same window: price indices, dividends not
+         included -- said in the tooltip, not hidden. #}
+      <div class="k-note" data-bench title="indices de prix en CHF, dividendes non compris">
+        Sur la même période :
+        {% for b in ibkr.bench %}{{ b.name }} <b class="{{ tone(b.rate) }}">{{ signed_pct(b.rate) }}</b>{% if b.since %} (depuis le {{ b.since|fr_date }}){% endif %}{{ ' · ' if not loop.last }}{% endfor %}
+      </div>
+      {% endif %}
+      {% if ibkr.attribution and h.pocket == 'ibkr' %}
+      {% set a = ibkr.attribution %}
+      {# The franc return split in two: what the fund did in its own currency,
+         what the dollar did against the franc -- and the rest (dividends,
+         cash, fees, deposit timing), so the parts add up. #}
+      <div class="k-note" data-attribution>
+        dont fonds {{ a.fund_name }} en USD <b class="{{ tone(a.fund) }}">{{ signed_pct(a.fund) }}</b>
+        · dollar contre franc <b class="{{ tone(a.fx) }}">{{ signed_pct(a.fx) }}</b>
+        · reste <b class="{{ tone(a.rest) }}">{{ signed_pct(a.rest) }}</b>
+      </div>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  {# What the pocket is made of. The bar and its legend carry the same
+     numbers -- the old callout repeated them a third time. #}
+  {% if ibkr.parts %}
+  <div class="chart-head mt-5">
+    <h3>Composition</h3>
+    <span class="seg" role="group" aria-label="Répartition de l'épargne">
+      {% for s in splits %}
+      <a class="{{ 'on' if s.active }}" data-nav
+         href="{{ dash_url(**dict(here, split=s.id)) }}">{{ s.label }}</a>
+      {% endfor %}
+    </span>
+  </div>
+  {% set colors = ['var(--s0)', 'var(--s2)', 'var(--s3)', 'var(--s4)', 'var(--s5)', 'var(--s6)', 'var(--s7)'] %}
+  {% set bar_total = ibkr.parts | map(attribute='value') | sum %}
+  <div class="split-bar" role="img" aria-label="Répartition de l'épargne">
+    {% for part in ibkr.parts %}
+    <i style="width:{{ (part.value / bar_total * 100)|round(1) if bar_total else 0 }}%;background:{{ colors[loop.index0 % colors|length] }}"
+       data-tip data-title="{{ part.name }}"
+       data-rows='[["Valeur","{{ part.value|chf(0) }} CHF",""],["Part","{{ (part.value / bar_total * 100)|round(1) if bar_total else 0 }} %",""]]'></i>
+    {% endfor %}
+  </div>
+  <ul class="split-legend">
+    {% for part in ibkr.parts %}
+    <li><i style="background:{{ colors[loop.index0 % colors|length] }}"></i>
+      <span>{{ part.name }}</span>
+      <b>{{ part.value|chf(0) }}</b>
+      <span class="muted">{{ (part.value / bar_total * 100)|round(1) if bar_total else 0 }} %</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {# The comparison the panel exists for, in one table: what each pocket
+     holds, what was put in, what it made, how it did, what it cost. #}
+  <div class="chart-head mt-5">
+    <h3>Par poche</h3>
+    <div class="hint">{{ period.start|fr_date }} → {{ period.end|fr_date }} · performance {{ 'MWR' if mwr else 'TWR' }} sur la période</div>
+  </div>
+  <div class="tbl-wrap">
+    <table class="data pockets" data-pockets>
+      <thead>
+        <tr><th scope="col">Poche</th><th scope="col" class="r">Valeur</th>
+          <th scope="col" class="r">Part</th>
+          <th scope="col" class="r" title="argent entré moins argent sorti sur la période">Apports nets</th>
+          <th scope="col" class="r" title="variation de valeur moins les apports">Rendement</th>
+          <th scope="col" class="r">TWR</th><th scope="col" class="r">MWR</th>
+          <th scope="col" class="r">Frais</th></tr>
+      </thead>
+      <tbody>
+        {% for r in ibkr.pockets %}
+        <tr class="{{ 'on' if r.pocket == ibkr.focus }}{{ ' total' if r.pocket == 'total' }}">
+          <td class="t-lab"><a data-nav href="{{ dash_url(**dict(here, focus=r.pocket)) }}">{{ r.name }}</a>
+            {% if r.pocket == 'finpension' %}<span class="chip" title="valeur estimée entre deux relevés à partir d'indices de référence">estimé</span>{% endif %}</td>
+          <td class="r num">{{ r.value|chf(0) }}</td>
+          <td class="r num">{{ (r.share|round(1)) ~ ' %' if r.share is not none else '—' }}</td>
+          <td class="r num">{{ signed_chf(r.put_in) }}</td>
+          <td class="r num {{ tone_chf(r.gain) }}">{{ signed_chf(r.gain) }}</td>
+          <td class="r num {{ tone(r.twr) }}">{{ signed_pct(r.twr) }}</td>
+          <td class="r num {{ tone(r.mwr) }}">{{ signed_pct(r.mwr) }}</td>
+          <td class="r num" {% if r.fees and r.fees.detail %}title="{{ r.fees.detail }}"{% endif %}>
+            {{ (r.fees.amount|chf(2)) if r.fees else '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {# What each institution charged, item by item: the same question asked
+     of three. Fund costs (TER) sit inside the prices and on no statement --
+     said, not estimated. #}
+  <details class="fold mt-3" id="savings-fees">
+    <summary><span class="chev" aria-hidden="true">▸</span>
+      <h4>Frais sur la période</h4>
+      <span class="hint">{{ ibkr.fees.total.amount|chf(2) }} CHF · hors frais internes des fonds</span></summary>
+    <div class="tbl-wrap">
+      <table class="data">
+        <thead><tr><th scope="col">Poche</th><th scope="col" class="r">Frais</th>
+          <th scope="col" class="r">Part de la valeur</th><th scope="col">Détail</th></tr></thead>
+        <tbody>
+          {% for pocket in ('swissquote', 'ibkr', 'finpension') if ibkr.fees[pocket] is defined %}
+          {% set f = ibkr.fees[pocket] %}
+          <tr>
+            <td class="t-lab">{{ {'swissquote': 'Swissquote', 'ibkr': 'IBKR', 'finpension': '3a finpension'}[pocket] }}</td>
+            <td class="r num">{{ f.amount|chf(2) }} CHF</td>
+            <td class="r num">{{ ('%.2f'|format(f.pct)) ~ ' %' if f.pct is not none else '—' }}</td>
+            <td>{{ f.detail }}
+              {% for item in f['items'] %}<div class="t-sub">{{ item.date|fr_date }} · {{ item.label }} · {{ item.amount|chf(2) }} CHF</div>{% endfor %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+
+  {% if charts.ibkr %}
+  <div class="chart-head mt-5">
+    <h3>Évolution</h3>
+    <div class="hint" data-curve="{{ scale }}-{{ ibkr.perf }}">
+      {% if scale == 'index' and mwr %}base 100 au premier point · MWR depuis ce point, versements pondérés à leur date
+      {% elif scale == 'index' %}base 100 au premier point · TWR, versements retirés
+      {% else %}en francs · la mesure TWR / MWR s'applique en base 100{% endif %}
+      · un point par {{ grains | selectattr('active') | map(attribute='label') | first | lower }}</div>
+    <span class="seg" role="group" aria-label="Lecture de la courbe">
+      {% for s in scales %}
+      <a class="{{ 'on' if s.active }}" data-nav title="{{ s.aria }}"
+         href="{{ dash_url(**dict(here, scale=s.id)) }}">{{ s.label }}</a>
+      {% endfor %}
+    </span>
+  </div>
+  <div class="chart-scroll">
+    <svg class="chart" id="ibkrChart" viewBox="0 0 {{ ib.width }} {{ ib.height }}" role="img"
+         aria-label="Évolution de l'épargne sur la période"
+         data-scale="{{ scale }}" data-pad-top="{{ ib.geom.padTop }}"
+         data-plot-h="{{ ib.geom.plotH }}">
+      {% for t in ib.ticks %}
+      <line class="gridline" x1="{{ ib.pad_left }}" x2="{{ ib.width - 12 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick axis-y" x="{{ ib.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|chf(0) }}</text>
+      {% endfor %}
+      <line class="crosshair" id="ibkrCross" y1="{{ ib.pad_top }}" y2="{{ ib.baseline }}"/>
+      {% for d in ib.draw %}
+      <polyline points="{{ d.points }}" fill="none" stroke="var(--s{{ d.slot }})"
+                stroke-width="{{ d.width }}" stroke-linejoin="round" stroke-linecap="round"
+                {% if d.dash %}stroke-dasharray="5 4"{% endif %}
+                data-key="{{ d.key }}"/>
+      {% endfor %}
+      <text class="tick" x="{{ ib.pad_left }}" y="{{ ib.baseline + 18 }}">{{ ib.start.strftime('%m.%Y') }}</text>
+      <text class="tick" x="{{ ib.width - 12 }}" y="{{ ib.baseline + 18 }}" text-anchor="end">{{ ib.end.strftime('%m.%Y') }}</text>
+      <line class="axisline" x1="{{ ib.pad_left }}" x2="{{ ib.width - 12 }}" y1="{{ ib.baseline }}" y2="{{ ib.baseline }}"/>
+      {% for d in ib.dots %}
+      <circle class="focus-dot" data-slot="{{ d.slot }}" data-key="{{ d.key }}" r="4.5"
+              fill="var(--s{{ d.slot }})" stroke="var(--surface)" stroke-width="2"/>
+      {% endfor %}
+      <rect id="ibkrHit" x="{{ ib.pad_left }}" y="{{ ib.pad_top }}" width="{{ ib.width - 12 - ib.pad_left }}" height="{{ ib.plot_h }}" fill="transparent"/>
+    </svg>
+  </div>
+  <div class="legend">
+    {% for l in ib.legend %}
+    <b class="on" data-legend="{{ l.key }}" role="button" tabindex="0"
+       title="Afficher ou masquer cette ligne"
+       aria-pressed="true">{% if l.dash %}<i class="dash-key" style="border-top-color:var(--s{{ l.slot }})"></i>{% else %}<i style="background:var(--s{{ l.slot }})"></i>{% endif %}{{ l.name }}</b>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if ibkr.risk %}
+  {% set rk = ibkr.risk %}
+  {# Folded: figures for whoever wants them, not the first thing to read.
+     Daily from the window's first day; annual rates only over a year. #}
+  <details class="fold mt-5" id="savings-risk">
+    <summary><span class="chev" aria-hidden="true">▸</span>
+      <h3>Risque et statistiques</h3>
+      <span class="hint">{{ rk.points }} jours, mesurés chaque jour</span></summary>
+    <div class="tbl-wrap">
+      <table class="data">
+        <thead><tr><th></th>
+          {% for col in rk.columns %}<th scope="col" class="r">{{ col }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for row in rk.rows %}
+          <tr>
+            <td class="t-lab" title="{{ row.why }}">{{ row.label }}<div class="t-sub">{{ row.why }}</div></td>
+            {% for cell in row.cells %}
+            <td class="r num {{ 'neg' if cell.text.startswith('-') }}">{{ cell.text }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="muted note mt-3">
+      {% if not rk.yearly %}Moins d'un an : les taux annuels (et Sharpe, Sortino, Calmar qui en dépendent) ne sont pas extrapolés.{% endif %}
+      La colonne 3a mesure une estimation : entre deux relevés, sa valeur suit des indices de référence, pas les fonds eux-mêmes.
+      {% if rk.cash_share %}L'épargne totale compte {{ (rk.cash_share * 100)|round|int }} % de compte courant à rendement nul : sa volatilité est diluée d'autant.{% endif %}
+      Taux sans risque : 0,5 % (2026).
+    </div>
+  </details>
+  {% endif %}
+
+  <p class="muted note mt-5" id="savings-sources">
+    <b>Sources.</b>
+    Swissquote : le relevé de la banque, ligne par ligne.
+    IBKR{% if ibkr.opened %} (ouvert le {{ ibkr.opened|fr_date }}){% endif %} :
+    {% if ibkr.reconstructed_until %}valeur reconstruite chaque semaine jusqu'au {{ ibkr.reconstructed_until|fr_date }}
+    depuis l'historique des transactions et les cours, puis{% endif %}
+    valeur quotidienne du courtier, capturée le {{ ibkr.captured_on|fr_date if ibkr.captured_on else ibkr.captured_at[:10] }} ;
+    versements et frais {{ "de l'historique des transactions" if ibkr.journal_source else 'lus dans le relevé Swissquote' }}.
+    {% if ibkr.finpension %}3a : {{ ibkr.finpension.value|chf(0) }} CHF relevés dans l'app finpension le
+    {{ ibkr.finp_as_of|fr_date if ibkr.finp_as_of else ibkr.finpension.value_as_of }}, estimé depuis par des indices de référence ; {{ ibkr.finpension.deposits|chf(0) }} CHF versés en tout.{% endif %}
+    L'app ne lit jamais les comptes en direct : <code>/epargne</code> les met à jour.
+  </p>
+</section>
+{% endif %}
+
+{% if highlights %}
+<section class="block" id="p-highlights">
+  <div class="chart-head mb-3"><h3>Faits marquants</h3></div>
+  <div class="hl-grid">
+    {% for h in highlights %}
+    <div class="card hl">
+      <div class="ic">{{ h.icon }}</div>
+      <div class="min-w-0">
+        <div class="h-label">{{ h.label }}</div>
+        <div class="h-val">{{ h.value }}</div>
+        <div class="h-detail">{{ h.detail }}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if panels.income and charts.income %}
+{% set ib = charts.income %}
+{# Who was paying, and when that changed. Each column is split by *share* of
+   that period, not by amount: the timeline above already carries how much came
+   in (the income marker), and scaling by amount here would let one large month
+   flatten the transition this panel exists to show. #}
+<section class="block card pad" id="p-income">
+  <div class="chart-head">
+    <h3>D'où vient l'argent</h3>
+    <div class="hint">
+      {{ income_payers }} payeur{{ 's' if income_payers > 1 }}
+      {%- if ib.gap_count %} · {{ ib.gap_count }} période{{ 's' if ib.gap_count > 1 }} sans aucune entrée{% endif %}
+    </div>
+  </div>
+  <div class="chart-scroll">
+    <svg class="chart" viewBox="0 0 {{ ib.width }} {{ ib.height }}" role="img"
+         aria-label="Sources de revenu dans le temps, une couleur par payeur">
+      {% for col in ib.columns %}
+      {% if col.empty %}
+      {# Hollow, never grey: a period with nothing coming in has to be
+         unmistakably empty, not a shade that reads as a small amount. #}
+      <rect class="income-gap" x="{{ col.x }}" y="{{ ib.pad_top }}"
+            width="{{ col.w }}" height="{{ ib.band_h }}"/>
+      {% else %}
+      {% for s in col.segments %}
+      <rect x="{{ s.x }}" y="{{ s.y }}" width="{{ s.w }}" height="{{ s.h }}" fill="{{ s.fill }}"/>
+      {% endfor %}
+      {% endif %}
+      <rect class="hitbox" x="{{ col.x }}" y="{{ ib.pad_top }}"
+            width="{{ col.w }}" height="{{ ib.band_h }}"
+            data-tip data-title="{{ col.label }}"
+            data-rows='[{% if col.empty %}["Aucune entrée","—",""]{% else %}{% for s in col.segments %}["{{ s.name }}","{{ s.amount|chf(0) }} CHF · {{ s.share|round(0)|int }} %","{{ s.fill }}"]{{ ',' if not loop.last }}{% endfor %}{% endif %}]'
+            data-total="{{ col.total|chf(2) }}"/>
+      {% if loop.index0 % ib.label_every == 0 %}
+      <text class="xlab" x="{{ col.x + col.w / 2 }}" y="{{ ib.baseline + 18 }}">{{ col.label }}</text>
+      {% endif %}
+      {% endfor %}
+      <line class="axisline" x1="{{ ib.pad_left }}" x2="{{ ib.width - 14 }}"
+            y1="{{ ib.baseline }}" y2="{{ ib.baseline }}"/>
+    </svg>
+  </div>
+  <div class="tbl-wrap mt-4">
+    <table class="data">
+      <thead><tr>
+        <th>Payeur</th>
+        <th>Du</th><th>Au</th>
+        <th class="r" data-type="num">Versements</th>
+        <th class="r" data-type="num">Total</th>
+        <th class="r" data-type="num">Part</th>
+      </tr></thead>
+      <tbody>
+        {% for s in income_sources %}
+        <tr>
+          <td class="t-lab">
+            <i class="dot" style="background:{{ s.fill }}"></i>
+            {% if s.folded %}{{ s.label }}
+            {% else %}
+            <a href="{{ url_for('dashboard.transactions', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'q': s.label, 'dir': 'in'}) }}">{{ s.label }}</a>
+            {% endif %}
+          </td>
+          <td class="num">{{ s.first|fr_date }}</td>
+          <td class="num">{{ s.last|fr_date }}</td>
+          <td class="r num">{{ s.count }}</td>
+          <td class="r num">{{ s.amount|chf(2) }}</td>
+          <td class="r num">{{ s.share|round(1) }} %</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="muted note mt-3">
+    La bande donne la <b>part</b> de chaque payeur dans la période, pas le montant — le
+    combien est déjà sur le graphique du haut, en repère d'encaissement. Au-delà des
+    plus gros payeurs, le reste est replié sur « Autres » : les huit teintes sont validées
+    pour le contraste et le daltonisme, une neuvième ne le serait pas. Ce qui est replié
+    est surtout des remboursements et des virements entre particuliers — la ligne « Autres »
+    en donne le nombre et le total.
+  </div>
+</section>
+{% endif %}
+
+{% if panels.missing %}
+{# The app already knows which counterparties come round on a rhythm; this is
+   the one thing it never said out loud -- that one of them has not. Only
+   commitments that are both evenly spaced and billed monthly or less often get
+   in here, so a lunch place is never announced as an overdue direct debit. #}
+<section class="block card pad" id="p-missing">
+  <div class="chart-head">
+    <h3>Engagements sans passage récent</h3>
+    <div class="hint">au {{ period.end|fr_date }}, la fin de la période affichée</div>
+  </div>
+  <div class="tbl-wrap">
+    <table class="data">
+      <thead><tr>
+        <th>Bénéficiaire</th><th>Catégorie</th>
+        <th>Dernier passage</th><th>Attendu vers</th>
+        <th class="r" data-type="num">Montant habituel</th>
+        <th class="r" data-type="num">Retard</th>
+      </tr></thead>
+      <tbody>
+        {% for m in missing %}
+        <tr>
+          <td class="t-lab">
+            <a href="{{ url_for('dashboard.transactions', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'q': m.label}) }}">{{ m.label }}</a>
+            {% if m.ended %}
+            <span class="chip" title="Silencieux depuis plus de trois fois son intervalle — plus probablement résilié qu'oublié">semble arrêté</span>
+            {% endif %}
+          </td>
+          <td><span class="chip">{{ m.category }}</span></td>
+          <td class="num">{{ m.last|fr_date }}</td>
+          <td class="num">{{ m.expected|fr_date }}</td>
+          <td class="r num">{{ m.average|chf(2) }} CHF<span class="muted f-sm"> · tous les {{ m.interval|round|int }} j</span></td>
+          <td class="r num">{{ (m.gap - m.interval)|round|int }} j</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="muted note mt-3">
+    Le rythme est l'écart médian entre deux passages, pas la moyenne : un mois sauté
+    étirerait la moyenne et masquerait précisément ce qu'on cherche. Les tout derniers
+    jours d'un relevé étant toujours incomplets, rien n'est signalé avant une semaine
+    pleine de retard au-delà de l'intervalle habituel.
+  </div>
+</section>
+{% endif %}
+
+{% if panels.fixed and charts.fixed %}
+{% set fc = charts.fixed %}
+<section class="block card pad" id="p-fixed">
+  <div class="chart-head">
+    <h3>Socle contraint et dépenses choisies</h3>
+    <div class="hint">socle médian {{ fixed.monthly_floor|chf(0) }} CHF/mois</div>
+  </div>
+  <div class="chart-scroll">
+    <svg class="chart" viewBox="0 0 {{ fc.width }} {{ fc.height }}" role="img"
+         aria-label="Dépenses mensuelles réparties entre socle contraint et dépenses variables">
+      {% for t in fc.ticks %}
+      <line class="gridline" x1="{{ fc.pad_left }}" x2="{{ fc.width - 12 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick" x="{{ fc.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|chf(0) }}</text>
+      {% endfor %}
+      {% for col in fc.columns %}
+      <g class="col-group">
+        <rect class="colhl" x="{{ col.band_x }}" y="{{ fc.pad_top }}" width="{{ col.band_w }}" height="{{ fc.plot_h }}" rx="6"/>
+        <rect x="{{ col.x }}" y="{{ col.fixed_y }}" width="{{ col.w }}" height="{{ col.fixed_h }}" fill="var(--s0)"/>
+        <rect x="{{ col.x }}" y="{{ col.variable_y }}" width="{{ col.w }}" height="{{ col.variable_h }}" fill="var(--s1)" rx="4"/>
+        <rect class="hitbox" x="{{ col.band_x }}" y="{{ fc.pad_top }}" width="{{ col.band_w }}" height="{{ fc.plot_h }}"
+              data-tip data-title="{{ col.label }}"
+              data-rows='[["Socle contraint","{{ col.fixed|chf(0) }} CHF","var(--s0)"],["Variable","{{ col.variable|chf(0) }} CHF","var(--s1)"],["Total","{{ (col.fixed + col.variable)|chf(0) }} CHF",""]]'/>
+      </g>
+      {% if loop.index0 % fc.label_every == 0 %}
+      <text class="xlab" x="{{ col.x + col.w / 2 }}" y="{{ fc.baseline + 18 }}">{{ col.label }}</text>
+      {% endif %}
+      {% endfor %}
+      <line class="axisline" x1="{{ fc.pad_left }}" x2="{{ fc.width - 12 }}" y1="{{ fc.floor_y }}" y2="{{ fc.floor_y }}" opacity=".85"/>
+      <text class="dlabel" x="{{ fc.width - 14 }}" y="{{ fc.floor_y - 7 }}" text-anchor="end">socle médian {{ fc.floor|chf(0) }} CHF</text>
+      <line class="axisline" x1="{{ fc.pad_left }}" x2="{{ fc.width - 12 }}" y1="{{ fc.baseline }}" y2="{{ fc.baseline }}"/>
+    </svg>
+  </div>
+  <div class="legend">
+    <b><i class="sw-0"></i>Socle contraint — {{ fixed.fixed_share|round(1) }} %</b>
+    <b><i class="sw-1"></i>Dépenses variables</b>
+  </div>
+  <details class="raw mt-4">
+    <summary class="muted clickable f-md">
+      Voir les {{ fixed.commitment_count }} engagements récurrents
+    </summary>
+    <div class="tbl-wrap mt-3">
+      <table class="data sortable-table">
+        <thead><tr>
+          <th>Bénéficiaire</th><th>Catégorie</th>
+          <th class="r" data-type="num">Mois</th>
+          <th class="r" data-type="num">Moyenne</th>
+          <th class="r" data-type="num">Total</th>
+        </tr></thead>
+        <tbody>
+          {% for d in fixed.commitments %}
+          <tr>
+            <td class="t-lab">{{ d.label }}</td>
+            <td><span class="chip">{{ d.category }}</span></td>
+            <td class="r num">{{ d.months if d.months else '—' }}</td>
+            <td class="r num">{{ d.average|chf(2) if d.average else '—' }}</td>
+            <td class="r num">{{ d.total|chf(2) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  <div class="muted note mt-3">
+    Fixe = contractuel (loyer, assurances, téléphonie, redevance) ou revenant sur au moins
+    six mois avec un montant stable. Un supermarché fréquenté chaque semaine revient, mais
+    le montant reste un choix — il n'entre donc pas dans le socle.
+  </div>
+</section>
+{% endif %}
+
+{% if panels.monthly %}
+{# Months × categories, as bars: one row per category, one little bar per
+   month. The shape of each row is the story -- the December spike on the
+   food line, the flat line on rent -- which a grid of numbers hides. Each
+   row is scaled to its own busiest month. #}
+<section class="block card pad" id="p-monthly">
+  <div class="chart-head">
+    <h3>Dépenses par mois</h3>
+    <div class="hint">une barre par mois · survolez pour le détail</div>
+  </div>
+  <div class="monthly-rows">
+    {% for r in monthly %}
+    <div class="m-row">
+      <span class="m-name" title="{{ r.name }}">
+        <i class="dot" style="background:var(--s{{ r.slot }})"></i>{{ r.name }}
+      </span>
+      <span class="m-bars" role="img" aria-label="{{ r.name }} par mois">
+        {% for b in r.bars %}
+        {% if b.amount %}
+        <i class="m-bar" style="height:{{ b.h }}%;background:var(--s{{ r.slot }})"
+           data-tip data-title="{{ b.label }}"
+           data-rows='[["Dépensé","{{ b.amount|chf(0) }} CHF",""]]'></i>
+        {% endif %}
+        {% endfor %}
+      </span>
+      <span class="m-total" title="médiane {{ r.median|chf(0) }} CHF/mois">
+        {{ r.total|chf(0) }} <small>CHF</small>
+      </span>
+      {% if r.budget %}
+      <span class="m-budget">
+        <span class="b-track">
+          <i style="width:{{ [r.gauge_pct, 100]|min }}%;background:{{ 'var(--critical)' if r.gauge_pct > 100 else 'var(--s2)' }}"></i>
+        </span>
+        <span class="m-budget-label {{ 'neg' if r.gauge_pct > 100 }}"
+              title="médiane mensuelle de la fenêtre contre le budget déclaré — pas le mois courant (il se lit sur les barres)">
+          médiane {{ r.median|chf(0) }} · budget {{ r.budget|chf(0) }}
+          {% if r.gauge_pct > 100 %}· +{{ (r.gauge_pct - 100)|round(0)|int }} % au-dessus du budget{% endif %}
+        </span>
+        <form method="post" action="{{ url_for('dashboard.budgets_edit') }}" class="d-inline">
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="category" value="{{ r.name }}">
+          <button class="btn small" type="submit" title="Retirer le budget de {{ r.name }}">×</button>
+        </form>
+      </span>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  <form method="post" action="{{ url_for('dashboard.budgets_edit') }}" class="row-form mt-3">
+    <input type="hidden" name="action" value="add">
+    {% include "partials/error_summary.html.j2" %}
+    <div class="field">
+      <label class="f-label" for="budget-category">Catégorie</label>
+      <select name="category" id="budget-category">
+        {% for c in filter_categories %}<option>{{ c }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field{% if form_errors.get('budget-amount') %} field-invalid{% endif %}">
+      <label class="f-label" for="budget-amount">Budget mensuel, en CHF</label>
+      {% if form_errors.get('budget-amount') %}
+      <p class="field-error" id="budget-amount-error">{{ form_errors['budget-amount'] }}</p>
+      {% endif %}
+      <input type="number" name="amount" id="budget-amount" step="0.01" min="0.01" required
+             value="{{ form_values.get('budget-amount', '') }}"
+             {% if form_errors.get('budget-amount') %}aria-invalid="true" aria-describedby="budget-amount-error"{% endif %}>
+    </div>
+    <button class="btn" type="submit">Définir un budget</button>
+  </form>
+  <div class="muted note mt-3">
+    Hauteur relative à la plus grosse barre de chaque catégorie · la jauge
+    compare la <b>médiane mensuelle</b> de la fenêtre au budget déclaré
+    (rouge si la médiane le dépasse — le mois courant se lit sur les barres) ·
+    budgets dans <code>data/budgets.json</code>, hors du dépôt.
+  </div>
+</section>
+{% endif %}
+
+{% if panels.calendar and charts.calendar %}
+{% set cal = charts.calendar %}
+<section class="block card pad" id="p-calendar">
+  <div class="chart-head">
+    <h3>Calendrier des dépenses</h3>
+    <div class="hint">cliquez une journée pour son détail</div>
+  </div>
+  <div class="chart-scroll">
+    {% for y in cal.years %}
+    <div class="cal-strip">
+      <div class="cal-year">{{ y.year }}</div>
+      <svg class="chart" style="min-width:{{ y.width }}px" viewBox="0 0 {{ y.width }} {{ cal.strip_h + 18 }}">
+        {% for d in range(7) %}
+        {% if d % 2 == 0 %}
+        <text class="tick" aria-hidden="true" x="0" y="{{ d * cal.pitch + 8 }}">{{ cal.days[d] }}</text>
+        {% endif %}
+        {% endfor %}
+        {% for m in y.months %}
+        <text class="tick" aria-hidden="true" x="{{ m.x }}" y="{{ cal.strip_h + 12 }}">{{ m.label }}</text>
+        {% endfor %}
+        {# One line per day, and no tooltip payload: the day's figures ride in
+           #chartData once, keyed by date, instead of being spelled out on each
+           of 730 cells -- the calendar was 35-47 % of the page. #}
+        {% for c in y.cells %}
+        <a href="{{ url_for('dashboard.day', iso=c.date.isoformat()) }}" aria-label="{{ c.date.strftime('%d.%m.%Y') }} : {{ c.amount|chf(2) }} CHF, {{ c.count }} transaction{{ 's' if c.count != 1 }}"><rect class="cell{{ ' empty' if not c.level }}" x="{{ c.x }}" y="{{ c.y }}" width="{{ cal.cell }}" height="{{ cal.cell }}" fill="var(--h{{ c.level }})" data-tip/></a>
+        {% endfor %}
+      </svg>
+    </div>
+    {% endfor %}
+  </div>
+  <div class="strip-scale">
+    <span>moins</span>
+    {% for i in range(6) %}<i class="{{ 'empty' if not i }}" style="background:var(--h{{ i }})"></i>{% endfor %}
+    <span>plus</span>
+    <span class="ml-3">seuils : {% for c in cal.cuts %}{{ c|chf(0) }}{{ ' · ' if not loop.last }}{% endfor %} CHF</span>
+  </div>
+  {# The grid only says its figures on hover; the table is its twin, one row
+     per day that spent anything, same days in the same order. It is the
+     longest table on the page, so it is built when asked for: app.js fills it
+     from #chartData on the first unfold; without JavaScript the link renders
+     it here, unfolded. #}
+  <details class="raw raw-table mt-4" data-lazy-table="calendar"{% if calendar_table %} open{% endif %}>
+    <summary class="muted clickable f-md">Voir le détail en table</summary>
+    {% if not calendar_table %}
+    <p class="muted f-sm mt-3" data-lazy-fallback>
+      <a href="{{ dash_url(table='calendar', **{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'grain': 'auto' if period.auto_grain else period.grain}) }}#p-calendar">Afficher la table</a>
+      — une ligne par jour de dépense.
+    </p>
+    {% else %}
+    <div class="tbl-wrap tbl-scroll">
+      <table class="data">
+        <thead><tr>
+          <th class="l">Date</th>
+          <th class="r">Dépensé</th>
+          <th class="r">Transactions</th>
+        </tr></thead>
+        <tbody>
+          {% for y in cal.years %}
+          {% for c in y.cells if c.count %}
+          <tr>
+            <td class="num">{{ c.date|fr_date }}</td>
+            <td class="r num">{{ c.amount|chf(2) }}</td>
+            <td class="r num">{{ c.count }}</td>
+          </tr>
+          {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </details>
+</section>
+{% endif %}
+
+{% if panels.years and charts.years %}
+{% set yc = charts.years %}
+{# Folded by default, like the other panels one reads now and then: the
+   dashboard was seventeen screens long. The sommaire unfolds it. #}
+<section class="block card pad" id="p-years">
+  <details class="fold">
+  <summary>
+    <span class="chev" aria-hidden="true">▸</span>
+    <h3>Cumul des dépenses, année par année</h3>
+    <span class="hint">même jour de l'année, axe unique en CHF</span>
+  </summary>
+  <div class="chart-scroll">
+    <svg class="chart" id="yearChart" viewBox="0 0 {{ yc.width }} {{ yc.height }}" role="img"
+         aria-label="Cumul des dépenses par année, superposé au même jour de l'année">
+      {% for t in yc.ticks %}
+      <line class="gridline" x1="{{ yc.pad_left }}" x2="{{ yc.width - 44 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick" x="{{ yc.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|chf(0) }}</text>
+      {% endfor %}
+      {% for m in yc.months %}
+      <text class="xlab" x="{{ m.x }}" y="{{ yc.baseline + 18 }}">{{ m.label }}</text>
+      {% endfor %}
+      <line class="crosshair" id="yearCross" y1="{{ yc.pad_top }}" y2="{{ yc.baseline }}"/>
+      {% for l in yc.lines %}
+      <polyline points="{{ l.points }}" fill="none" stroke="var(--s{{ l.slot }})" stroke-width="2"
+                stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="{{ l.end.x }}" cy="{{ l.end.y }}" r="4" fill="var(--s{{ l.slot }})"
+              stroke="var(--surface)" stroke-width="2"/>
+      <text class="dlabel" x="{{ l.end.x + 7 }}" y="{{ l.end.y + 4 }}">{{ l.year }}</text>
+      <circle class="focus-dot" data-slot="{{ l.slot }}" r="4.5" fill="var(--s{{ l.slot }})"
+              stroke="var(--surface)" stroke-width="2"/>
+      {% endfor %}
+      <line class="axisline" x1="{{ yc.pad_left }}" x2="{{ yc.width - 44 }}" y1="{{ yc.baseline }}" y2="{{ yc.baseline }}"/>
+      <rect id="yearHit" x="{{ yc.pad_left }}" y="{{ yc.pad_top }}" width="{{ yc.width - 44 - yc.pad_left }}" height="{{ yc.plot_h }}" fill="transparent"/>
+    </svg>
+  </div>
+  <div class="legend">
+    {% for l in yc.lines %}
+    <b><i style="background:var(--s{{ l.slot }})"></i>{{ l.year }} — {{ l.total|chf(0) }} CHF{% if l.partial %} (année partielle){% endif %}</b>
+    {% endfor %}
+  </div>
+  {# Twin of the hover-only curves: the legend's own rows, in the same order,
+     with the same totals -- a partial year says so here too. #}
+  <details class="raw raw-table mt-4">
+    <summary class="muted clickable f-md">Voir le détail en table</summary>
+    <div class="tbl-wrap">
+      <table class="data">
+        <thead><tr>
+          <th class="l">Année</th>
+          <th class="r">Total dépensé</th>
+        </tr></thead>
+        <tbody>
+          {% for l in yc.lines %}
+          <tr>
+            <td class="t-lab">{{ l.year }}{% if l.partial %} <span class="chip">année partielle</span>{% endif %}</td>
+            <td class="r num">{{ l.total|chf(0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  </details>
+</section>
+{% endif %}
+
+<section class="block card pad" id="p-profiles">
+  <details class="fold">
+  <summary>
+    <span class="chev" aria-hidden="true">▸</span>
+    <h3>Par jour de semaine et par mois</h3>
+    <span class="hint">où tombent les dépenses dans la semaine et dans l'année</span>
+  </summary>
+  <div class="grid-2 mt-4">
+  <div>
+    <div class="chart-head"><h4>Jours de la semaine</h4></div>
+    <div class="bars">
+      {% for d in charts.weekday.rows %}
+      <div class="bar geo-grid" data-tip data-title="{{ d.day }}" data-rows='[["Dépensé","{{ d.amount|chf(2) }} CHF",""],["Transactions","{{ d.count }}",""]{% if d.count %},["Moyenne","{{ (d.amount / d.count)|chf(2) }} CHF",""]{% endif %}]'>
+        <span class="b-name"><span>{{ d.day }}</span></span>
+        <span class="b-track"><i style="width:{{ d.pct|round(2) }}%;background:var(--s0)"></i></span>
+        <span class="b-amt num">{{ d.amount|chf(0) }} CHF</span>
+        <span class="b-pct num">{{ d.count }}×</span>
+      </div>
+      {% endfor %}
+    </div>
+    {# Twin of the hover-only bars: the same seven days, the same figures. #}
+    <details class="raw raw-table mt-4">
+      <summary class="muted clickable f-md">Voir le détail en table</summary>
+      <div class="tbl-wrap">
+        <table class="data">
+          <thead><tr>
+            <th class="l">Jour</th>
+            <th class="r">Dépensé</th>
+            <th class="r">Transactions</th>
+            <th class="r">Moyenne</th>
+          </tr></thead>
+          <tbody>
+            {% for d in charts.weekday.rows %}
+            <tr>
+              <td class="t-lab">{{ d.day }}</td>
+              <td class="r num">{{ d.amount|chf(2) }}</td>
+              <td class="r num">{{ d.count }}</td>
+              <td class="r num">{{ (d.amount / d.count)|chf(2) if d.count else '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+
+  <div>
+    <div class="chart-head">
+      <h4>{% if panels.season and charts.season %}Moyenne par mois calendaire{% else %}Dépenses par carte, par pays{% endif %}</h4>
+    </div>
+    {% if panels.season and charts.season %}
+    <div class="bars">
+      {% for r in charts.season.rows %}
+      <div class="bar geo-grid" data-tip data-title="{{ r.label }}" data-rows='[["Moyenne","{{ r.average|chf(0) }} CHF",""],["Années observées","{{ r.years }}",""]]'>
+        <span class="b-name"><span>{{ r.label }}</span></span>
+        <span class="b-track"><i style="width:{{ r.pct|round(2) }}%;background:var(--s0)"></i></span>
+        <span class="b-amt num">{{ r.average|chf(0) }} CHF</span>
+        <span class="b-pct num">{{ r.years }}a</span>
+      </div>
+      {% endfor %}
+    </div>
+    {# Twin of the hover-only month bars: the twelve months in calendar order. #}
+    <details class="raw raw-table mt-4">
+      <summary class="muted clickable f-md">Voir le détail en table</summary>
+      <div class="tbl-wrap">
+        <table class="data">
+          <thead><tr>
+            <th class="l">Mois</th>
+            <th class="r">Dépense moyenne</th>
+            <th class="r">Années observées</th>
+          </tr></thead>
+          <tbody>
+            {% for r in charts.season.rows %}
+            <tr>
+              <td class="t-lab">{{ r.label }}</td>
+              <td class="r num">{{ r.average|chf(2) }}</td>
+              <td class="r num">{{ r.years }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% else %}
+    {% include "partials/countries.html.j2" %}
+    {% endif %}
+  </div>
+  </div>
+  </details>
+</section>
+
+{% if panels.season and panels.country and charts.country %}
+<section class="block card pad" id="p-country">
+  <details class="fold">
+  <summary>
+    <span class="chev" aria-hidden="true">▸</span>
+    <h3>Dépenses par carte, par pays</h3>
+    <span class="hint">les virements n'ont pas de pays, seulement un IBAN</span>
+  </summary>
+  {% include "partials/countries.html.j2" %}
+  {# Twin of the hover-only bars: the same countries in the same order, with
+     the same amounts, counts and shares. #}
+  <details class="raw raw-table mt-4">
+    <summary class="muted clickable f-md">Voir le détail en table</summary>
+    <div class="tbl-wrap">
+      <table class="data">
+        <thead><tr>
+          <th class="l">Pays</th>
+          <th class="r">Dépensé</th>
+          <th class="r">Paiements</th>
+          <th class="r">Part</th>
+        </tr></thead>
+        <tbody>
+          {% for r in charts.country.rows %}
+          <tr>
+            <td class="t-lab">{{ r.country }}</td>
+            <td class="r num">{{ r.amount|chf(2) }}</td>
+            <td class="r num">{{ r.count }}</td>
+            <td class="r num">{{ r.share|round(1) }} %</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  </details>
+</section>
+{% endif %}
+
+{% if panels.custodian %}
+<section class="block card pad" id="p-custodian">
+  <details class="fold">
+  <summary>
+    <span class="chev" aria-hidden="true">▸</span>
+    <h3>Ce que le custodian a prélevé</h3>
+    <span class="hint">{{ custodian.markup_chf|chf(2) }} CHF de marge sur {{ custodian.count }} conversions</span>
+  </summary>
+
+  <div class="kpis mb-5">
+    <div class="card kpi flat">
+      <div class="k-label">Marge de change</div>
+      <div class="k-val">{{ custodian.markup_chf|chf(2) }}<small>CHF</small></div>
+    </div>
+    <div class="card kpi flat">
+      <div class="k-label">Taux effectif</div>
+      <div class="k-val">{{ custodian.effective_pct|round(2) }}<small>%</small></div>
+    </div>
+    <div class="card kpi flat">
+      <div class="k-label">Volume converti</div>
+      <div class="k-val">{{ custodian.volume_chf|chf(0) }}<small>CHF</small></div>
+    </div>
+    <div class="card kpi flat">
+      <div class="k-label">Intérêts débiteurs</div>
+      <div class="k-val">{{ custodian.interest_chf|chf(2) }}<small>CHF</small></div>
+    </div>
+    <div class="card kpi flat">
+      <div class="k-label">Frais explicites</div>
+      <div class="k-val">{{ custodian.explicit_fees_chf|chf(2) }}<small>CHF</small></div>
+    </div>
+  </div>
+
+  <div class="callout mb-5">
+    <b>La colonne « Frais et taxes » du relevé est vide.</b> Swissquote ne facture aucune
+    commission explicite sur ce compte : le coût est l'écart entre le taux de change affiché
+    et le montant réellement débité. Cet écart vaut {{ custodian.median_markup_pct|round(2) }} %
+    en médiane et reste stable d'une opération à l'autre, ce qui en fait une marge tarifaire
+    et non un aléa de marché.
+  </div>
+
+  {% if custodian.references %}
+  <div class="callout mb-5">
+    <b>La même chose ailleurs</b> — taux publiés vérifiés le
+    {{ custodian.references_as_of }} (les grilles bougent) :
+    {% for r in custodian.references %}
+    <br><b>{{ r.name }}</b> ({{ r.rate }} %) : ≈ {{ r.would_cost|chf(0) }} CHF
+    au lieu de {{ custodian.markup_chf|chf(0) }}
+    {% if r.saved > 0 %}— {{ r.saved|chf(0) }} CHF de moins{% else %}— plus cher{% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if finpension and finpension.fees %}
+  <div class="muted note mt-3">
+    Aussi facturé hors Swissquote : frais administratifs du 3a finpension —
+    {{ finpension.fees|chf(2) }} CHF depuis le {{ finpension.first }}
+    (dépôts {{ finpension.deposits|chf(0) }} CHF, soit
+    ~{{ (finpension.fees / finpension.deposits * 100)|round(1) }} %).
+  </div>
+  {% endif %}
+
+  {% if custodian.by_currency %}
+  <div class="bars mb-5">
+    {% for b in custodian.by_currency %}
+    <div class="bar cust-grid" data-tip data-title="Conversions {{ b.currency }}" data-rows='[["Marge prélevée","{{ b.markup_chf|chf(2) }} CHF","var(--s{{ loop.index0 }})"],["Taux effectif","{{ b.markup_pct|round(2) }} %",""],["Volume converti","{{ b.volume_chf|chf(2) }} CHF",""],["Opérations","{{ b.count }}",""]]'>
+      <span class="b-name"><i class="dot" style="background:var(--s{{ loop.index0 }})"></i><span>{{ b.currency }}</span></span>
+      <span class="b-track"><i style="width:{{ (b.markup_chf / custodian.markup_chf * 100)|round(2) }}%;background:var(--s{{ loop.index0 }})"></i></span>
+      <span class="b-amt num">{{ b.markup_chf|chf(2) }} CHF</span>
+      <span class="b-pct num">{{ b.markup_pct|round(2) }} %</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if charts.custodian %}
+  {% set cc = charts.custodian %}
+  <div class="chart-scroll">
+    <svg class="chart" viewBox="0 0 {{ cc.width }} {{ cc.height }}" role="img"
+         aria-label="Cumul de la marge de change prélevée">
+      {% for t in cc.ticks %}
+      <line class="gridline" x1="{{ cc.pad_left }}" x2="{{ cc.width - 12 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+      <text class="tick" x="{{ cc.pad_left - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.value|round(0)|int }}</text>
+      {% endfor %}
+      <polyline points="{{ cc.line }}" fill="none" stroke="var(--s1)" stroke-width="2"
+                stroke-linejoin="round" stroke-linecap="round"/>
+      {% for d in cc.dots %}
+      <circle cx="{{ d.x }}" cy="{{ d.y }}" r="3.2" fill="var(--s1)" stroke="var(--surface)" stroke-width="2" data-tip data-title="{{ d.conv.date.strftime('%d.%m.%Y') }} · {{ d.conv.currency }}" data-rows='[["Montant crédité","{{ d.conv.foreign_amount|chf(2) }} {{ d.conv.currency }}",""],["Valeur au taux affiché","{{ d.conv.reference_chf|chf(2) }} CHF",""],["Réellement débité","{{ d.conv.charged_chf|chf(2) }} CHF",""],["Marge","{{ d.conv.markup_chf|chf(2) }} CHF · {{ d.conv.markup_pct|round(2) }} %",""],["Cumul","{{ d.running|chf(2) }} CHF",""]]' class="clickable"/>
+      {% endfor %}
+      <text class="dlabel" x="{{ cc.last.x - 6 }}" y="{{ cc.last.y - 12 }}" text-anchor="end">
+        {{ cc.total|chf(2) }} CHF au total
+      </text>
+      <text class="tick" x="{{ cc.pad_left }}" y="{{ cc.baseline + 18 }}">{{ cc.start.strftime('%m.%Y') }}</text>
+      <text class="tick" x="{{ cc.width - 12 }}" y="{{ cc.baseline + 18 }}" text-anchor="end">{{ cc.end.strftime('%m.%Y') }}</text>
+      <line class="axisline" x1="{{ cc.pad_left }}" x2="{{ cc.width - 12 }}" y1="{{ cc.baseline }}" y2="{{ cc.baseline }}"/>
+    </svg>
+  </div>
+  {% endif %}
+
+  <details class="raw mt-4">
+    <summary class="muted clickable f-md">
+      Voir les {{ custodian.count }} conversions en détail
+    </summary>
+    <div class="tbl-wrap mt-3 tbl-scroll">
+      <table class="data sortable-table">
+        <thead><tr>
+          <th data-type="date">Date</th><th>Devise</th>
+          <th class="r" data-type="num">Montant</th>
+          <th class="r" data-type="num">Taux affiché</th>
+          <th class="r" data-type="num">Valeur au taux affiché</th>
+          <th class="r" data-type="num">Débité</th>
+          <th class="r" data-type="num">Marge</th>
+          <th class="r" data-type="num">%</th>
+        </tr></thead>
+        <tbody>
+          {% for c in custodian.conversions %}
+          <tr>
+            <td class="num">{{ c.date|fr_date }}</td>
+            <td>{{ c.currency }}{% if c.manual %} <span class="chip">manuel</span>{% endif %}</td>
+            <td class="r num">{{ c.foreign_amount|chf(2) }}</td>
+            <td class="r num">{{ c.printed_rate }}</td>
+            <td class="r num">{{ c.reference_chf|chf(2) }}</td>
+            <td class="r num">{{ c.charged_chf|chf(2) }}</td>
+            <td class="r num">{{ c.markup_chf|chf(2) }}</td>
+            <td class="r num">{{ c.markup_pct|round(2) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+  </details>
+</section>
+{% endif %}

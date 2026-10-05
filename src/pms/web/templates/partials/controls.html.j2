@@ -1,0 +1,70 @@
+{# Period controls. Every control is a real link or a real form submit, so the
+   whole temporal navigation works with JavaScript off; app.js only upgrades it
+   to swap <main> in place instead of reloading the page. #}
+<div class="control-bar" id="controls">
+
+  {% for g in period.preset_groups %}
+  <span class="seg-group">
+    <span class="seg-label" title="{{ 'Depuis le début du mois, du trimestre ou de l’année, jusqu’au dernier mouvement du relevé' if g.name == 'À ce jour' }}">{{ g.name }}</span>
+    <span class="seg" role="group" aria-label="Périodes — {{ g.name }}">
+      {% for p in g.buttons %}
+      <a class="{{ 'on' if p.active }}" data-nav
+         href="{{ dash_url(preset=p.id, grain=(request.args.get('grain') or 'auto')) }}">{{ p.label }}</a>
+      {% endfor %}
+    </span>
+  </span>
+  {% endfor %}
+
+  {# A window that matches no preset was typed by hand: the badge says so
+     instead of letting the segments all look inactive. #}
+  {% if not (period.presets | selectattr('active') | first) %}
+  <span class="chip muted" title="Fenêtre saisie à la main, aucun préréglage ne la recouvre">Personnalisé</span>
+  {% endif %}
+
+  <form class="range" method="get" action="{{ url_for('dashboard.dashboard') }}" data-nav-form>
+    <label for="from">du</label>
+    <input type="date" id="from" name="from" value="{{ period.start.isoformat() }}"
+           min="{{ bounds.low.isoformat() }}" max="{{ bounds.high.isoformat() }}">
+    <label for="to">au</label>
+    <input type="date" id="to" name="to" value="{{ period.end.isoformat() }}"
+           min="{{ bounds.low.isoformat() }}" max="{{ bounds.high.isoformat() }}">
+    <input type="hidden" name="grain" value="{{ 'auto' if period.auto_grain else period.grain }}">
+    {% if stack != 'category' %}<input type="hidden" name="stack" value="{{ stack }}">{% endif %}
+    <button class="btn" type="submit">Appliquer</button>
+  </form>
+
+  <div class="spacer"></div>
+
+  <span class="seg-label">Granularité</span>
+  <div class="seg" role="group" aria-label="Granularité">
+    <a class="{{ 'on' if period.auto_grain }}" data-nav
+       href="{{ dash_url(**{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'grain': 'auto'}) }}">Auto</a>
+    {% for g in grains %}
+    <a class="{{ 'on' if g.active and not period.auto_grain }}" data-nav
+       href="{{ dash_url(**{'from': period.start.isoformat(), 'to': period.end.isoformat(), 'grain': g.id}) }}">{{ g.label }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<nav class="crumbs" aria-label="Fil d'ariane">
+  {% for c in period.crumbs %}
+    {% if c.current %}
+    <span class="here" aria-current="page">{{ c.label }}</span>
+    {% else %}
+    <a data-nav href="{{ dash_url(**{'from': c.start.isoformat(), 'to': c.end.isoformat(), 'grain': 'auto'}) }}">{{ c.label }}</a>
+    {% endif %}
+    {% if not loop.last %}<em aria-hidden="true">›</em>{% endif %}
+  {% endfor %}
+  {% if neighbours %}
+  <span class="crumb-nav" aria-label="Période précédente ou suivante">
+    {% if neighbours.prev.available %}
+    <a class="nav-arrow prev" data-nav title="Période précédente ({{ neighbours.label }})"
+       href="{{ dash_url(**{'from': neighbours.prev.start.isoformat(), 'to': neighbours.prev.end.isoformat(), 'grain': period.grain}) }}">‹ {{ neighbours.prev_label }}</a>
+    {% else %}<span class="nav-arrow off">‹</span>{% endif %}
+    {% if neighbours.next.available %}
+    <a class="nav-arrow next" data-nav title="Période suivante ({{ neighbours.label }})"
+       href="{{ dash_url(**{'from': neighbours.next.start.isoformat(), 'to': neighbours.next.end.isoformat(), 'grain': period.grain}) }}">{{ neighbours.next_label }} ›</a>
+    {% else %}<span class="nav-arrow off">›</span>{% endif %}
+  </span>
+  {% endif %}
+</nav>

@@ -1,0 +1,20 @@
+{% if charts.country and charts.country.rows %}
+<div class="bars">
+  {% for r in charts.country.rows %}
+  <div class="bar geo-grid" data-tip data-title="{{ r.country }}" data-rows='[["Dépensé","{{ r.amount|chf(2) }} CHF",""],["Paiements","{{ r.count }}",""],["Part","{{ r.share|round(1) }} %",""]]'>
+    <span class="b-name"><span>{{ r.country }}</span></span>
+    <span class="b-track"><i style="width:{{ r.pct|round(2) }}%;background:var(--s0)"></i></span>
+    <span class="b-amt num">{{ r.amount|chf(0) }} CHF</span>
+    <span class="b-pct num">{{ r.count }}×</span>
+  </div>
+  {% endfor %}
+</div>
+<div class="muted note mt-3">
+  {{ geo.abroad|chf(0) }} CHF hors de Suisse, soit {{ geo.abroad_share|round(1) }} % des
+  paiements par carte — c'est cette part qui supporte la marge de change. Les
+  {{ geo.unlocated|chf(0) }} CHF de virements (loyer, assurances, impôts) n'ont pas
+  d'adresse et sont exclus de ce décompte.
+</div>
+{% else %}
+<div class="muted f-md">Aucun paiement par carte localisable sur cette période.</div>
+{% endif %}

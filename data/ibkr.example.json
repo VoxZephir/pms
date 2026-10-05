@@ -1,0 +1,55 @@
+{
+  "captured_at": "2026-08-02T21:10:00",
+  "source": "connecteur IBKR MCP (OAuth) — snapshot figé, pas une lecture en direct",
+  "base_currency": "CHF",
+  "account": {
+    "net_liquidation": 12345.0,
+    "equity_with_loan": 12345.0,
+    "buying_power": 37035.0,
+    "total_cash": 500.0,
+    "available_funds": 9000.0,
+    "initial_margin": 3000.0
+  },
+  "cash": [
+    {"currency": "USD", "amount": 500.0},
+    {"currency": "CHF", "amount": 0.0}
+  ],
+  "positions": [
+    {
+      "name": "EXEMPLE",
+      "quantity": 10.0,
+      "currency": "USD",
+      "market_price": 100.0,
+      "market_value": 1000.0,
+      "market_value_chf": 807.8,
+      "average_price": 80.0,
+      "unrealized_pnl": 200.0,
+      "unrealized_pnl_chf": 161.6,
+      "unrealized_pnl_pct": 25.0
+    }
+  ],
+  "other_accounts": [
+    {"name": "3a (exemple)", "value": 20000.0}
+  ],
+  "performance": {
+    "measure": "TWR",
+    "ytd_pct": 8.0,
+    "one_year_pct": 12.0,
+    "since_inception_pct": 12.0,
+    "inception": "2025-08-02"
+  },
+  "nav": [
+    ["2025-08-04", 9000.0],
+    ["2025-10-01", 9500.0],
+    ["2025-12-01", 9800.0],
+    ["2026-02-02", 10200.0],
+    ["2026-04-01", 10800.0],
+    ["2026-06-01", 11500.0],
+    ["2026-08-02", 12000.0]
+  ],
+  "nav_daily": [
+    ["2025-08-04", 30.0],
+    ["2025-08-05", 30.2],
+    ["2025-08-06", 30.1]
+  ]
+}

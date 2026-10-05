@@ -1,0 +1,30 @@
+# --- Personal financial data: NEVER commit ------------------------------
+# Bank statements and everything derived from them stay local.
+inbox/
+output/
+# Scratch space for screenshots and captures (OCR, review).
+temp_content/
+# data/ holds the ledger, the overrides and the personal rules. Ignore its
+# *contents* rather than the directory itself -- git cannot un-ignore a file
+# inside an ignored directory, and the rules template has to stay shareable.
+data/*
+!data/local_rules.example.json
+!data/plans.example.json
+!data/ibkr.example.json
+!data/budgets.example.json
+!data/finpension.example.json
+
+# --- Python -------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- Editors / OS -------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

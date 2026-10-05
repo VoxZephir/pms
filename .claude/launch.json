@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pms-web",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "pms.web", "--no-open", "--port", "5000"],
+      "port": 5000
+    },
+    {
+      "name": "pms-web-preview",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "pms.web", "--no-open", "--no-reload", "--port", "5057"],
+      "port": 5057
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img"
+     aria-label="Relevé Swissquote">
+  <!-- Three ascending bars: the dashboard's own mark, and about the most
+       detail that still reads at 16px. The tile is solid so the glyph keeps
+       its contrast on any browser-tab background, light or dark. -->
+  <rect width="32" height="32" rx="7" fill="#2a78d6"/>
+  <g fill="#ffffff">
+    <rect x="7"  y="18" width="5" height="8"  rx="1.6"/>
+    <rect x="13.5" y="13" width="5" height="13" rx="1.6"/>
+    <rect x="20" y="7"  width="5" height="19" rx="1.6"/>
+  </g>
+  <!-- The Swiss franc line: one stroke, enough to say "money" without
+       turning into mush at small sizes. -->
+  <rect x="6" y="27.4" width="20" height="1.8" rx="0.9" fill="#ffffff" opacity=".55"/>
+</svg>

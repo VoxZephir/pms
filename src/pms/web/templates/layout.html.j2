@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Relevé Swissquote{% endblock %}</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+<link rel="alternate icon" href="{{ url_for('static', filename='favicon.png') }}" sizes="32x32">
+<link rel="apple-touch-icon" href="{{ url_for('static', filename='favicon.png') }}">
+<meta name="theme-color" content="#2a78d6">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<script>
+  /* Applied before first paint so a dark-theme user never sees a light flash. */
+  try {
+    var t = localStorage.getItem("pms-theme");
+    if (t) document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+</script>
+{% block head %}{% endblock %}
+</head>
+<body id="top">
+
+{# First focusable element on every page: a keyboard user tabs past the
+   header and the whole control bar before reaching the content. #}
+<a class="skip-link" href="#main">Aller au contenu</a>
+
+<header class="top">
+  <div class="wrap top-row">
+    <div class="brand"><a href="{{ page_url('dashboard.dashboard') }}" class="no-underline">Relevé Swissquote</a></div>
+    <nav class="top-nav" aria-label="Navigation principale">
+      <a href="{{ page_url('dashboard.dashboard') }}" {{ 'aria-current="page"' if request.endpoint == 'dashboard.dashboard' }}>Tableau de bord</a>
+      <a href="{{ page_url('dashboard.analysis_page') }}" {{ 'aria-current="page"' if request.endpoint == 'dashboard.analysis_page' }}>Analyse</a>
+      <a href="{{ page_url('dashboard.previsions') }}" {{ 'aria-current="page"' if request.endpoint == 'dashboard.previsions' }}>Prévisions</a>
+      <a href="{{ page_url('dashboard.transactions') }}" {{ 'aria-current="page"' if request.endpoint == 'dashboard.transactions' }}>Transactions</a>
+      <a href="{{ page_url('dashboard.rules') }}" {{ 'aria-current="page"' if request.endpoint == 'dashboard.rules' }}>Corrections</a>
+    </nav>
+    <div class="spacer"></div>
+    {% block headerextra %}{% endblock %}
+    {# Hidden until app.js unhides it: every gesture it lists is JavaScript,
+       so without JavaScript the button would open nothing. #}
+    <button class="icon-btn" id="helpBtn" hidden aria-haspopup="dialog" aria-controls="shortcuts"
+            title="Raccourcis (?)" aria-label="Raccourcis clavier et gestes">?</button>
+    <button class="icon-btn" id="themeBtn" title="Basculer le thème" aria-label="Basculer le thème">◐</button>
+  </div>
+</header>
+
+{% block body %}{% endblock %}
+
+{# A plain anchor: works without JavaScript, like everything else. #}
+<a class="totop" href="#top" title="Revenir en haut" aria-label="Revenir en haut">↑</a>
+<div class="tip" id="tip"></div>
+{# Lives in the shell: the bulk action runs from the standalone transactions
+   page too, and applying 315 corrections with no confirmation and no undo
+   would be a trap. #}
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+{# The gestures nobody finds by looking. A native <dialog>: Escape and the
+   focus trap come with it. #}
+<dialog class="shortcuts" id="shortcuts" aria-labelledby="shortcutsTitle">
+  <h2 id="shortcutsTitle">Raccourcis et gestes</h2>
+  <dl>
+    <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>période précédente ou suivante : le mois, l'année… d'à côté, ou la même durée décalée</dd>
+    <dt><kbd>Échap</kbd></dt><dd>remonter d'un niveau dans le fil d'ariane</dd>
+    <dt>clic sur une colonne</dt><dd>zoomer sur cette période</dd>
+    <dt>glisser sur la frise</dt><dd>sélectionner une plage de dates</dd>
+    <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> dans le calendrier</dt><dd>passer d'un jour à l'autre, <kbd>Entrée</kbd> pour l'ouvrir</dd>
+    <dt>glisser une transaction</dt><dd>sur une catégorie ou un bloc Need / Want / Save, pour la reclasser</dd>
+    <dt>clic sur un en-tête de colonne</dt><dd>trier la table ; un second clic inverse l'ordre</dd>
+    <dt><kbd>1</kbd>…<kbd>9</kbd> <kbd>S</kbd> <kbd>Z</kbd> dans le tri des Twint</dt><dd>choisir une catégorie, passer, annuler le dernier</dd>
+    <dt><kbd>?</kbd></dt><dd>cette aide</dd>
+  </dl>
+  <form method="dialog"><button class="btn" autofocus>Fermer</button></form>
+</dialog>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

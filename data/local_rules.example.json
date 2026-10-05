@@ -1,0 +1,23 @@
+[
+ {
+  "_comment": "Copiez ce fichier en data/local_rules.json et adaptez-le. Il est gitignoré : c'est là que vont les règles qui nomment un employeur, une régie, un praticien ou une personne — elles n'ont rien à faire dans un dépôt public. Elles sont chargées AVANT les règles publiques et l'emportent donc sur elles.",
+  "category": "",
+  "subcategory": "",
+  "pattern": ""
+ },
+ {
+  "category": "Revenus",
+  "subcategory": "Salaire / clients",
+  "pattern": "Nom De Mon Employeur|Mon Client SA"
+ },
+ {
+  "category": "Logement",
+  "subcategory": "Loyer / régie",
+  "pattern": "Nom De Ma Regie"
+ },
+ {
+  "category": "Santé & assurance",
+  "subcategory": "Pharmacie & soins",
+  "pattern": "Mon Cabinet Dentaire|Mon Veterinaire"
+ }
+]
