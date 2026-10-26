@@ -8,7 +8,11 @@ import bisect
 import datetime as dt
 
 from ... import analysis
+from ... import benchmarks as benchmarks_module
+from ...buckets import NEED
+from ... import crypto as crypto_module
 from ... import finpension as finpension_module
+from ... import holdings as holdings_module
 from ... import ibkr as ibkr_module
 
 # How far a snapshot may lag the date on screen before the panel says so.
@@ -18,7 +22,7 @@ STALE_DAYS = 7
 
 
 def _stale_notes(ibkr: dict, finpension: dict | None,
-                 end: dt.date) -> list[str]:
+                 end: dt.date, crypto: dict | None = None) -> list[str]:
     """Which pocket shows a figure older than the window's end, and since when.
 
     Both snapshots carry their last known value forward to any later date,
@@ -46,7 +50,27 @@ def _stale_notes(ibkr: dict, finpension: dict | None,
         if frozen and (end - frozen).days > STALE_DAYS:
             notes.append(f"3a : valeur figée au {frozen:%d.%m.%Y}, "
                          f"{(end - frozen).days} jours avant le {end:%d.%m.%Y}")
+    if crypto and crypto.get("daily_series"):
+        last = crypto["daily_series"][-1][0]
+        if (end - last).days > STALE_DAYS:
+            notes.append(f"Crypto : cours arrêtés au {last:%d.%m.%Y}, "
+                         f"{(end - last).days} jours avant le {end:%d.%m.%Y} "
+                         f"(python -m pms --crypto)")
     return notes
+
+
+def _stale_benchmarks(benchmarks: dict[str, list], end: dt.date) -> list[str]:
+    """The picked indices that stop more than a week before the window's end:
+    the headline compares a pocket's return to date with an index's return
+    to its last capture -- a fortnight short, the comparison is off by it."""
+    behind = [(series[-1][0], name) for name, series in benchmarks.items()
+              if series and (end - series[-1][0]).days > STALE_DAYS]
+    if not behind:
+        return []
+    last = min(day for day, _ in behind)
+    return [f"Repères ({', '.join(name for _, name in behind)}) : cours arrêtés au "
+            f"{last:%d.%m.%Y}, {(end - last).days} jours avant le {end:%d.%m.%Y} "
+            f"(python -m pms --benchmarks)"]
 
 
 # How much of the brokerage NAV each curve key carries (see _evolution_row):
@@ -69,21 +93,20 @@ def _ibkr_share(key: str, ibkr: dict) -> float:
 
 # The curve keys that carry the Swissquote balance, and so its flows.
 _SWISS_KEYS = ("swiss", "cash", "total", "chf")
+# The keys that carry the crypto pocket: priced in dollars, no region.
+_CRYPTO_KEYS = ("crypto", "total", "usd", "geo_Autres")
 
-# The reference indices: the 3a's own proxies, captured daily since August
-# 2024 -- what a world ETF and the Swiss market did, in francs. Price
-# indices: their dividends are not in them, and the panel says so.
-BENCHMARKS = {"URTHxCHF": "MSCI World (CHF)", "SMI": "SMI"}
-
-
-def _benchmarks(ibkr: dict, finpension: dict | None) -> dict[str, list]:
-    """Name -> date-sorted (date, level), the proxies plus any index
-    captured into the IBKR snapshot."""
-    out = {}
-    proxies = (finpension or {}).get("proxy_series") or {}
-    for key, name in BENCHMARKS.items():
-        if proxies.get(key):
-            out[name] = sorted(proxies[key])
+def _benchmarks(ibkr: dict, finpension: dict | None,
+                available: dict | None = None,
+                selected=benchmarks_module.DEFAULT) -> dict[str, list]:
+    """Name -> date-sorted (date, level) for the indices picked: the public
+    catalogue, dividends reinvested (`benchmarks.py`), the 3a's own price
+    proxies where it is not captured, plus any index captured into the IBKR
+    snapshot. A price series is marked as such on the panel."""
+    if available is None:
+        available = benchmarks_module.available(None, finpension)
+    out = {available[key]["name"]: available[key]["series"]
+           for key in selected if key in available}
     out.update(ibkr.get("benchmarks") or {})
     return out
 
@@ -143,7 +166,7 @@ def _attribution(ibkr: dict, book: "SavingsBook", start: dt.date,
     fees, the timing of a deposit -- closes the gap, so the three compound
     exactly to the return shown: (1 + fund)(1 + fx)(1 + rest) = 1 + TWR.
 
-    Only for a single dollar fund (RSST since July 2024); a mixed or
+    Only for a single dollar fund; a mixed or
     unpriced holding gives no split rather than an invented one.
     """
     first = start
@@ -174,12 +197,13 @@ def _benchmark_return(series: list, start: dt.date,
     a, b = _level(series, first), _level(series, end)
     return (b / a - 1 if a and b else None), first
 
-POCKETS = ("total", "swissquote", "ibkr", "finpension")
-POCKET_NAMES = {"total": "Épargne totale", "swissquote": "Swissquote",
-                "ibkr": "IBKR", "finpension": "3a finpension"}
+POCKETS = ("total", "swissquote", "ibkr", "finpension", "crypto", "titres")
+POCKET_NAMES = {"titres": "Titres non cotés", "total": "Épargne totale", "swissquote": "Swissquote",
+                "ibkr": "IBKR", "finpension": "3a finpension",
+                "crypto": "Crypto (Revolut)"}
 
 # Under a year, an annual rate is an extrapolation: one good month printed
-# as +136 %/an. GIPS forbids it for that reason; so does this panel.
+# as over +100 %/an. GIPS forbids it for that reason; so does this panel.
 MIN_DAYS_ANNUALIZED = 365
 
 
@@ -192,15 +216,31 @@ class SavingsBook:
 
     * a transfer from Swissquote to IBKR leaves one pocket and enters the
       other: a flow out of Swissquote, a flow into IBKR, nothing for the
-      total (24.09.2026: +34 % for September before this);
+      total (the first such transfer read as a month of tens of percent
+      before this);
     * IBKR is worth nothing before its first NAV point, and its opening value
       is money arriving -- funded from outside the ledger, it read as a gain
-      in the total (148 in base 100 instead of 124);
-    * a 3a deposit is a flow into the 3a (23.05.2024 for the first one).
+      in the total (far too high in base 100);
+    * a 3a deposit is a flow into the 3a;
+    * a crypto purchase is a flow into the crypto pocket, and out of the
+      cash it was paid from -- Revolut's euros, which the cash therefore
+      counts (`analysis.cash_points`); a staking reward is return.
     """
 
-    def __init__(self, statement, ibkr: dict, finpension: dict | None):
+    def __init__(self, statement, ibkr: dict, finpension: dict | None,
+                 crypto: dict | None = None, securities: list[dict] | None = None):
         self.statement, self.ibkr, self.finpension = statement, ibkr, finpension
+        # Unlisted shares declared on the tax page (`holdings.py`), when the
+        # page counts them: their yearly tax value, their dividends as
+        # their return.
+        self.securities = securities or []
+        self._titres = holdings_module.pocket_flows(statement, self.securities)
+        self.titres_start = min((holdings_module.start(h) for h in self.securities), default=None)
+        self.crypto = crypto if crypto and crypto.get("daily_series") else None
+        self.crypto_start = self.crypto["daily_series"][0][0] if self.crypto else None
+        self._crypto: dict[dt.date, float] = {}
+        for day, amount in (self.crypto or {}).get("flow_entries", []):
+            self._crypto[day] = self._crypto.get(day, 0.0) + amount
         self._ledger: dict[dt.date, float] = {}
         for txn in statement.transactions:
             self._ledger[txn.date] = self._ledger.get(txn.date, 0.0) + txn.amount_chf
@@ -215,6 +255,13 @@ class SavingsBook:
         self._values: dict[tuple[str, dt.date], float] = {}
         self._cumulative: dict[str, tuple[list, list]] = {}
 
+    def pockets(self) -> list[str]:
+        """The pockets this book holds, in the page's order -- one list for
+        every part of the page."""
+        return [p for p in ("swissquote", "ibkr", "finpension", "crypto", "titres")
+                if (p != "finpension" or self.finpension) and (p != "crypto" or self.crypto)
+                and (p != "titres" or self.securities)]
+
     # --- values -----------------------------------------------------------
     def value(self, pocket: str, day: dt.date) -> float:
         key = (pocket, day)
@@ -227,6 +274,10 @@ class SavingsBook:
             elif pocket == "finpension":
                 v = (finpension_module.value_at(self.finpension, day)
                      if self.finpension else None) or 0.0
+            elif pocket == "crypto":
+                v = crypto_module.value_at(self.crypto, day)
+            elif pocket == "titres":
+                v = holdings_module.value_on(self.securities, day)
             else:
                 v = sum(self.value(p, day) for p in POCKETS[1:])
             self._values[key] = v
@@ -235,8 +286,8 @@ class SavingsBook:
     # --- flows ------------------------------------------------------------
     def _books(self, pocket: str) -> list[dict]:
         return {"swissquote": [self._ledger], "ibkr": [self._ibkr],
-                "finpension": [self._finp],
-                "total": [self._ledger, self._ibkr, self._finp]}[pocket]
+                "finpension": [self._finp], "crypto": [self._crypto], "titres": [self._titres],
+                "total": [self._ledger, self._ibkr, self._finp, self._crypto, self._titres]}[pocket]
 
     def flows(self, pocket: str, after: dt.date,
               until: dt.date) -> list[tuple[dt.date, float]]:
@@ -275,6 +326,16 @@ class SavingsBook:
     def ibkr_flows(self, after, until):
         return sorted((d, a) for d, a in self._ibkr.items() if after < d <= until)
 
+    def crypto_flows(self, after, until):
+        return sorted((d, a) for d, a in self._crypto.items() if after < d <= until)
+
+    def start_of(self, pocket: str, start: dt.date) -> dt.date:
+        """Where a pocket's own measure starts: a pocket younger than the
+        window (IBKR's NAV, the first crypto purchase) starts when it does."""
+        first = {"ibkr": self.ibkr_start, "crypto": self.crypto_start,
+                 "titres": self.titres_start}.get(pocket)
+        return first if first and start < first else start
+
     # --- returns ----------------------------------------------------------
     def index(self, pocket: str, start: dt.date, end: dt.date) -> list:
         """The daily time-weighted index from 100, `v1 / (v0 + flow)`:
@@ -299,9 +360,8 @@ class SavingsBook:
 
     def mwr(self, pocket: str, start: dt.date, end: dt.date) -> float | None:
         """For the period, flows at their dates. A pocket that does not exist
-        yet at the start (IBKR before August 2025) starts when it does."""
-        if pocket == "ibkr" and self.ibkr_start and start < self.ibkr_start:
-            start = self.ibkr_start
+        yet at the start (IBKR before its first NAV point) starts when it does."""
+        start = self.start_of(pocket, start)
         return analysis.money_weighted(
             self.value(pocket, start), self.value(pocket, end),
             self.flows(pocket, start, end), start, end)
@@ -318,7 +378,7 @@ class SavingsBook:
         yearly = days + 1 >= MIN_DAYS_ANNUALIZED
 
         # Next to a one-year figure, its annual rate is the same number
-        # rounded differently (+39.2 % and "+39.4 % par an") -- noise. The
+        # rounded differently (two figures a few tenths apart) -- noise. The
         # headline only gives it for windows clearly longer than a year.
         longer = days + 1 > MIN_DAYS_ANNUALIZED + 7
 
@@ -327,12 +387,25 @@ class SavingsBook:
                     if rate is not None and yearly and longer and rate > -1
                     else None)
 
+        # The "par an" view (`?rate=annual`) asks for the annual rate itself,
+        # from a year on -- over the pocket's own life: a pocket younger than
+        # the window has not had the window's years to earn its return.
+        own = (end - self.start_of(pocket, start)).days
         return {"pocket": pocket, "name": POCKET_NAMES[pocket],
                 "start_value": round(first, 2), "value": round(last, 2),
                 "change": round(last - first, 2), "put_in": round(put_in, 2),
                 "gain": round(last - first - put_in, 2),
                 "twr": twr, "mwr": mwr,
-                "twr_annual": annual(twr), "mwr_annual": annual(mwr)}
+                "twr_annual": annual(twr), "mwr_annual": annual(mwr),
+                "twr_pa": annualize(twr, own), "mwr_pa": annualize(mwr, own)}
+
+
+def annualize(rate: float | None, days: int) -> float | None:
+    """A return over `days` as a rate per year; None under a year (see
+    MIN_DAYS_ANNUALIZED) or for a total loss."""
+    if rate is None or rate <= -1 or days <= 0 or days + 1 < MIN_DAYS_ANNUALIZED:
+        return None
+    return (1 + rate) ** (365.25 / days) - 1
 
 
 def _key_flows_dated(key: str, book: SavingsBook, after: dt.date,
@@ -349,6 +422,9 @@ def _key_flows_dated(key: str, book: SavingsBook, after: dt.date,
     if share:
         for day, amount in book.ibkr_flows(after, until):
             by_day[day] = by_day.get(day, 0.0) + share * amount
+    if key in _CRYPTO_KEYS:
+        for day, amount in book.crypto_flows(after, until):
+            by_day[day] = by_day.get(day, 0.0) + amount
     return sorted(by_day.items())
 
 
@@ -405,7 +481,7 @@ def _indexed_rows(rows: list[dict], keys: list[str],
 
 def _fees(custodian_total: float, custodian_count: int, ibkr: dict,
           finpension: dict | None, values: dict, start: dt.date,
-          end: dt.date) -> dict:
+          end: dt.date, crypto: dict | None = None) -> dict:
     """What each pocket cost over the window, keyed by pocket.
 
     Swissquote: the FX markup and negative interest of the custodian
@@ -444,6 +520,15 @@ def _fees(custodian_total: float, custodian_count: int, ibkr: dict,
                        if entries else "aucun prélèvement"),
             "items": [{"date": d, "label": "Frais administratif forfaitaire",
                        "amount": a} for d, a in entries]}
+    if crypto:
+        entries = [(d, a, label) for d, a, label in crypto.get("fee_entries", [])
+                   if start <= d <= end]
+        fees["crypto"] = {
+            "amount": round(sum(a for _, a, _ in entries), 2),
+            "detail": (f"{len(entries)} frais de transaction Revolut"
+                       if entries else "aucune transaction"),
+            "items": [{"date": d, "label": label, "amount": a}
+                      for d, a, label in entries]}
     for pocket, row in fees.items():
         value = values.get(pocket)
         row["pct"] = round(row["amount"] / value * 100, 3) if value else None
@@ -455,55 +540,153 @@ def _fees(custodian_total: float, custodian_count: int, ibkr: dict,
     return fees
 
 
+def _timing(book: SavingsBook, pocket: str, start: dt.date, end: dt.date,
+            row: dict) -> dict:
+    """What the dates of the deposits did -- the "flow luck": MWR − TWR.
+
+    TWR is what the investments did whatever was put in when; MWR what the
+    money actually there did. The gap is the timing alone: positive, the
+    deposits arrived before the rises; negative, before the falls. In
+    francs: the gain made, less what the TWR would have made on the same
+    average capital (modified Dietz -- the capital the contribution column
+    divides by), so the two read the same way.
+    """
+    twr, mwr = row.get("twr"), row.get("mwr")
+    if twr is None or mwr is None:
+        return {"timing": None, "timing_pa": None, "timing_chf": None}
+    days = (end - start).days
+    capital = book.value(pocket, start) + sum(
+        amount * (end - day).days / days
+        for day, amount in book.flows(pocket, start, end)) if days > 0 else 0.0
+    pa = (row["mwr_pa"] - row["twr_pa"]
+          if row.get("mwr_pa") is not None and row.get("twr_pa") is not None else None)
+    return {"timing": mwr - twr, "timing_pa": pa,
+            "timing_chf": round(row["gain"] - twr * capital, 2) if capital > 0 else None}
+
+
 def _pocket_rows(book: SavingsBook, fees: dict, start: dt.date,
                  end: dt.date) -> list[dict]:
     """One row per pocket, then the total: the comparison the panel exists
     for, in one table -- what each holds, what was put in, what it made,
     how it performed, what it cost."""
     rows = []
-    pockets = [p for p in ("swissquote", "ibkr", "finpension")
-               if p != "finpension" or book.finpension]
+    pockets = book.pockets()
     total = book.value("total", end)
+    # Performance contribution: each pocket's gain over the total's average
+    # invested capital (modified Dietz -- the opening value plus each flow
+    # weighted by the share of the window it was there). The pockets' points
+    # add up to the total's return; cash, earning nothing, contributes ~0
+    # and shows what it costs as dilution.
+    days = (end - start).days
+    capital = book.value("total", start) + sum(
+        amount * (end - day).days / days
+        for day, amount in book.flows("total", start, end)) if days > 0 else 0.0
     for pocket in (*pockets, "total"):
-        row = book.summary(pocket, start, end)
+        first = book.start_of(pocket, start) if pocket in ("crypto", "titres") else start
+        row = book.summary(pocket, first, end)
         row["share"] = row["value"] / total * 100 if total else None
         row["fees"] = fees.get(pocket)
+        row["contribution"] = row["gain"] / capital if capital > 0 else None
+        row.update(_timing(book, pocket, first, end, row))
         rows.append(row)
+    if capital > 0:
+        rows[-1]["contribution"] = sum(r["contribution"] for r in rows[:-1])
     return rows
 
 
+# The usual emergency-fund yardstick, in months of needs.
+RESERVE_MONTHS = (3, 6)
+
+
+def _reserve(statement, cash: float, end: dt.date) -> dict | None:
+    """How many months of needs the current accounts hold.
+
+    Needs per month: the Need bucket over the twelve whole months before the
+    window's end (its own month too when the window ends on its last day),
+    as a mean -- taxes and yearly premiums are needs, paid in a few months,
+    and a median would leave them out. Fewer than three months of history
+    say nothing. Past six months, the rest of the cash earns nothing: the
+    panel names that amount, it is the one a pocket comparison dilutes.
+    """
+    last = end if (end + dt.timedelta(days=1)).day == 1 else end.replace(day=1) - dt.timedelta(days=1)
+    months = []
+    cursor = last.replace(day=1)
+    for _ in range(12):
+        months.append((cursor.year, cursor.month))
+        cursor = (cursor - dt.timedelta(days=1)).replace(day=1)
+    first_day = min((t.date for t in statement.transactions), default=None)
+    if first_day is None:
+        return None
+    # A month the ledger only half covers would read as cheap: whole ones only.
+    covered = [m for m in months if dt.date(m[0], m[1], 1) >= first_day.replace(day=1)
+               and not (m == (first_day.year, first_day.month) and first_day.day > 1)]
+    if len(covered) < 3:
+        return None
+    wanted = set(covered)
+    need = sum(-t.amount_chf for t in analysis.spending(statement)
+               if t.bucket == NEED and (t.date.year, t.date.month) in wanted)
+    monthly = need / len(covered)
+    if monthly <= 0:
+        return None
+    low, high = RESERVE_MONTHS
+    return {"months": cash / monthly, "monthly": round(monthly, 2),
+            "basis": len(covered), "low": low, "high": high,
+            "excess": round(cash - high * monthly, 2) if cash > high * monthly else 0.0,
+            "short": round(low * monthly - cash, 2) if cash < low * monthly else 0.0}
+
+
+STATS_MODES = {
+    "annual": {"label": "Annualisé", "aria": "taux et ratios ramenés à un an"},
+    "period": {"label": "Sur la période", "aria": "taux et ratios sur la fenêtre affichée, sans extrapolation"},
+}
+
+
+def stats_mode(args, start: dt.date, end: dt.date) -> str:
+    """`?stats=annual|period`; absent, annual from a year on and the period
+    below -- so a short window shows figures without extrapolating them."""
+    mode = (args.get("stats") or "").strip()
+    if mode in STATS_MODES:
+        return mode
+    return "annual" if (end - start).days + 1 >= MIN_DAYS_ANNUALIZED else "period"
+
+
 def _risk_table(book: SavingsBook, start: dt.date, end: dt.date,
-                benchmarks: dict | None = None) -> dict | None:
+                benchmarks: dict | None = None, mode: str = "annual") -> dict | None:
     """Risk and return, one column per invested pocket and the total.
 
     Measured on the daily index (calendar days, annualized by the sampling
     rate) from the window's first day. The monthly version this replaces
-    started at the end of the first month -- October missing -- and saw
-    11 points a year: on IBKR over 01.10.2025-30.09.2026 it printed 30.8 %
-    for a 39.4 % year, a −4.2 % drawdown for a −8.9 % one, a 13.6 % vol for
-    21.9 %. Annual rates are left out under a year.
+    started at the end of the first month -- that month missing -- and saw
+    11 points a year: on IBKR over a year it understated the return by about
+    a quarter, the drawdown by half and the volatility by about 40 %.
+
+    `mode` "annual" scales rates and ratios to a year -- under a year that
+    extrapolates, and the table says so (`extrapolated`); "period" gives
+    them over the window itself, scaled to nothing.
     """
     days = (end - start).days
     if days < 28:
         return None
     # A pocket younger than the window is measured from its first day, and
-    # the header says so: over the full history the IBKR column starts in
-    # August 2025, after the April 2025 tariff crash its fund went through
-    # (RSST −25 % close to close) -- a −8.85 % drawdown read as the fund's
-    # own looked wrong until the start date was on screen.
+    # the header says so: over the full history the IBKR column can start
+    # after a crash its fund went through -- a shallow drawdown read as the
+    # fund's own looked wrong until the start date was on screen.
     ibkr_label = "IBKR"
     if book.ibkr_start and start < book.ibkr_start:
         ibkr_label = f"IBKR (depuis le {book.ibkr_start:%d.%m.%Y})"
     columns = [("ibkr", ibkr_label)]
     if book.finpension:
         columns.append(("finpension", "3a (estimé)"))
+    if book.crypto:
+        label = "Crypto"
+        if start < book.crypto_start:
+            label += f" (depuis le {book.crypto_start:%d.%m.%Y})"
+        columns.append(("crypto", label))
     columns.append(("total", "Épargne totale"))
     yearly = days + 1 >= MIN_DAYS_ANNUALIZED
     stats = {}
     for pocket, _ in columns:
-        first = start
-        if pocket == "ibkr" and book.ibkr_start and start < book.ibkr_start:
-            first = book.ibkr_start
+        first = book.start_of(pocket, start)
         series = book.index(pocket, first, end)
         values = [v for _, v in series]
         years = (end - first).days / 365.25
@@ -538,28 +721,34 @@ def _risk_table(book: SavingsBook, start: dt.date, end: dt.date,
     def pct(v):
         return f"{v * 100:.2f} %" if v is not None else "—"
 
-    def annual_pct(pocket, field):
-        s = stats[pocket]
-        if not yearly or not s:
-            return "—"
-        if field == "mwr":
-            rate = s.get("mwr")
-            return pct((1 + rate) ** (1 / s["years"]) - 1) \
-                if rate is not None and rate > -1 and s["years"] > 0 else "—"
-        return pct(s.get(field))
-
     def num(v):
         return f"{v:.2f}" if v is not None else "—"
 
+    def value(s, field):
+        """One measure of one column, in the chosen mode."""
+        if field == "cumulative" or field in ("max_dd", "longest_dd", "ulcer"):
+            return s.get(field)
+        if field == "mwr":
+            rate = s.get("mwr")
+            if mode == "period" or rate is None:
+                return rate
+            return (1 + rate) ** (1 / s["years"]) - 1 \
+                if rate > -1 and s["years"] > 0 else None
+        if mode == "period":
+            return s.get("period", {}).get(field)
+        return s.get(field)
+
+    period = mode == "period"
+    ratio_base = "rendement de la période" if period else "rendement annuel"
     spec = [
         ("Rendement sur la période (TWR)", "pct", "cumulative",
          "ce qu'auraient donné 100 francs laissés tels quels, versements retirés"),
-        ("Rendement annualisé (TWR)", "annual", "cagr",
-         "le même, ramené à un an — seulement sur un an ou plus"),
-        ("Rendement annualisé (MWR)", "annual", "mwr",
+        *([] if period else [("Rendement annualisé (TWR)", "pct", "cagr", "le même, ramené à un an")]),
+        ("Rendement sur la période (MWR)" if period else "Rendement annualisé (MWR)", "pct", "mwr",
          "le rendement de l'argent effectivement placé, chaque versement pondéré par sa durée"),
-        ("Volatilité annualisée", "pct", "vol",
-         "l'amplitude des variations quotidiennes, ramenée à un an"),
+        ("Volatilité sur la période" if period else "Volatilité annualisée", "pct", "vol",
+         "l'amplitude des variations quotidiennes, "
+         + ("cumulée sur la période" if period else "ramenée à un an")),
         ("Pire baisse (max drawdown)", "pct", "max_dd",
          "la plus forte chute depuis un sommet, sur la période"),
         ("Durée de la pire baisse", "days", "longest_dd",
@@ -567,39 +756,41 @@ def _risk_table(book: SavingsBook, start: dt.date, end: dt.date,
         ("Ulcer index", "pct", "ulcer",
          "profondeur et durée des baisses combinées — plus bas, plus confortable"),
         ("Sharpe", "ratio", "sharpe",
-         "rendement annuel au-delà du taux sans risque (0,5 %), par unité de volatilité"),
+         f"{ratio_base} au-delà du taux sans risque (0,5 % par an), par unité de volatilité"),
         ("Sortino", "ratio", "sortino",
          "comme Sharpe, en ne comptant que les baisses"),
         ("Calmar", "ratio", "calmar",
-         "rendement annuel divisé par la pire baisse"),
+         f"{ratio_base} divisé par la pire baisse"),
+        ("UPI (Martin)", "ratio", "upi",
+         f"{ratio_base} au-delà du taux sans risque, par unité d'ulcer index : "
+         "ce que rapporte chaque unité d'inconfort des baisses"),
     ]
     rows = []
     for label, kind, field, why in spec:
         cells = []
         for pocket, _ in columns:
             s = stats[pocket]
-            if not s:
-                text = "—"
-            elif kind == "pct":
-                text = pct(s.get(field))
-            elif kind == "annual":
-                text = annual_pct(pocket, field)
+            v = value(s, field) if s else None
+            if kind == "pct":
+                text = pct(v)
             elif kind == "days":
-                text = f"{s[field]} j" if s.get(field) is not None else "—"
+                text = f"{v} j" if v is not None else "—"
             else:
-                text = num(s.get(field)) if yearly else "—"
+                text = num(v)
             cells.append({"text": text})
         rows.append({"label": label, "why": why, "cells": cells})
     return {"columns": [name for _, name in columns], "rows": rows,
             "benchmark_columns": [i for i, (key, _) in enumerate(columns)
                                   if key.startswith("bench:")],
-            "points": days + 1, "yearly": yearly,
+            "points": days + 1, "yearly": yearly, "mode": mode,
+            "extrapolated": mode == "annual" and not yearly,
             "cash_share": (book.value("swissquote", end) / book.value("total", end)
                            if book.value("total", end) else None)}
 
 
 def _split_series(split: str, finpension: dict | None,
-                  focus: str = "total") -> list[dict]:
+                  focus: str = "total", crypto: bool = False,
+                  titres: bool = False) -> list[dict]:
     """The plot's lines for the chosen breakdown -- the same parts as the
     bar, so the curve and the split never disagree. Slots stay within the
     eight validated hues; the total rides on top.
@@ -651,11 +842,17 @@ def _split_series(split: str, finpension: dict | None,
             spec = [part("finp", "3a finpension", 3)]
     elif focus == "swissquote":
         spec = [part("swiss", "Swissquote", 0)]
+    elif focus == "crypto":
+        spec = [part("crypto", "Crypto (Revolut)", 5)]
+    elif focus == "titres":
+        spec = [part("titres", "Titres non cotés", 4)]
     elif split == "currency":
         spec = [part("chf", "CHF", 0), part("usd", "USD", 2)]
     elif split == "asset":
         spec = [part("cash", "Cash", 0), part("actions", "Actions", 2),
                 part("mf", "Trend-Following", 3)]
+        if crypto:
+            spec.append(part("crypto", "Crypto", 5))
     elif split == "fund":
         spec = [part("cash", "Cash", 0), part("rss", "RSST", 2)]
         for isin, holding in (finpension["holdings"].items()
@@ -663,6 +860,8 @@ def _split_series(split: str, finpension: dict | None,
             spec.append(part(f"fund_{isin}",
                              holding.get("short") or holding["name"],
                              len(spec) + 1))
+        if crypto and len(spec) < 7:
+            spec.append(part("crypto", "Crypto", len(spec) + 1))
     elif split == "geo":
         spec = [part("cash", "Cash", 0), part("geo_États-Unis", "États-Unis", 2),
                 part("geo_Europe (hors CH)", "Europe", 3),
@@ -672,6 +871,10 @@ def _split_series(split: str, finpension: dict | None,
     else:
         spec = [part("swiss", "Swissquote", 0), part("ibkr", "IBKR", 2),
                 part("finp", "3a finpension", 3)]
+        if crypto:
+            spec.append(part("crypto", "Crypto (Revolut)", 5))
+        if titres:
+            spec.append(part("titres", "Titres non cotés", 4))
     # The whole-portfolio line rides on top only in the total view; a
     # focused pocket shows its own breakdown alone.
     if focus == "total":
@@ -681,7 +884,8 @@ def _split_series(split: str, finpension: dict | None,
 
 def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                    finp_value: float, split: str,
-                   focus: str = "total") -> list[dict]:
+                   focus: str = "total", crypto: dict | None = None,
+                   crypto_value: float = 0.0, titres_value: float = 0.0) -> list[dict]:
     """The savings split for the bar, one of three views of the same money.
 
     By account (the default), by currency, or by asset class. A focus
@@ -779,19 +983,30 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
         # A current account is one currency and one asset class -- whatever
         # the view, the box fills with the balance.
         parts = [("CHF" if split == "currency" else "Cash", round(swiss, 2))]
+    elif focus == "titres":
+        parts = [("Titres non cotés", round(titres_value, 2))]
+    elif focus == "crypto":
+        # One coin per part, in the proportions of the last capture.
+        held = [(p["symbol"], p["value_chf"] or 0.0)
+                for p in (crypto or {}).get("positions", [])]
+        weight = sum(v for _, v in held)
+        parts = [(sym, round(crypto_value * v / weight, 2))
+                 for sym, v in sorted(held, key=lambda kv: -kv[1])
+                 if weight and crypto_value * v / weight >= 0.5]
     elif split == "currency":
-        parts = [("CHF", round(swiss + finp
+        parts = [("CHF", round(swiss + finp + titres_value
                                + sum(c["amount"] for c in ibkr["cash"]
                                      if c["currency"] == "CHF"), 2))]
         usd = sum(p["value_currency"] for p in ibkr["positions"]
                   if p["currency"] == "USD")
         usd += sum(c["amount"] for c in ibkr["cash"]
                    if c["currency"] == "USD")
-        if usd and ibkr["fx_rate"]:
-            parts.append(("USD", round(usd * ibkr["fx_rate"], 2)))
+        usd_chf = usd * ibkr["fx_rate"] if usd and ibkr["fx_rate"] else 0.0
+        if usd_chf or crypto_value:
+            parts.append(("USD", round(usd_chf + crypto_value, 2)))
     elif split == "asset":
-        # Economic exposure, not instrument: RSST is the S&P 500 (with a
-        # managed-futures overlay), and the 3a is equity index funds. The
+        # Economic exposure, not instrument: a stacked fund is equities (with
+        # a managed-futures overlay), and the 3a is index funds. The
         # 3a's value is split across its holdings' classes by their last
         # printed prices -- proportions only, the total stays the captured
         # one.
@@ -801,8 +1016,8 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
         for position in ibkr["positions"]:
             split = position.get("asset_split")
             if split:
-                # A stacked fund declares its exposure explicitly -- RSST
-                # is 100 % S&P 500 + 100 % managed futures, so its value
+                # A stacked fund declares its exposure explicitly -- e.g.
+                # 100 % equities + 100 % managed futures, so its value
                 # goes half to Actions, half to Trend-Following.
                 total_pct = sum(split.values()) or 100.0
                 for cls, pct in split.items():
@@ -823,15 +1038,19 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                         + finp * weight / total_weight
             else:
                 classes["Autres"] = classes.get("Autres", 0.0) + finp
+        if titres_value:
+            classes["Actions"] = classes.get("Actions", 0.0) + titres_value
         labels = {"MF": "Trend-Following"}
         for name in ("Actions", "Obligations", "MF"):
             if classes.get(name):
                 parts.append((labels.get(name, name),
                               round(classes[name], 2)))
+        if crypto_value:
+            parts.append(("Crypto", round(crypto_value, 2)))
         if classes.get("Autres"):
             parts.append(("Autres", round(classes["Autres"], 2)))
     elif split == "geo":
-        # Geographic exposure -- declared per holding (the RSST position
+        # Geographic exposure -- declared per holding (each IBKR position
         # and each 3a fund), approximations of the tracked indices.
         regions: dict[str, float] = {}
         for position in ibkr["positions"]:
@@ -850,6 +1069,8 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                             else name
                         regions[name] = regions.get(name, 0.0) \
                             + finp * weight / total_weight * pct / 100
+        if titres_value:
+            regions["Suisse"] = regions.get("Suisse", 0.0) + titres_value
         parts = [("Cash", round(cash, 2))]
         for name, value in sorted(regions.items(), key=lambda kv: -kv[1]):
             parts.append((name, round(value, 2)))
@@ -866,6 +1087,10 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                     parts.append((
                         holding.get("short") or holding["name"],
                         round(finp * weight / total_weight, 2)))
+        if crypto_value:
+            parts.append(("Crypto", round(crypto_value, 2)))
+        if titres_value:
+            parts.append(("Titres non cotés", round(titres_value, 2)))
     else:
         parts = [("Swissquote", round(swiss, 2)),
                  ("IBKR", round(ibkr["nav_chf"], 2))]
@@ -873,24 +1098,30 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
             parts.append((account["name"], account["value"]))
         if finp:
             parts.append(("3a finpension", round(finp, 2)))
+        if crypto_value:
+            parts.append(("Crypto (Revolut)", round(crypto_value, 2)))
+        if titres_value:
+            parts.append(("Titres non cotés", round(titres_value, 2)))
 
-    pocket_value = {"ibkr": nav, "finpension": finp, "swissquote": swiss} \
-        .get(focus, ibkr["total"])
+    pocket_value = {"ibkr": nav, "finpension": finp, "swissquote": swiss,
+                    "crypto": crypto_value, "titres": titres_value}.get(focus, ibkr["total"])
     accounted = sum(value for _, value in parts)
-    if accounted < pocket_value - 0.01:
+    # Under half a franc, "Autres 0" says nothing: rounding, dust coins.
+    if accounted < pocket_value - 0.5:
         parts.append(("Autres", round(pocket_value - accounted, 2)))
     return [{"name": name, "value": value} for name, value in parts]
 
 
 def _evolution_row(statement, ibkr: dict, finpension: dict | None,
-                   point_day: dt.date) -> dict:
+                   point_day: dt.date, crypto: dict | None = None,
+                   securities: list[dict] | None = None) -> dict:
     """The savings picture at one date: the Swissquote balance, the
     brokerage NAV and the 3a as of that day, their sum, and every
     breakdown key (the 3a is None before its first known value, the
     brokerage before its first NAV point -- the series stops where the
     data stops). The breakdown views are linear combinations of the base
     series; the proportions come from the captured holdings (3a fund
-    weights, cash share) and the declared splits (RSST 50/50). Shared by
+    weights, cash share) and the declared splits (a stacked fund 50/50). Shared by
     the curve (one point per grain bucket) and the stats table (one point
     per month end), so the two never disagree."""
     swiss = analysis.balance_at(statement, point_day)
@@ -902,6 +1133,12 @@ def _evolution_row(statement, ibkr: dict, finpension: dict | None,
                 if finpension else None)
     finp = finp_raw or 0.0
     nav0 = nav or 0.0
+    coins = crypto_module.value_at(crypto, point_day) if crypto else 0.0
+    started = bool(crypto and crypto.get("daily_series")
+                   and point_day >= crypto["daily_series"][0][0])
+    # Unlisted shares at their declared value: a Swiss company's equity.
+    owned = [h for h in securities or [] if point_day >= holdings_module.start(h)]
+    titres = holdings_module.value_on(owned, point_day) if owned else 0.0
 
     cash_chf = sum(c["amount"] for c in ibkr["cash"] if c["currency"] == "CHF")
     usd_cash_chf = sum(c["amount"] for c in ibkr["cash"]
@@ -919,13 +1156,16 @@ def _evolution_row(statement, ibkr: dict, finpension: dict | None,
         "date": point_day, "swiss": round(swiss, 2),
         "ibkr": round(nav, 2) if nav is not None else None,
         "finp": round(finp_raw, 2) if finp_raw else None,
-        "total": round(swiss + nav0 + finp, 2),
+        "total": round(swiss + nav0 + finp + coins + titres, 2),
+        "crypto": round(coins, 2) if started else None,
+        "titres": round(titres, 2) if owned else None,
         # breakdown views of the same money. The IBKR cash is inside
         # the NAV series, so it is not added again.
-        "chf": round(swiss + finp + cash_chf, 2),
-        "usd": round(nav, 2) if nav is not None else None,
+        "chf": round(swiss + finp + cash_chf + titres, 2),
+        "usd": (round(nav0 + coins, 2)
+                if nav is not None or started else None),
         "cash": round(swiss + finp * cash_share, 2),
-        "actions": round(nav0 * 0.5 + finp * fund_share, 2),
+        "actions": round(nav0 * 0.5 + finp * fund_share + titres, 2),
         "mf": round(nav * 0.5, 2) if nav is not None else None,
         "rss": round(nav, 2) if nav is not None else None,
         # The focused pocket's own breakdown: the breakdown views
@@ -966,11 +1206,17 @@ def _evolution_row(statement, ibkr: dict, finpension: dict | None,
                 row[f"ibkr_geo_{region}"] = round(
                     row.get(f"ibkr_geo_{region}", 0.0)
                     + nav0 * pct / 100, 2)
+    if coins:
+        row["geo_Autres"] = round(row.get("geo_Autres", 0.0) + coins, 2)
+    if titres:
+        row["geo_Suisse"] = round(row.get("geo_Suisse", 0.0) + titres, 2)
     return row
 
 
 def _evolution_rows(statement, ibkr: dict, finpension: dict | None,
-                    start: dt.date, end: dt.date, grain: str) -> list[dict]:
+                    start: dt.date, end: dt.date, grain: str,
+                    crypto: dict | None = None,
+                    securities: list[dict] | None = None) -> list[dict]:
     """One point per calendar bucket inside [start, end], clamped to the
     window -- the same buckets the rest of the app uses, so the curve
     follows the chosen grain (daily for a month, monthly for a year).
@@ -983,6 +1229,7 @@ def _evolution_rows(statement, ibkr: dict, finpension: dict | None,
         point_day = min(bucket_end, end)
         if point_day not in seen:
             seen.add(point_day)
-            rows.append(_evolution_row(statement, ibkr, finpension, point_day))
+            rows.append(_evolution_row(statement, ibkr, finpension, point_day,
+                                       crypto, securities))
         day = bucket_end + dt.timedelta(days=1)
     return rows

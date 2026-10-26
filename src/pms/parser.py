@@ -164,6 +164,30 @@ def _parse_cover(page) -> dict:
     return meta
 
 
+# What every cover page carries, checked on the six real statements (15.10):
+# the bank's name, the document's title, and its period.
+COVER_MARKERS = (re.compile(r"Swissquote"), re.compile(r"Relevé de transactions"),
+                 re.compile(r"\d{2}\.\d{2}\.\d{4} à \d{2}\.\d{2}\.\d{4}"))
+
+
+def looks_like(pdf_path: str | Path) -> bool:
+    """A Swissquote transaction statement, judged from its cover page alone.
+
+    The Downloads watcher asks this of every PDF that lands there -- invoices,
+    tickets, anything -- so it reads one page (50-90 ms on the real ones) and
+    never raises: a file it cannot open is simply not a statement.
+    """
+    try:
+        with open(pdf_path, "rb") as f:
+            if b"%PDF-" not in f.read(1024):
+                return False
+        with pdfplumber.open(pdf_path) as pdf:
+            text = (pdf.pages[0].extract_text() or "") if pdf.pages else ""
+    except Exception:  # pdfminer raises a zoo of types on a broken file
+        return False
+    return all(marker.search(text) for marker in COVER_MARKERS)
+
+
 def parse_statement(pdf_path: str | Path) -> Statement:
     """Parse the whole PDF. Raises nothing -- use `reconcile()` to validate."""
     pdf_path = Path(pdf_path)
@@ -289,18 +313,17 @@ def reconcile(statement: Statement, tolerance: float = 0.005) -> list[str]:
     `balance[n-1] + amount[n] != balance[n]` and it shows up here.
     """
     problems: list[str] = []
-    summaries = {a.currency: a for a in statement.accounts}
+    summaries = {(a.account, a.currency): a for a in statement.accounts}
 
-    for currency in sorted({t.currency for t in statement.transactions}):
-        rows = statement.by_currency(currency)
-        summary = summaries.get(currency)
+    for (account, currency), rows in sorted(statement.chains().items()):
+        summary = summaries.get((account, currency))
         running = summary.opening_balance if summary else 0.0
 
         for txn in rows:
             running += txn.amount
             if txn.balance is not None and abs(running - txn.balance) > tolerance:
                 problems.append(
-                    f"{currency} p{txn.page} {txn.date} ref {txn.reference}: "
+                    f"{account + ' ' if account else ''}{currency} p{txn.page} {txn.date} ref {txn.reference}: "
                     f"expected balance {running:.2f}, statement says {txn.balance:.2f} "
                     f"(delta {running - txn.balance:+.2f})"
                 )
@@ -308,7 +331,7 @@ def reconcile(statement: Statement, tolerance: float = 0.005) -> list[str]:
 
         if summary and abs(running - summary.closing_balance) > tolerance:
             problems.append(
-                f"{currency}: final balance {running:.2f} != "
+                f"{account + ' ' if account else ''}{currency}: final balance {running:.2f} != "
                 f"stated closing balance {summary.closing_balance:.2f}"
             )
 

@@ -1,193 +1,177 @@
-"""The transactions table: filters, paging, server-side sorting, export."""
+"""The transactions table (`/api/transactions`): filters, search, paging,
+server-side sorting, and the export that holds exactly what was listed."""
 
 from __future__ import annotations
 
-import re
+import csv
+import io
+import zipfile
 
-from webhelpers import row_count, text
-
-
-def test_transactions_filter_by_category(client):
-    body = text(client.get("/transactions?preset=all&category=Alimentation&fragment=1"))
-    assert "Alimentation" in body
-    assert "Santé &amp; assurance" not in body
+from webhelpers import api
 
 
-def test_transactions_search_narrows_the_result(client):
-    wide = text(client.get("/transactions?preset=all&fragment=1"))
-    narrow = text(client.get("/transactions?preset=all&q=coop&fragment=1"))
-    assert row_count(narrow) < row_count(wide)
+def _rows(client, query: str) -> dict:
+    return api(client, f"/api/transactions?{query}")
 
+
+def _count(client, q: str) -> int:
+    return _rows(client, f"preset=all&q={q}")["total"]
+
+
+def test_the_category_filter_keeps_that_category(client):
+    rows = _rows(client, "preset=all&category=Alimentation&per=60")["rows"]
+    assert rows and {r["category"] for r in rows} == {"Alimentation"}
+
+
+def test_a_search_narrows_the_result(client):
+    assert 0 < _count(client, "coop") < _count(client, "")
+
+
+# --- the search ----------------------------------------------------------------
+
+def test_one_word_finds_what_the_whole_phrase_finds(client):
+    """"twint" alone must find the Twint payments, not only "paiement twint"."""
+    assert _count(client, "twint") >= _count(client, "paiement+twint") > 0
+
+
+def test_every_word_must_match_in_any_order(client):
+    both = _count(client, "coop+alimentation")
+    assert both == _count(client, "alimentation+coop") > 0
+    assert both <= min(_count(client, "coop"), _count(client, "alimentation"))
+    assert _count(client, "coop+zzzz") == 0
+
+
+def test_case_and_accents_do_not_matter(client):
+    assert _count(client, "sante") == _count(client, "Sant%C3%A9") > 0
+
+
+def test_an_amount_or_a_date_is_searchable(client):
+    row = next(r for r in _rows(client, "preset=all")["rows"] if r["amount"] < 0)
+    assert _count(client, f"{abs(row['amount']):.2f}") > 0
+    y, m, d = row["date"].split("-")
+    assert _count(client, f"{d}.{m}.{y}") > 0
+
+
+def test_a_bare_number_is_a_figure_not_a_fragment(client):
+    """"20" matched as text would find every row dated 2025 or 2026."""
+    row = next(r for r in _rows(client, "preset=all&sort=chf")["rows"]
+               if r["amount"] < 0 and abs(r["amount"]) >= 40)
+    whole = int(abs(row["amount"]))
+    assert 0 < _count(client, str(whole)) < _count(client, "")
+    assert _count(client, "twint+20") < _count(client, "twint")
+
+
+# --- paging and sorting ---------------------------------------------------------
 
 def test_paging_does_not_lose_or_repeat_rows(client):
-    first = text(client.get("/transactions?preset=all&page=1&fragment=1"))
-    second = text(client.get("/transactions?preset=all&page=2&fragment=1"))
-    assert first != second
-    assert row_count(first) == row_count(second)  # the total is the same on both pages
+    first = _rows(client, "preset=all&page=1")
+    second = _rows(client, "preset=all&page=2")
+    assert first["total"] == second["total"]
+    assert {r["key"] for r in first["rows"]}.isdisjoint(r["key"] for r in second["rows"])
 
 
-# --- sorting ----------------------------------------------------------------
-
-def _labels(body: str) -> list[str]:
-    return re.findall(r'<div class="t-lab">([^<]*)</div>', body)
+def test_the_page_holds_sixty_rows_and_twenty_on_request(client):
+    """The dashboard's short list asks for twenty; anything else falls back."""
+    assert len(_rows(client, "preset=all")["rows"]) == 60
+    assert len(_rows(client, "preset=all&per=20")["rows"]) == 20
+    assert len(_rows(client, "preset=all&per=33")["rows"]) == 60
 
 
 def test_every_column_sorts_both_ways(client):
     for column in ("date", "label", "category", "amount", "chf"):
-        down = _labels(text(client.get(
-            f"/transactions?preset=all&sort={column}&dir_sort=desc&fragment=1")))
-        up = _labels(text(client.get(
-            f"/transactions?preset=all&sort={column}&dir_sort=asc&fragment=1")))
-        assert down and up
-        assert down != up, f"{column} sorts the same in both directions"
+        down = [r["key"] for r in _rows(client, f"preset=all&sort={column}&dir_sort=desc")["rows"]]
+        up = [r["key"] for r in _rows(client, f"preset=all&sort={column}&dir_sort=asc")["rows"]]
+        assert down and up and down != up, column
 
 
 def test_sorting_is_server_side_across_pages(client):
-    """A client-side sort would only reorder the rows already on screen, which
+    """A client-side sort would only reorder the rows already loaded, which
     looks right and is wrong."""
-    page1 = text(client.get(
-        "/transactions?preset=all&sort=chf&dir_sort=desc&page=1&fragment=1"))
-    page2 = text(client.get(
-        "/transactions?preset=all&sort=chf&dir_sort=desc&page=2&fragment=1"))
-    first = _amounts(page1)
-    second = _amounts(page2)
-    assert first and second
-    assert min(first) >= max(second), "page 2 must continue page 1's ordering"
-
-
-def _amounts(body: str) -> list[float]:
-    """The "En CHF" column only -- the "Montant" cell carries a currency suffix,
-    and the two differ on foreign-currency rows."""
-    out = []
-    for cell in re.findall(r'<td class="r num">([-\d’.]+)</td>\s*</tr>', body):
-        try:
-            out.append(abs(float(cell.replace("’", ""))))
-        except ValueError:
-            pass
-    return out
+    page1 = [abs(r["chf"]) for r in _rows(client, "preset=all&sort=chf&dir_sort=desc&page=1")["rows"]]
+    page2 = [abs(r["chf"]) for r in _rows(client, "preset=all&sort=chf&dir_sort=desc&page=2")["rows"]]
+    assert min(page1) >= max(page2)
 
 
 def test_amount_sorts_by_magnitude_not_sign(client):
     """Sorting a statement by signed value buries every large debit."""
-    body = text(client.get(
-        "/transactions?preset=all&sort=chf&dir_sort=desc&fragment=1"))
-    amounts = _amounts(body)
-    assert amounts
+    amounts = [abs(r["chf"]) for r in _rows(client, "preset=all&sort=chf&dir_sort=desc")["rows"]]
     assert amounts == sorted(amounts, reverse=True)
 
 
-def test_sort_survives_filtering_and_paging(client):
-    body = text(client.get(
-        "/transactions?preset=all&sort=label&dir_sort=asc&category=Alimentation&fragment=1"))
-    assert 'name="sort" value="label"' in body
-    assert 'sort=label' in body and 'dir_sort=asc' in body
+def test_a_bucket_opens_on_the_rows_it_counts(client):
+    """The bucket panel counts spending; its link opened every row of the
+    bucket, income included (income has no bucket of its own): "10" on the
+    row, 157 in the list. Hence `dir=out` on the link."""
+    summary = api(client, "/api/dashboard?preset=all")["buckets"]
+    row = next(r for r in summary["rows"] if r["name"] == "Non classé")
+    assert _rows(client, "preset=all&bucket=Non classé&dir=out")["total"] == row["count"]
 
 
-def test_sort_headers_are_real_links(client):
-    """Sorting has to work with JavaScript off."""
-    body = text(client.get("/transactions?preset=all&fragment=1"))
-    assert body.count("data-tx-sort") == 5
-    assert 'aria-sort=' in body
+# --- the export --------------------------------------------------------------------
 
-
-def test_sorting_works_on_the_standalone_transactions_page(client):
-    """The page reached by clicking a category needs the panel the sort swaps,
-    or the click is cancelled and nothing happens."""
-    body = text(client.get("/transactions?preset=all&category=Alimentation"))
-    assert 'id="txPanel"' in body
-    assert "data-tx-sort" in body
-
-
-def test_the_other_tables_are_sortable(client):
-    """The day's movements and the dashboard's detail tables sort client-side;
-    they are not paged, so there is nothing off-screen to get wrong."""
-    for url in ("/day/2025-05-15", "/?preset=all"):
-        assert "sortable-table" in text(client.get(url)), url
-
-
-# --- export ------------------------------------------------------------------
-
-def test_export_carries_the_window_in_the_filename(client):
+def test_the_export_carries_the_window_in_its_name(client):
     response = client.get("/export.csv?from=2025-05-01&to=2025-05-31")
     assert response.status_code == 200
-    assert 'filename="pms-2025-05-01_2025-05-31.csv"' in \
-        response.headers["Content-Disposition"]
+    assert 'filename="pms-2025-05-01_2025-05-31.csv"' in response.headers["Content-Disposition"]
 
 
-def test_export_holds_exactly_the_rows_the_table_showed(client):
+def test_the_export_holds_exactly_the_rows_the_table_listed(client):
     """The file is the filter, not the page: all of it, not the first sixty."""
-    import csv as _csv
-    import io as _io
-
     query = "from=2025-01-01&to=2025-12-31&category=Alimentation"
-    listing = text(client.get(f"/transactions?{query}&fragment=1"))
+    listed = _rows(client, query)["total"]
     payload = client.get(f"/export.csv?{query}").get_data()
-    table = list(_csv.reader(_io.StringIO(payload.decode("utf-8-sig"), newline="")))
-
-    assert len(table) - 1 == row_count(listing) > 60
+    table = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"), newline="")))
+    assert len(table) - 1 == listed > 60
     assert {row[2] for row in table[1:]} == {"Alimentation"}
 
 
-def test_export_follows_the_sort_that_was_on_screen(client):
-    import csv as _csv
-    import io as _io
-
-    query = "from=2025-01-01&to=2025-12-31&sort=amount&dir_sort=desc"
-    payload = client.get(f"/export.csv?{query}").get_data()
-    table = list(_csv.reader(_io.StringIO(payload.decode("utf-8-sig"), newline="")))
+def test_the_export_follows_the_sort_that_was_on_screen(client):
+    payload = client.get("/export.csv?from=2025-01-01&to=2025-12-31&sort=amount&dir_sort=desc").get_data()
+    table = list(csv.reader(io.StringIO(payload.decode("utf-8-sig"), newline="")))
     amounts = [abs(float(row[5])) for row in table[1:]]
     assert amounts == sorted(amounts, reverse=True)
 
 
-def test_the_xlsx_route_serves_a_real_workbook(client):
-    import io as _io
-    import zipfile as _zipfile
-
+def test_the_xlsx_export_is_a_real_workbook(client):
     response = client.get("/export.xlsx?from=2025-05-01&to=2025-05-31")
     assert response.status_code == 200
     assert "spreadsheetml" in response.headers["Content-Type"]
-    archive = _zipfile.ZipFile(_io.BytesIO(response.get_data()))
-    assert "xl/worksheets/sheet1.xml" in archive.namelist()
+    assert "xl/worksheets/sheet1.xml" in zipfile.ZipFile(io.BytesIO(response.data)).namelist()
 
 
 def test_an_unknown_export_format_is_a_404(client):
     assert client.get("/export.pdf?preset=all").status_code == 404
 
 
-def test_the_transactions_panel_offers_the_export(client):
-    body = text(client.get("/transactions?preset=all&fragment=1"))
-    assert "/export.csv?" in body and "/export.xlsx?" in body
-    # It downloads a file; swapping <main> with a spreadsheet would be a bug.
-    for href in re.findall(r'href="(/export\.[^"]+)"[^>]*>', body):
-        anchor = re.search(r'<a[^>]*href="' + re.escape(href) + r'"[^>]*>', body)
-        assert "data-nav" not in anchor.group(0)
+# --- a row -----------------------------------------------------------------------
+
+def test_a_row_carries_its_identity_and_both_amounts(client):
+    row = _rows(client, "preset=all&per=20")["rows"][0]
+    assert row["key"].count(":") == 1
+    assert {"date", "label", "category", "bucket", "amount", "currency", "chf"} <= row.keys()
 
 
-# --- a shorter table on the dashboard ---------------------------------------------
-
-def _data_rows(body: str) -> int:
-    return len(re.findall(r"<tr draggable", body))
-
-
-def test_the_dashboard_table_shows_twenty_rows_and_pages_on_at_twenty(client):
-    """It is the last of fifteen panels; at 60 rows it was a third of the page.
-    Its pager must carry the size, or page 2 would restart at row 61."""
-    body = text(client.get("/?preset=all"))
-    panel = body[body.index('id="txPanel"'):]
-    assert _data_rows(panel) == 20
-    following = re.search(r'href="(/transactions\?[^"]*page=2[^"]*)"', panel).group(1)
-    assert "per=20" in following
-    page_two = text(client.get(following.replace("&amp;", "&") + "&fragment=1"))
-    assert _data_rows(page_two) == 20
-    assert re.search(r"21–40\s+sur", page_two)
+def test_a_day_lists_its_movements_in_statement_order(client):
+    first = _rows(client, "preset=all&sort=date&dir_sort=asc&per=20")["rows"][0]
+    day = api(client, f"/api/day/{first['date']}")
+    assert [r["seq"] for r in day["rows"]] == sorted(r["seq"] for r in day["rows"])
+    assert day["spending"] >= 0
 
 
-def test_the_transactions_page_keeps_sixty_rows(client):
-    body = text(client.get("/transactions?preset=all&fragment=1"))
-    assert _data_rows(body) == 60
-    assert "per=" not in body
-
-
-def test_an_unknown_page_size_falls_back(client):
-    body = text(client.get("/transactions?preset=all&per=33&fragment=1"))
-    assert _data_rows(body) == 60
+def test_the_filter_in_brief_and_the_new_filters(client):
+    """The summary adds up the rows the filter keeps; the amount bounds, the
+    corrected and the to-classify filters narrow the same rows the export
+    and the bulk edit see."""
+    data = api(client, "/api/transactions?preset=all&q=coop")
+    s = data["summary"]
+    assert s["count"] == data["total"]
+    assert abs(sum(p["amount"] for p in s["parts"]) - s["out"]) < 0.05
+    assert abs(sum(p["out"] for p in s["series"]) - s["out"]) < 0.05
+    big = api(client, "/api/transactions?preset=all&amin=100&per=500")
+    assert big["rows"] and all(abs(r["chf"]) >= 100 for r in big["rows"])
+    small = api(client, "/api/transactions?preset=all&amax=5&per=500")
+    assert all(abs(r["chf"]) <= 5 for r in small["rows"])
+    todo = api(client, "/api/transactions?preset=all&todo=1&per=500")
+    assert todo["rows"] and {r["category"] for r in todo["rows"]} <= {"Non catégorisé", "Twint non identifié"}
+    assert api(client, "/api/transactions?preset=all&fix=1")["total"] == 0
+    assert api(client, "/api/transactions?preset=all&amin=abc")["total"] == api(client, "/api/transactions?preset=all")["total"]

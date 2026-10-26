@@ -13,6 +13,8 @@ data/*
 !data/ibkr.example.json
 !data/budgets.example.json
 !data/finpension.example.json
+!data/ibkr_flex.example.json
+!data/ai.example.json
 
 # --- Python -------------------------------------------------------------
 .venv/
@@ -22,6 +24,11 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+
+# --- Front end ----------------------------------------------------------
+# The build (src/pms/web/static/spa/) IS committed: run.bat serves it
+# without Node. Only the toolchain stays out.
+frontend/node_modules/
 
 # --- Editors / OS -------------------------------------------------------
 .vscode/

@@ -14,12 +14,16 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 from typing import Iterable
 
 from .models import Transaction
 
 UNCATEGORISED = "Non catégorisé"
+# Money moved between the user's own accounts: neither spent nor earned
+# (`analysis.is_internal`). Also a category the user can pin by hand.
+INTERNAL = "Virement interne"
 
 # Rules that would name an employer, a landlord, a doctor or a person do not
 # belong in a repository -- a categorisation file is otherwise a very precise
@@ -37,12 +41,26 @@ def _any(*words: str) -> str:
 # (category, subcategory, regex) matched case-insensitively against
 # "<kind> | <merchant> | <location>".
 RULES: list[tuple[str, str, str]] = [
+    # --- Between own accounts ---------------------------------------------
+    # A Revolut top-up: "Revolut**1234*" as a card payment on the paying
+    # bank, "Recharge Revolut" as the credit on Revolut (revolut.py).
+    # A transfer to "Revolut Bank UAB" from another bank is the same top-up,
+    # paid by order (UBS).
+    (INTERNAL, "Recharge Revolut", r"Recharge Revolut|Revolut\*\*|Versement pour Revolut Bank"),
+    # Two accounts of the same camt.053 file paying each other (camt.py).
+    (INTERNAL, "Entre comptes", r"^Virement entre comptes"),
+
     # --- Custodian / banking --------------------------------------------
     ("Frais bancaires", "Change de devises", r"Transfert (?:automatisé|Forex manuel)"),
     ("Frais bancaires", "Intérêts", r"^Intérêts\b"),
+    # A bank's own fee line, by its kind (UBS: "Balance closing of service prices").
+    ("Frais bancaires", "Tenue de compte", r"^Frais bancaires\b"),
+    # A credit card's monthly bill, debited from the account (UBS): what it
+    # paid for is on the card's own statement, not here.
+    ("Carte de crédit", "Facture mensuelle", r"^Facture carte de crédit"),
 
     # --- Savings & investment ---------------------------------------------
-    # Nothing matched these on the 2024-2026 statement; they are here so that a
+    # Nothing matched these on the real statement; they are here so that a
     # future export routes 3a and brokerage contributions straight to "Save".
     ("Épargne & investissement", "Prévoyance 3a",
      _any("finpension", "VIAC", "frankly", "Selma", "Descartes Vorsorge",
@@ -50,10 +68,18 @@ RULES: list[tuple[str, str, str]] = [
     ("Épargne & investissement", "Courtage & titres",
      _any("Interactive Brokers", "IBKR", "IB LLC", "Saxo", "DEGIRO",
           "TrueWealth", "Swissquote Trading", "Yuh", "Neon Invest")),
+    ("Épargne & investissement", "Crypto",
+     _any("Revolut Digital Assets", "Coinbase", "Binance", "Bitpanda")),
 
     # --- Income ----------------------------------------------------------
     # Employers and clients are personal: see `data/local_rules.json`.
-    ("Revenus", "Salaire / clients", r"(?!x)x"),
+    # Some banks say a credit is a salary (UBS's "salary payment", read as
+    # "Paiement entrant - salaire"): tested before the tax office, which a
+    # canton paying its employees would otherwise be read as.
+    ("Revenus", "Salaire / clients", r"^Paiement entrant - salaire"),
+    # A dividend paid into the account. Most print only the company's name:
+    # those are filed by hand, "Tout ce bénéficiaire" (docs/impots.md).
+    ("Revenus", "Dividendes", r"\bDividende"),
 
     # --- Housing & utilities ---------------------------------------------
     # A landlord's name is personal: see `data/local_rules.json`.
@@ -68,22 +94,40 @@ RULES: list[tuple[str, str, str]] = [
 
     # --- Health & insurance ----------------------------------------------
     ("Santé & assurance", "Assurance maladie",
-     _any("Assura", "Sanitas", "Groupe Mutuel", "Easy Sana", "Helsana", r"CSS\b",
+     # "Assura" without its "-nce": "La Mobilière Assurances" is not a health insurer.
+     _any(r"Assura(?!nce)", "Sanitas", "Groupe Mutuel", "Easy Sana", "Helsana", r"CSS\b",
           "Concordia", "Visana", "SWICA", "Atupri")),
     ("Santé & assurance", "Autres assurances",
      _any("AXA", "Zurich Assurance", "Mobilière", "Allianz", "Generali", "Baloise")),
     ("Santé & assurance", "Pharmacie & soins",
-     _any("O F A C", "Medbase", "Pharmaci", "Apothe", "Amavita", "Drogerie", "Dentiste",
+     _any("O F A C", "Medbase", "Pharmaci", "Farmaci", "Apothe", "Amavita", "Drogerie", "Dentiste",
           "Clinic", "Permanence", "Hôpital", "Hopital", "Fielmann", "Optic",
           "Cabinet Vétéri", "Vétérinaire", "Laboratoire")),
 
-    # --- Taxes & administration -------------------------------------------
-    ("Impôts & administration", "Impôts",
-     _any("Steueramt", "Etat de Neuchatel", "Kanton Zürich", "Wehrpflichtersatz",
-          "Administration fiscale", "Office poursuites", "Impôt")),
-    ("Impôts & administration", "Services publics",
-     _any("Post CH AG", "Poste CH SA", "OMIT AG", "Gravoplaques", "Confédération",
-          "Personenmeldeamt", r"MBA Zürich", "Kreisbüro", "Pompes Funèbres")),
+    # --- Taxes ------------------------------------------------------------
+    # Debt collection is administration, not tax: tested first, "Office des
+    # poursuites" would otherwise be caught by nothing better.
+    ("Administration", "Poursuites",
+     _any(r"Office (?:des )?poursuites", "Betreibungsamt", r"Office des faillites")),
+    ("Impôts", "Taxe militaire", _any("Wehrpflichtersatz", r"Taxe d'exemption", r"Exemption de l'obligation")),
+    ("Impôts", "Impôts",
+     _any("Steueramt", "Etat de Neuchatel", "Kanton Zürich", "Administration fiscale",
+          "Service financier cantonal", "Steuerverwaltung", "Finanzverwaltung",
+          "Service (?:cantonal )?des contributions",
+          r"AFC[- ]G(?:E|enève)", r"ESTV\b", "Impôt")),
+
+    # --- Administration ---------------------------------------------------
+    # Fees paid to the state and public services: documents, registers,
+    # plates, post -- what the owner calls "administratif" (20.10).
+    ("Administration", "Amendes",
+     _any("Service des contraventions", r"Amende", r"Bussen", "Polizeirichteramt",
+          r"\bPolice (?:administrative|municipale|cantonale)")),
+    ("Administration", "Poste", _any("Post CH AG", "Poste CH SA", r"PostFinance Geb")),
+    ("Administration", "Documents & autorités",
+     _any("OMIT AG", "Gravoplaques", "Confédération", "Personenmeldeamt", r"MBA Zürich",
+          "Kreisbüro", r"\bOCPM\b", r"Office cantonal de la population", r"\bOCV\b",
+          r"Office cantonal des véhicules", r"Contrôle des habitants", r"Registre du commerce",
+          r"Passeport", r"Etat civil", r"État civil", "Pompes Funèbres")),
 
     # --- Telecom & subscriptions -------------------------------------------
     ("Télécom & abonnements", "Téléphonie & internet",
@@ -101,10 +145,11 @@ RULES: list[tuple[str, str, str]] = [
     # --- Transport ---------------------------------------------------------
     ("Transport", "Carburant",
      _any("Migrol", "Coop Tankstelle", "Tamoil", "Shell", "Socar", r"Avia\b", r"BP\b",
-          "Agrola", "Paupe Station", r"Eni\b", "Esso", "Ruedi Rüssel")),
+          "Agrola", "Paupe Station", r"Eni\b", r"\bEsso\b", "Ruedi Rüssel")),
     # Inovil SA runs the Riponne car park in Lausanne (inovil.ch).
     ("Transport", "Stationnement",
-     _any("EasyPark", "Parking", "ParkingNW", "Parkhaus", "Parkplatz", "Inovil")),
+     _any("EasyPark", "Parking", "ParkingNW", "Parkhaus", "Parkplatz", "Inovil",
+          "Pedaggi", "Autostrade", r"P[ée]age\b", "Peaje")),
     ("Transport", "Train & transports publics",
      _any(r"SBB", r"CFF", r"FFS", "SNCF", "RATP", r"TPG\b", r"VBZ", "Swiss Pass",
           r"BLS\b", "Chemins de fer", "NS Reizigers", "SERVICE NAVIGO", "NLOV[A-Z0-9]{6,}",
@@ -137,7 +182,7 @@ RULES: list[tuple[str, str, str]] = [
     ("Restaurants & bars", "Café & snack",
      _any("Caffe", "Café", "Cafe", "VICAFE", "Milchbar", "Starbucks", "Dunkin", "Vending",
           r"NYX\*", "Aperto", "KKiosk", r"Kiosk", "RELAY DAILY", "Kafi ", "Spettacolo",
-          "CERAMICAFE", "Tartines")),
+          "CERAMICAFE", "Tartines", "Elvetino")),
     ("Restaurants & bars", "Bar & sortie",
      _any(r"\bBar\b", "Barflyz", "Bowling", "Billiardino", r"\bClub\b", "Brasserie",
           "Brasseurs", "La Loge", "Guinguette", "Biergarten", "TAP HOUSE", "Paddy Reilly",
@@ -186,7 +231,7 @@ RULES: list[tuple[str, str, str]] = [
     # merchant name, so the address is the only thing to match on.
     ("Shopping", "Centre commercial", r"Avenue Louis-Casai 27|Louis-Casa[iï] 27"),
     ("Shopping", "En ligne & marketplaces",
-     _any("AMAZON", "AMZN", "Aliexpress", "Temu", "Zalando", "Revolut", "LYDIA",
+     _any("AMAZON", "AMZN", "Aliexpress", "Temu", "Zalando", "LYDIA",
           "PayPal", "Wish", r"eBay")),
     ("Shopping", "Beauté & bien-être",
      _any("Beauty Style", "Coiffure", "Coiffeu", "Barbier", "Barbie", r"Spa\b",
@@ -194,12 +239,27 @@ RULES: list[tuple[str, str, str]] = [
     ("Loisirs & voyages", "Hébergement",
      _any("AIRBNB", "Hotel", "Hôtel", "Booking", "Uto Kulm", "ROOM007", "Hoxton",
           "Hostel", "Auberge de Jeunesse")),
+    ("Loisirs & voyages", "Montagne & ski",
+     _any("Bergbahnen", r"Remontées mécaniques", r"T[ée]l[ée]verbier", r"Télécabine", "Skipass",
+          r"Magic Pass")),
     ("Loisirs & voyages", "Sorties & culture",
      _any("EUROPA PARK", "Cinéma", "Cinema", "Pathé", "Musée", "Museum", "Theater",
           "Théâtre", "Ticketcorner", r"ZOO\b", "Planet Bowl", "Piscine", "Patinoire",
           "Oper", "Landesmuseum", "LookOut", "Victoria hall", "Escape",
           "Artistes Assoc", "Associations d")),
 ]
+
+def current(category: str, subcategory: str = "") -> tuple[str, str]:
+    """A (category, subcategory) as of today's names: a correction or a
+    personal rule written under a name since renamed reads as the new one,
+    so nothing written before is lost ("Impôts & administration" split in
+    two on 20.10)."""
+    if category == "Impôts & administration":
+        if subcategory in ("Impôts", "Remboursement"):
+            return "Impôts", subcategory
+        return "Administration", "Documents & autorités" if subcategory == "Services publics" else subcategory
+    return category, subcategory
+
 
 def load_local_rules(path: Path | None = None) -> list[tuple[str, str, str]]:
     """Personal rules, kept out of the repository.
@@ -224,7 +284,7 @@ def load_local_rules(path: Path | None = None) -> list[tuple[str, str, str]]:
             re.compile(pattern)
         except re.error:
             continue
-        rules.append((entry.get("category", ""), entry.get("subcategory", ""), pattern))
+        rules.append((*current(entry.get("category", ""), entry.get("subcategory", "")), pattern))
     return rules
 
 
@@ -269,15 +329,15 @@ def compile_rules(local: list[tuple[str, str, str]] | None = None):
 
 
 COMPILED = compile_rules()
-LOCAL_RULE_COUNT = len(load_local_rules())
 
 # Payment rails that carry no merchant name of their own. A Twint sent with
 # no counterparty was long filed as a person-to-person transfer; it is not
 # known to be one. The statement prints "Paiement Twint" and nothing else, and
 # Twint pays parking meters, coffee machines and stalls as well as friends --
-# 82 of the 313 on the real statement are ~2 CHF. So it is named for what is
+# many of them on the real statement are ~2 CHF. So it is named for what is
 # known: a Twint nobody has identified yet. /reclasser/tri sorts them.
 PEER_KINDS = ("Paiement Twint",)
+CARD_KIND = "Paiement par carte"
 # The SWIFT code of Interactive Brokers' US entity, printed on its transfers.
 BROKER_BIC = re.compile(r"\bIBKRUS33", re.IGNORECASE)
 TWINT_UNKNOWN = "Twint non identifié"
@@ -285,15 +345,19 @@ INCOMING_KINDS = ("Paiement entrant",)
 
 
 def _searchable(txn: Transaction) -> str:
-    return f"{txn.kind} | {txn.merchant} | {txn.location}"
+    """What the rules read: the kind of payment and who was paid -- not
+    where. A location is a street address as often as a town, and a street
+    is named after anything: "Rue du Musée 4" filed an employer's salary
+    under museums, "Rue de l'Hôpital 9" a burger bar under health care."""
+    return f"{txn.kind} | {txn.merchant} | "
 
 
 # Categories that describe money going out. A credit that matches one of them
 # is a refund of that thing, not an instance of it.
 SPENDING_CATEGORIES = {
-    "Logement", "Santé & assurance", "Impôts & administration", "Alimentation",
+    "Logement", "Santé & assurance", "Impôts", "Administration", "Alimentation",
     "Transport", "Télécom & abonnements", "Restaurants & bars", "Shopping",
-    "Loisirs & voyages", "Transferts P2P", TWINT_UNKNOWN,
+    "Loisirs & voyages", "Transferts P2P", TWINT_UNKNOWN, "Carte de crédit",
 }
 
 
@@ -308,7 +372,7 @@ def classify(txn: Transaction, rules: list | None = None) -> tuple[str, str]:
     haystack = _searchable(txn)
     for category, subcategory, pattern in (COMPILED if rules is None else rules):
         if pattern.search(haystack):
-            # A 402 CHF credit from the tax office is a refund; labelling it
+            # A credit from the tax office is a refund; labelling it
             # "Impôts" reads as if it had been paid rather than received.
             if txn.amount > 0 and category in SPENDING_CATEGORIES:
                 return category, "Remboursement"
@@ -317,8 +381,8 @@ def classify(txn: Transaction, rules: list | None = None) -> tuple[str, str]:
     if txn.amount > 0:
         # Money coming back from the brokerage is savings moved, not income.
         # The line names the owner as sender; only the sending bank's BIC
-        # says Interactive Brokers -- a withdrawal on 20.12.2024 read as a
-        # month's salary until this.
+        # says Interactive Brokers -- a withdrawal read as a month's salary
+        # until this.
         if any(BROKER_BIC.search(line) for line in (txn.detail or [])):
             return "Épargne & investissement", "Retrait de courtage"
         if txn.kind in INCOMING_KINDS:
@@ -335,8 +399,37 @@ def classify(txn: Transaction, rules: list | None = None) -> tuple[str, str]:
     return UNCATEGORISED, ""
 
 
+SELF = "Entre mes comptes"
+
+
+def _name_key(name: str) -> frozenset[str]:
+    """A person's name as a set of folded words: "Jean Dupont", "DUPONT
+    Jean" and "Dupont, Jean" are one name."""
+    decomposed = unicodedata.normalize("NFKD", name.casefold())
+    plain = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return frozenset(w for w in re.findall(r"[a-z]+", plain) if len(w) > 1)
+
+
+def is_to_self(txn: Transaction, holder: str) -> bool:
+    """A bank transfer from or to the account holder: money moved between
+    one's own accounts (another bank, a savings account), neither income nor
+    spending. Card payments and Twints never are; the holder's name is read
+    from the statement, never written in code."""
+    if not holder or txn.kind.startswith(CARD_KIND) or txn.kind in PEER_KINDS:
+        return False
+    own = _name_key(holder)
+    if len(own) < 2:
+        return False  # one word is too little to tell a person apart
+    return own <= _name_key(txn.label)
+
+
 def classify_all(transactions: Iterable[Transaction],
-                 rules: list | None = None) -> None:
-    """Annotate transactions in place, with `rules` when given."""
+                 rules: list | None = None, holder: str = "") -> None:
+    """Annotate transactions in place, with `rules` when given. With the
+    account `holder`, a transfer from or to that name is a move between
+    one's own accounts -- unless it is savings (the brokerage, the 3a),
+    which keep their category."""
     for txn in transactions:
         txn.category, txn.subcategory = classify(txn, rules)
+        if txn.category != "Épargne & investissement" and is_to_self(txn, holder):
+            txn.category, txn.subcategory = INTERNAL, SELF

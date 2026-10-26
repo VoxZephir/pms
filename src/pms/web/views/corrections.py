@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from flask import abort, jsonify, redirect, render_template, request, url_for
+from flask import abort, jsonify, request
 
 from ... import buckets
 from ... import categories as categories_module
@@ -65,11 +65,15 @@ def reclassify():
         return jsonify({"error": f"mouvement introuvable: {key}"}), 404
 
     store_ = data.overrides
+    mode = payload.get("mode") or overrides_module.EXACT
+    # Taken before anything moves: "Annuler" puts this back, whatever it was.
+    before = store_.snapshot([key], [txn.label] if scope == "merchant" else [], mode)
     if scope == "merchant":
-        mode = payload.get("mode") or overrides_module.EXACT
         hits = store_.affected(statement.transactions, txn.label, mode)
         store_.rule(txn.label, mode=mode, category=category,
                     subcategory=subcategory, bucket=bucket)
+        # The row being reclassified must move, its own pin notwithstanding.
+        store_.yield_to_rule(key, category=category, bucket=bucket)
         summary = {"scope": "merchant", "match": txn.label, "mode": mode,
                    "count": len(hits)}
     else:
@@ -86,7 +90,8 @@ def reclassify():
         "subcategory": subcategory,
         "bucket": bucket,
         "undo": {"scope": summary["scope"], "key": key,
-                 "match": txn.label, "mode": summary.get("mode", "")},
+                 "match": txn.label, "mode": summary.get("mode", ""),
+                 "restore": before},
     })
 
 
@@ -139,15 +144,21 @@ def reclassify_bulk():
     if not selection:
         return jsonify({"error": "aucun mouvement sélectionné"}), 400
 
+    selected = [overrides_module.key_of(t) for t in selection]
+    before = data.overrides.snapshot(
+        selected, [t.label for t in selection if t.label] if apply_as == "merchant" else [])
     if apply_as == "merchant":
         labels = data.overrides.rule_many(selection, category=category,
                                           subcategory=subcategory, bucket=bucket)
-        undo = {"kind": "rules", "matches": labels}
+        # The rows on screen are the ones asked to move: their own pins yield.
+        for key in selected:
+            data.overrides.yield_to_rule(key, category=category, bucket=bucket)
+        undo = {"kind": "rules", "matches": labels, "restore": before}
         rules_made = len(labels)
     else:
         keys = data.overrides.pin_many(selection, category=category,
                                        subcategory=subcategory, bucket=bucket)
-        undo = {"kind": "pins", "keys": keys}
+        undo = {"kind": "pins", "keys": keys, "restore": before}
         rules_made = 0
 
     data.overrides.save()
@@ -168,7 +179,9 @@ def reclassify_bulk():
 def reclassify_bulk_undo():
     data = store()
     payload = request.get_json(silent=True) or request.form
-    if payload.get("kind") == "rules":
+    if isinstance(payload.get("restore"), dict):
+        removed = data.overrides.restore(payload["restore"])
+    elif payload.get("kind") == "rules":
         removed = data.overrides.unrule_many(payload.get("matches") or [])
     else:
         removed = data.overrides.unpin_many(payload.get("keys") or [])
@@ -177,24 +190,15 @@ def reclassify_bulk_undo():
     return jsonify({"removed": removed})
 
 
-@bp.route("/reclasser/bulk", methods=["POST"])
-def reclassify_bulk_form():
-    """The no-JavaScript path: the same action, submitted as a plain form."""
-    response = reclassify_bulk()
-    body = response[0] if isinstance(response, tuple) else response
-    target = request.form.get("back") or url_for("dashboard.dashboard")
-    if isinstance(response, tuple) and response[1] >= 400:
-        return body
-    return redirect(target)
-
-
 @bp.route("/api/reclassify/undo", methods=["POST"])
 def reclassify_undo():
     data = store()
     payload = request.get_json(silent=True) or request.form
     scope = payload.get("scope") or "pin"
 
-    if scope == "merchant":
+    if isinstance(payload.get("restore"), dict):
+        removed = data.overrides.restore(payload["restore"])
+    elif scope == "merchant":
         removed = data.overrides.unrule(payload.get("match") or "",
                                         payload.get("mode") or overrides_module.EXACT)
     else:
@@ -205,42 +209,7 @@ def reclassify_undo():
     return jsonify({"removed": bool(removed)})
 
 
-def _rules_page(data, form_errors=None, form_values=None):
-    """The corrections page -- the GET, and the re-render after a failed POST.
-
-    `form_errors` / `form_values` carry the failed form's state: the error
-    summary and the per-field marks are rendered from them, because the app
-    keeps no session to flash a message in.
-    """
-    statement = data.statement
-    counterparties = sorted({t.label for t in statement.transactions if t.label},
-                            key=str.casefold)
-    return render_template(
-        "rules.html.j2",
-        window=statement,
-        entries=data.overrides.describe(statement.transactions),
-        choices=_target_choices(statement),
-        counterparties=counterparties,
-        total=len(data.overrides),
-        twint_left=sum(1 for t in statement.transactions
-                       if t.category == categories_module.TWINT_UNKNOWN),
-        touched=getattr(data, "override_count", 0),
-        # Entries without a pattern (the example file's `_comment`) are
-        # framing, not rules -- they are listed nowhere but preserved on save.
-        # Non-dict entries only exist in hand-edited files; the page must not
-        # crash on them.
-        local_rules=[entry for entry in
-                     categories_module.load_local_rules_raw(data.local_rules_path)
-                     if isinstance(entry, dict) and entry.get("pattern")],
-        toc=[{"id": "corrections", "label": "Corrections en place"},
-             {"id": "local-rules", "label": "Règles personnelles"},
-             {"id": "merges", "label": "Fusionner deux bénéficiaires"}],
-        form_errors=form_errors or {},
-        form_values=form_values or {},
-    )
-
-
-def _edit_local_rules(data, action) -> tuple[dict, dict]:
+def _edit_local_rules(data, action, form=None) -> tuple[dict, dict]:
     """One edit to the personal rules; `({}, {})` when it succeeded.
 
     A failed add returns (errors, values) so the page re-renders with the
@@ -249,10 +218,11 @@ def _edit_local_rules(data, action) -> tuple[dict, dict]:
     exceptions: a rule written here reclassifies everything it matches,
     past and future, and beats the public rules.
     """
+    form = request.form if form is None else form
     rules = categories_module.load_local_rules_raw(data.local_rules_path)
 
     if action == "lr-delete":
-        wanted = tuple((request.form.get(key) or "").strip()
+        wanted = tuple((form.get(key) or "").strip()
                        for key in ("pattern", "category", "subcategory"))
         categories_module.save_local_rules(
             [entry for entry in rules
@@ -263,9 +233,9 @@ def _edit_local_rules(data, action) -> tuple[dict, dict]:
             data.local_rules_path)
         return {}, {}
 
-    pattern = (request.form.get("pattern") or "").strip()
-    category = (request.form.get("category") or "").strip()
-    subcategory = (request.form.get("subcategory") or "").strip()
+    pattern = (form.get("pattern") or "").strip()
+    category = (form.get("category") or "").strip()
+    subcategory = (form.get("subcategory") or "").strip()
 
     errors: dict[str, str] = {}
     values = {"lr-pattern": pattern, "lr-category": category,
@@ -295,55 +265,6 @@ def _edit_local_rules(data, action) -> tuple[dict, dict]:
                   "pattern": pattern})
     categories_module.save_local_rules(rules, data.local_rules_path)
     return {}, {}
-
-
-@bp.route("/reclasser", methods=["GET", "POST"])
-def rules():
-    """Manage corrections, and reclassify without JavaScript.
-
-    The POST branch is the fallback path: the same form the drag-and-drop uses
-    behind the scenes, submitted normally. The personal rules (data/local_rules.json)
-    are edited here too, under `lr-add` / `lr-delete`.
-    """
-    data = store()
-
-    if request.method == "POST":
-        action = request.form.get("action") or "apply"
-        if action in ("lr-add", "lr-delete"):
-            errors, values = _edit_local_rules(data, action)
-            if errors:
-                return _rules_page(data, errors, values)
-            data.invalidate()
-            return redirect(url_for("dashboard.rules"))
-        if action == "delete":
-            if request.form.get("kind") == "alias":
-                data.overrides.unalias(request.form.get("match") or "")
-            elif request.form.get("kind") == "rule":
-                data.overrides.unrule(request.form.get("match") or "",
-                                      request.form.get("mode") or overrides_module.EXACT)
-            else:
-                data.overrides.unpin(request.form.get("key") or "")
-        else:
-            statement = data.statement
-            key = (request.form.get("key") or "").strip()
-            txn = next((t for t in statement.transactions
-                        if overrides_module.key_of(t) == key), None)
-            if txn is not None:
-                category = (request.form.get("category") or "").strip()
-                subcategory = (request.form.get("subcategory") or "").strip()
-                bucket = (request.form.get("bucket") or "").strip()
-                if request.form.get("scope") == "merchant":
-                    data.overrides.rule(txn.label, category=category,
-                                        subcategory=subcategory, bucket=bucket)
-                else:
-                    data.overrides.pin(key, category=category,
-                                       subcategory=subcategory,
-                                       bucket=bucket, label=txn.label)
-        data.overrides.save()
-        data.invalidate()
-        return redirect(url_for("dashboard.rules"))
-
-    return _rules_page(data)
 
 
 # --- sorting the unidentified Twints -----------------------------------------
@@ -409,51 +330,40 @@ def _pin_category(overrides, txn, category: str) -> None:
         overrides.unpin(key)
 
 
-@bp.route("/reclasser/tri", methods=["GET", "POST"])
-def twint_triage():
-    """Identify the Twints the statement leaves blank, one keystroke each.
+def triage_apply(data, form) -> tuple[str, dict]:
+    """Pin one Twint (`pin`), every Twint of one amount (`group`) or of one
+    amount band (`band`), or undo the last pin; returns the key to offer the
+    undo for, and the pins as they were (what "Annuler" puts back after a
+    group). Aborts 404 on an unknown key, 409 on a row that is not an
+    unidentified Twint, 400 on a category that is not a destination."""
+    statement = data.statement
+    by_key = {overrides_module.key_of(t): t for t in statement.transactions}
+    action = form.get("action") or "pin"
+    keys = (form.getlist("keys") if action in ("group", "band")
+            else [(form.get("key") or "").strip()])
+    rows = [by_key.get(key) for key in keys]
+    if not rows or None in rows:
+        abort(404)
+    # Only what the triage is for: a Twint with no category yet (undo
+    # aside, which puts one back).
+    if action != "undo" and any(
+            t.category != categories_module.TWINT_UNKNOWN for t in rows):
+        abort(409)
+    category = "" if action == "undo" else \
+        (form.get("category") or "").strip()
+    if action != "undo" and category not in _triage_targets(statement, Counter()):
+        abort(400)
+    before = data.overrides.snapshot(keys)
+    for txn in rows:
+        _pin_category(data.overrides, txn, category)
+    data.overrides.save()
+    data.invalidate()
+    return (keys[0] if action == "pin" else ""), before
 
-    313 Twints on the real statement print "Paiement Twint" and nothing else;
-    half had been pinned one at a time through the generic form. This page
-    shows one at a time with what can jog the memory -- the date, the other
-    movements that day, what was decided before at the same amount -- and a
-    category is one key. Plain forms: without JavaScript every choice is a
-    button; app.js only maps the digits onto them.
-    """
-    data = store()
-    try:
-        at = max(int(request.values.get("at") or 0), 0)
-    except ValueError:
-        at = 0
 
-    if request.method == "POST":
-        statement = data.statement
-        by_key = {overrides_module.key_of(t): t for t in statement.transactions}
-        action = request.form.get("action") or "pin"
-        keys = (request.form.getlist("keys") if action == "group"
-                else [(request.form.get("key") or "").strip()])
-        rows = [by_key.get(key) for key in keys]
-        if not rows or None in rows:
-            abort(404)
-        # Only what the triage is for: a Twint with no category yet (undo
-        # aside, which puts one back).
-        if action != "undo" and any(
-                t.category != categories_module.TWINT_UNKNOWN for t in rows):
-            abort(409)
-        category = "" if action == "undo" else \
-            (request.form.get("category") or "").strip()
-        if action != "undo" and category not in _triage_targets(statement, Counter()):
-            abort(400)
-        for txn in rows:
-            _pin_category(data.overrides, txn, category)
-        last = keys[0] if action == "pin" else ""
-        data.overrides.save()
-        data.invalidate()
-        # The queue shrank by the row just classified, so the same position
-        # now holds the next one.
-        return redirect(url_for("dashboard.twint_triage", at=at or None,
-                                last=last or None))
-
+def triage_state(data, at: int, last_key: str) -> dict:
+    """The queue at position `at`: the Twint on screen, what can jog the
+    memory, the recurring amounts, and the last pin to undo."""
     statement = data.statement
     queue = _twint_queue(statement)
     history = _twint_history(statement)
@@ -482,12 +392,9 @@ def twint_triage():
             "suggested": past.most_common(1)[0][0] if past else "",
         })
 
-    last_key = request.args.get("last") or ""
     last = next((t for t in statement.transactions
                  if overrides_module.key_of(t) == last_key), None)
-    return render_template(
-        "triage.html.j2",
-        window=statement,
+    return dict(
         queue_size=len(queue),
         done=sum(1 for t in statement.transactions
                  if t.kind in categories_module.PEER_KINDS and t.amount < 0
@@ -504,49 +411,3 @@ def twint_triage():
         last_key=last_key,
     )
 
-
-@bp.route("/reclasser/fusionner", methods=["POST"])
-def merge_labels():
-    """Declare two spellings to be the same counterparty.
-
-    Banks are not consistent -- the same Geneva letting agent is printed both
-    "Muster Verwaltung AG" and "Muster Verwaltungs AG" -- and every total,
-    ranking and merchant rule otherwise treats them as two different people.
-    """
-    data = store()
-    canonical = (request.form.get("canonical") or "").strip()
-    variant = (request.form.get("variant") or "").strip()
-    prefix = (request.form.get("prefix") or "").strip()
-
-    if canonical and prefix:
-        # A supermarket prints one counterparty per till, so merging exact names
-        # would be a list that grows every month. Anchor the pattern so "Coop"
-        # does not swallow a merchant that merely mentions it.
-        data.overrides.alias_pattern("^" + re.escape(prefix), canonical)
-    elif canonical and variant:
-        data.overrides.alias(variant, canonical)
-    else:
-        return redirect(url_for("dashboard.rules"))
-
-    data.overrides.save()
-    data.invalidate()
-    return redirect(url_for("dashboard.rules"))
-
-
-@bp.route("/reclasser/<key>")
-def reclassify_form(key: str):
-    """The no-JavaScript reclassification form for one movement."""
-    data = store()
-    statement = data.statement
-    txn = next((t for t in statement.transactions
-                if overrides_module.key_of(t) == key), None)
-    if txn is None:
-        abort(404)
-    return render_template(
-        "reclassify.html.j2",
-        window=statement,
-        txn=txn,
-        key=key,
-        siblings=data.overrides.affected(statement.transactions, txn.label),
-        choices=_target_choices(statement),
-    )

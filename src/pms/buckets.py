@@ -26,7 +26,8 @@ from __future__ import annotations
 import datetime as dt
 from collections import defaultdict
 
-from .analysis import bucket_bounds, is_fx_leg, spending, timeseries
+from .analysis import bucket_bounds, is_internal, spending, timeseries
+from .categories import INTERNAL
 from .models import Statement, Transaction
 
 NEED = "Need"
@@ -43,7 +44,8 @@ UNSPENT = "Non dépensé"
 CATEGORY_BUCKET: dict[str, str] = {
     "Logement": NEED,
     "Santé & assurance": NEED,
-    "Impôts & administration": NEED,
+    "Impôts": NEED,
+    "Administration": NEED,
     "Alimentation": NEED,
     "Transport": NEED,
     "Télécom & abonnements": NEED,
@@ -84,6 +86,11 @@ def bucket_of(txn: Transaction) -> str:
     # comes from someone who actually knows what the payment was for.
     if txn.bucket_override:
         return txn.bucket_override
+    # Money moved between one's own accounts is neither a need, a want nor
+    # a saving: no bucket at all, rather than "Non classé" -- which made the
+    # bucket's list open on rows its count had rightly left out.
+    if txn.category == INTERNAL:
+        return ""
     override = SUBCATEGORY_BUCKET.get((txn.category, txn.subcategory))
     if override:
         return override
@@ -101,7 +108,7 @@ def summarise(statement: Statement) -> dict:
 
     spend = spending(statement)
     income = sum(t.amount_chf for t in statement.transactions
-                 if t.amount_chf > 0 and not is_fx_leg(t))
+                 if t.amount_chf > 0 and not is_internal(t))
 
     totals: dict[str, float] = defaultdict(float)
     counts: dict[str, int] = defaultdict(int)
@@ -115,9 +122,16 @@ def summarise(statement: Statement) -> dict:
 
     transferred = totals[SAVE]
     residual = income - sum(totals[b] for b in (NEED, WANT, UNSORTED, SAVE))
-    totals[SAVE] += residual
-
-    base = income if income else 1.0
+    # More went out than came in -- typically a month whose salary has not
+    # landed yet. Shares of income then read thousands of percent either way, true and
+    # useless; they are taken of what went out instead, and the overshoot is
+    # said in words rather than folded into Save as a negative block.
+    basis = "income" if income and residual >= 0 else "spend"
+    if basis == "income":
+        totals[SAVE] += residual
+        base = income
+    else:
+        base = sum(totals[b] for b in (NEED, WANT, UNSORTED, SAVE)) or 1.0
 
     # `Save` is the only bucket holding two unlike things, so it is the only one
     # that has to show its seam. Money moved to a savings vehicle is a decision;
@@ -128,7 +142,7 @@ def summarise(statement: Statement) -> dict:
     parts = []
     for label, amount, count, hollow in (
             (MOVED, transferred, counts[SAVE], False),
-            (UNSPENT, residual, 0, True)):
+            (UNSPENT, residual if basis == "income" else 0, 0, True)):
         if amount <= 0:
             continue
         parts.append({"name": label, "amount": amount, "count": count,
@@ -153,7 +167,11 @@ def summarise(statement: Statement) -> dict:
     return {
         "rows": rows,
         "income": income,
-        "residual": residual,
+        # What the shares are of: "income", or "spend" when more went out.
+        "basis": basis,
+        "base": base,
+        "overspend": -residual if basis == "spend" else 0.0,
+        "residual": residual if basis == "income" else 0.0,
         "transferred_to_savings": transferred,
         "spend_total": sum(totals[b] for b in (NEED, WANT, UNSORTED)),
         # 50/30/20 is the usual yardstick; shown next to the actual split.
@@ -218,7 +236,7 @@ def shares_by_month(statement: Statement, start: dt.date, end: dt.date,
     Smoothing is a ratio of rolling sums -- sum of the bucket over the last
     `smooth` months, divided by the sum of the base -- and never a mean of
     monthly ratios: in a mean, a month with 200 CHF of income weighs as much
-    as a salary month, and its -2500 % drowns everything else. Before the
+    as a salary month, and its thousands of percent negative drown everything else. Before the
     ledger holds `smooth` consecutive whole months, the value is None: a
     series stops where its data stops.
     """

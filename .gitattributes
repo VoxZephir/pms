@@ -1,0 +1,8 @@
+# One line ending in the repository: LF. Mixed files made every edit a
+# guess, and every diff a wall of noise.
+* text=auto eol=lf
+# cmd.exe reads batch files line by line; LF breaks labels and parentheses.
+*.bat text eol=crlf
+# The front-end build, byte for byte as Vite wrote it: its asset names are
+# hashes of the content, and test_frontend compares them to a fresh build.
+src/pms/web/static/spa/** -text

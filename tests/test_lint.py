@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_ruff_finds_nothing():
     if importlib.util.find_spec("ruff") is None:
-        pytest.skip("ruff not installed (pip install -r requirements-dev.txt)")
+        pytest.skip("ruff not installed (uv sync)")
     result = subprocess.run(
         [sys.executable, "-m", "ruff", "check", "--no-cache", "src", "tests"],
         cwd=ROOT, capture_output=True, text=True, encoding="utf-8")

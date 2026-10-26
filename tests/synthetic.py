@@ -290,6 +290,19 @@ class _Builder:
             a, b = rng.sample(day_rows, 2)
             a["ref"], b["ref"] = b["ref"], a["ref"]
 
+        # For the tax return, after the shuffle so the random stream of every
+        # other day stays where it was: a gift to a charity, an evening course.
+        if d == dt.date(2025, 12, 3):
+            self.transfer(d, "Croix-Rouge suisse", 150.00)
+        if d == dt.date(2025, 2, 11):
+            self.transfer(d, "Ecole-club Migros", 340.00)
+        # Money moved between the holder's own accounts, the name printed
+        # the bank's way round: neither income nor spending.
+        if d == dt.date(2025, 3, 3):
+            self.incoming(d, "EXEMPLE ALEX", "Chemin des Vignes,7", 2500.00)
+        if d == dt.date(2025, 9, 2):
+            self.transfer(d, "Alex Exemple", 1200.00)
+
     def _abroad(self, d: dt.date) -> float:
         """Card spending in EUR that day, still to be funded."""
         rng = self.rng
@@ -376,3 +389,39 @@ class _Builder:
 
 def build() -> Statement:
     return _Builder().statement()
+
+
+def cover_pdf(path, lines: list[str]) -> None:
+    """A one-page PDF whose only text is `lines`, one per line.
+
+    Enough for what reads a cover page and nothing more -- the Downloads
+    watcher's recognition. Written by hand (Helvetica, WinAnsi, so "é"
+    survives) rather than with a PDF library the suite does not otherwise
+    need. The text is invented like everything here.
+    """
+    from pathlib import Path
+
+    def escape(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream = ("BT /F1 11 Tf 14 TL 50 780 Td "
+              + " ".join(f"({escape(line)}) Tj T*" for line in lines)
+              + " ET").encode("cp1252")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+        b"/Encoding /WinAnsiEncoding >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+    ]
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    out += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1, xref)
+    Path(path).write_bytes(bytes(out))

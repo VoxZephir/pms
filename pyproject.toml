@@ -9,12 +9,36 @@ description = "Analyse de relevés de transactions Swissquote"
 requires-python = ">=3.11"
 dependencies = [
     "pdfplumber>=0.11",
-    "Jinja2>=3.1",
+    # Encrypts the backups (backup.py). pdfminer already depends on it; named
+    # here so the encryption does not rest on another package's choice.
+    "cryptography>=41",
 ]
 
 [project.optional-dependencies]
-web = ["Flask>=3.1"]
-dev = ["pytest>=8", "ruff>=0.16", "playwright>=1.50"]
+web = [
+    "Flask>=3.1",
+    # The optional assistant (pms/ai.py) when its provider is Claude. Imported
+    # only when called: without it, or without data/ai.json, the app runs as
+    # before. DeepSeek and Ollama need nothing beyond the standard library.
+    "anthropic>=1.0",
+]
+
+# The tests' tooling: installed by `run.bat --test` (`uv sync`), left out of
+# a plain launch (`--no-dev`). Exact versions live in uv.lock.
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    # Run by tests/test_lint.py, so its rules hold without anyone remembering it.
+    "ruff>=0.16",
+    # Drives the installed Edge or Chrome for tests/test_browser.py -- no
+    # `playwright install`, no browser download.
+    "playwright>=1.50",
+    # The PDF redaction tool (redact.py, caviarder.bat): rewrites the page
+    # content so a redacted word is gone from the file, not hidden under a
+    # box. Kept out of the app's own install; 1.x has no dependency of its
+    # own. AGPL -- fine for a personal tool, to weigh before anything sold.
+    "pymupdf>=1.24,<2",
+]
 
 [project.scripts]
 pms = "pms.cli:main"
@@ -23,7 +47,7 @@ pms = "pms.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pms = ["web/templates/*.j2", "web/templates/**/*.j2", "web/static/*"]
+pms = ["web/static/*", "web/static/spa/*", "web/static/spa/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

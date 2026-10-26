@@ -10,7 +10,6 @@ import pytest
 from pms import analysis, buckets
 from pms.categories import classify_all
 from pms.models import Statement, Transaction
-from pms.web import charts
 
 
 @pytest.fixture(scope="module")
@@ -132,47 +131,38 @@ def test_save_goes_negative_when_a_month_spends_more_than_it_earned():
     assert rows[1]["raw"][buckets.SAVE] == pytest.approx(70)
 
 
-# --- the chart -----------------------------------------------------------------
+# --- the panel's summary -------------------------------------------------------
 
-def _rows(values: list[float | None]) -> list[dict]:
-    return [{"label": f"m{i}", "raw": {"Need": v}, "smooth": {"Need": v}}
-            for i, v in enumerate(values)]
-
-
-def test_an_extreme_month_is_drawn_on_the_edge_not_stretched_into():
-    """-2500 % in one month would flatten every other month into a line."""
-    chart = charts.shares_chart(_rows([55.0, -2500.0, 60.0]), ["Need"],
-                                {"Need": "var(--s0)"}, "income", 1,
-                                buckets.TARGET)
-    assert chart["lo"] == charts.SHARE_FLOOR and chart["capped"]
-    (line,) = chart["lines"]
-    assert len(line["offscale"]) == 1
-    assert line["offscale"][0]["y"] == chart["baseline"]
-    # The tooltip still says the truth.
-    assert chart["series"][0]["pts"][1][2] == -2500.0
+def test_a_month_that_earned_more_than_it_spent_reads_in_shares_of_income():
+    summary = buckets.summarise(_statement(_month(2025, 1, 1000, 300, 100)))
+    shares = {r["name"]: r["share"] for r in summary["rows"]}
+    assert summary["basis"] == "income" and summary["overspend"] == 0
+    assert shares[buckets.NEED] == pytest.approx(30)
+    assert shares[buckets.SAVE] == pytest.approx(60)   # the 600 left unspent
+    assert sum(shares.values()) == pytest.approx(100)
 
 
-def test_a_missing_month_breaks_the_line_instead_of_bridging_it():
-    chart = charts.shares_chart(_rows([50.0, 52.0, None, 49.0, 51.0]), ["Need"],
-                                {"Need": "var(--s0)"}, "income", 1,
-                                buckets.TARGET)
-    assert len(chart["lines"][0]["segments"]) == 2
-    assert chart["series"][0]["pts"][2] is None
+def test_a_month_that_spent_more_than_it_earned_reads_in_shares_of_spending():
+    """The salary not in yet: 50 earned, 2'300 spent. In shares of income that
+    printed 3'600 % and a Save of -4'500 %, true and useless."""
+    summary = buckets.summarise(_statement(_month(2025, 1, 50, 1800, 500)))
+    shares = {r["name"]: r["share"] for r in summary["rows"]}
+    assert summary["basis"] == "spend"
+    assert summary["base"] == pytest.approx(2300)
+    assert summary["overspend"] == pytest.approx(2250)
+    assert shares[buckets.NEED] == pytest.approx(1800 / 2300 * 100)
+    assert shares[buckets.SAVE] == 0 and summary["residual"] == 0
+    assert all(0 <= v <= 100 for v in shares.values())
+    assert sum(shares.values()) == pytest.approx(100)
+    # No hollow "unspent" half when nothing was left over.
+    save = next(r for r in summary["rows"] if r["name"] == buckets.SAVE)
+    assert not any(p["hollow"] for p in save["parts"])
 
 
-def test_the_spending_base_is_a_fixed_zero_to_hundred_axis_without_targets():
-    chart = charts.shares_chart(_rows([55.0, 60.0]), ["Need"],
-                                {"Need": "var(--s0)"}, "spending", 1,
-                                buckets.TARGET)
-    assert (chart["lo"], chart["hi"]) == (0.0, 100.0)
-    assert chart["targets"] == []
-
-
-def test_end_labels_never_sit_on_top_of_each_other():
-    rows = [{"label": f"m{i}", "raw": {"Want": 9.0, "Non classé": 8.0},
-             "smooth": {"Want": 9.0, "Non classé": 8.0}} for i in range(3)]
-    chart = charts.shares_chart(rows, ["Want", "Non classé"],
-                                {"Want": "var(--s1)", "Non classé": "var(--unsorted)"},
-                                "spending", 1, buckets.TARGET)
-    first, second = sorted(line["end"]["label_y"] for line in chart["lines"])
-    assert second - first >= 12
+def test_the_highlights_drop_what_one_window_cannot_say():
+    """A savings rate of -4'500 % and the dearest month of a single month."""
+    statement = _statement(_month(2025, 1, 50, 1800, 500))
+    custodian = {"count": 0}
+    labels = [h["label"] for h in analysis.highlights(statement, custodian)]
+    assert "Taux d'épargne" not in labels
+    assert "Mois le plus cher" not in labels

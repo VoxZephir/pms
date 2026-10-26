@@ -1,36 +1,51 @@
-"""app.js in a real browser.
+"""The React app in a real browser.
 
-The rest of the suite reads the markup the server sends; nothing there runs
-the JavaScript that rewrites it. That layer is where several of the bugs the
-user actually hit lived -- a tooltip amount that lost its decimal point
-("-813’00", read as millions), the brush overlay that swallowed the hover,
-sorting that did nothing on the page a category opens. These drive it.
+The rest of the suite reads the JSON the server sends; nothing there runs
+the code that draws it. These drive the built app (static/spa/) the way a
+reader does: on a laptop, and on a phone-sized touch screen.
 
 Playwright steers the Edge or Chrome already installed, so there is no
-browser to download. Skipped when Playwright or such a browser is missing.
+browser to download. Skipped when Playwright, such a browser, or the build
+is missing.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import threading
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from webhelpers import savings_snapshots
+
+from pms.web.api import SPA
 
 sync_api = pytest.importorskip("playwright.sync_api")
 expect = sync_api.expect
 
-AMOUNT = re.compile(r"-?\d{1,3}(?:’\d{3})*\.\d{2} CHF")
-SHOWN = re.compile(r"\bon\b")
+PAGES = ["/", "/?preset=all", "/transactions?preset=all", "/epargne", "/analyse",
+         "/previsions", "/corrections", "/corrections/tri", "/importer", "/jour/2025-05-15",
+         "/a-venir", "/impots", "/projets", "/bilan"]
 
 
 @pytest.fixture(scope="module")
-def server(ledger_file):
+def server(ledger_file, tmp_path_factory):
+    """Its own copy of the ledger: the tests here write corrections."""
+    if not (SPA / "index.html").exists():
+        pytest.skip("front end not built")
     from werkzeug.serving import make_server
 
     from pms.web import create_app
-    httpd = make_server("127.0.0.1", 0, create_app(ledger_file), threaded=True)
+    workdir = tmp_path_factory.mktemp("browser")
+    ledger = workdir / "ledger.json"
+    shutil.copy(ledger_file, ledger)
+    app = create_app(ledger)
+    # The savings pockets, so /epargne draws its panels rather than its
+    # empty state.
+    savings_snapshots(app.test_client())
+    httpd = make_server("127.0.0.1", 0, app, threaded=True)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{httpd.server_port}"
@@ -41,7 +56,10 @@ def server(ledger_file):
 def browser():
     with sync_api.sync_playwright() as playwright:
         launched = None
-        for channel in ("msedge", "chrome"):
+        # A Chromium that is not Edge or Chrome (a container's), by path.
+        if os.environ.get("PMS_BROWSER"):
+            launched = playwright.chromium.launch(executable_path=os.environ["PMS_BROWSER"])
+        for channel in () if launched else ("msedge", "chrome"):
             try:
                 launched = playwright.chromium.launch(channel=channel)
                 break
@@ -53,11 +71,17 @@ def browser():
         launched.close()
 
 
+def _context(browser, server, phone: bool = False):
+    options = ({"viewport": {"width": 390, "height": 844}, "is_mobile": True, "has_touch": True}
+               if phone else {"viewport": {"width": 1400, "height": 1000}})
+    context = browser.new_context(base_url=server, **options)
+    context.set_default_timeout(8000)
+    return context
+
+
 @pytest.fixture
 def page(browser, server):
-    context = browser.new_context(base_url=server,
-                                  viewport={"width": 1400, "height": 1000})
-    context.set_default_timeout(5000)
+    context = _context(browser, server)
     page = context.new_page()
     errors: list[str] = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -66,316 +90,391 @@ def page(browser, server):
     assert not errors, f"uncaught JavaScript errors: {errors}"
 
 
-def _middle(page, selector: str, at: float = 0.5) -> tuple[float, float]:
-    """A point on the element, in viewport coordinates -- scrolled into view
-    first, or the pointer lands on nothing."""
-    target = page.locator(selector)
-    target.scroll_into_view_if_needed()
-    box = target.bounding_box()
-    return box["x"] + box["width"] * at, box["y"] + box["height"] * 0.5
+@pytest.fixture
+def phone(browser, server):
+    context = _context(browser, server, phone=True)
+    page = context.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    yield page
+    context.close()
+    assert not errors, f"uncaught JavaScript errors: {errors}"
 
 
-@pytest.mark.parametrize("url", ["/", "/?preset=all", "/transactions",
-                                 "/reclasser", "/previsions", "/analyse"])
+def _query(page) -> dict:
+    return {k: v[0] for k, v in parse_qs(urlsplit(page.url).query).items()}
+
+
+def _ready(page):
+    page.wait_for_load_state("networkidle")
+    expect(page.locator("main h1").first).to_be_visible()
+
+
+def _timeline(page):
+    chart = page.get_by_role("img", name=re.compile("^Dépenses par période"))
+    chart.scroll_into_view_if_needed()
+    return chart
+
+
+# --- every page -----------------------------------------------------------------
+
+@pytest.mark.parametrize("url", PAGES)
 def test_no_page_throws(page, url):
-    """The fixture fails the test on any uncaught error; loading is enough."""
+    """The fixture fails the test on any uncaught error."""
     page.goto(url)
-    page.wait_for_load_state("networkidle")
+    _ready(page)
 
 
-def test_the_balance_tooltip_keeps_its_decimal_point(page):
-    """money() once ate the decimal separator: 813.00 came out as 813’00, and
-    P2P transfers read as millions. Every amount must read as francs and
-    centimes."""
-    page.goto("/?preset=all")
-    page.mouse.move(*_middle(page, "#balHit"), steps=5)
-    tip = page.locator("#tip")
-    expect(tip).to_have_class(SHOWN)
-    shown = tip.inner_text()
-    assert AMOUNT.search(shown), shown
-    assert not re.search(r"’\d{2}(?!\d)", shown), shown
+@pytest.mark.parametrize("url", PAGES)
+def test_no_page_scrolls_sideways_on_a_phone(phone, url):
+    """Wide content scrolls in its own box; the page itself never does."""
+    phone.goto(url)
+    _ready(phone)
+    width = phone.evaluate("document.documentElement.scrollWidth")
+    assert width <= 390, f"{url}: {width}px wide"
 
 
-def test_the_brush_does_not_cost_the_timeline_its_tooltip(page):
-    """The overlay sits above the columns and swallows their mouseover; it
-    relays the hover to the column underneath."""
-    page.goto("/?preset=12m")
-    expect(page.locator("#timelineChart .brushlayer")).to_have_count(1)
-    page.mouse.move(*_middle(page, "#timelineChart .brushlayer"), steps=5)
-    tip = page.locator("#tip")
-    expect(tip).to_have_class(SHOWN)
-    assert tip.locator(".t-title").inner_text().strip()
+@pytest.mark.parametrize("url", ["/?preset=all", "/transactions?preset=all", "/epargne",
+                                 "/previsions", "/corrections", "/importer"])
+def test_every_control_has_a_name(page, url):
+    """A placeholder is not a label: it disappears the moment you type, and
+    leaves a screen reader announcing "edit, blank"."""
+    page.goto(url)
+    _ready(page)
+    nameless = page.evaluate("""() => [...document.querySelectorAll(
+        'input:not([type=hidden]), select, textarea, button')]
+      .filter(el => el.offsetParent !== null)
+      .filter(el => {
+        if (el.getAttribute('aria-label') || el.getAttribute('aria-labelledby')) return false;
+        if (el.labels && el.labels.length) return false;
+        if (el.tagName === 'BUTTON' && el.textContent.trim()) return false;
+        return true;
+      }).map(el => el.outerHTML.slice(0, 120))""")
+    assert not nameless, nameless
 
 
-def test_dragging_across_the_timeline_selects_that_range(page):
-    page.goto("/?preset=12m")
-    page.evaluate("window.__sameDocument = true")
-    x0, y = _middle(page, "#timelineChart .brushlayer", at=0.2)
-    x1, _ = _middle(page, "#timelineChart .brushlayer", at=0.6)
-    page.mouse.move(x0, y)
-    page.mouse.down()
-    page.mouse.move(x1, y, steps=10)
-    page.mouse.up()
-
-    expect(page).to_have_url(re.compile(r"from=\d{4}-\d{2}-\d{2}&to=\d{4}-\d{2}-\d{2}"))
-    window = dict(parse_qsl(urlsplit(page.url).query))
-    assert window["from"] < window["to"]
-    # Swapped in place, not reloaded: the page's own state survived.
-    assert page.evaluate("window.__sameDocument") is True
-
-
-def test_a_view_switch_swaps_the_page_in_place(page):
-    page.goto("/?preset=12m")
-    page.evaluate("window.__sameDocument = true")
-    page.locator("a[data-nav][href*='stack=bucket']").first.click()
-    expect(page).to_have_url(re.compile(r"stack=bucket"))
-    expect(page.locator("#main")).to_contain_text("Need")
-    assert page.evaluate("window.__sameDocument") is True
-
-
-def test_sorting_works_on_the_page_a_category_opens(page):
-    """Clicking a category lands on /transactions?category=...; its sort
-    headers once did nothing there."""
-    page.goto("/transactions?category=Alimentation")
-    before = page.locator("#txPanel .t-lab").all_inner_texts()
-    page.locator("#txPanel th a[href*='sort=label']").click()
-    expect(page.locator("#txPanel th.on a[href*='sort=label']")).to_have_count(1)
-    after = page.locator("#txPanel .t-lab").all_inner_texts()
-    assert after != before
-    assert after == sorted(after, key=str.casefold, reverse=True)
-
-
-def test_the_shares_chart_unfolds_and_speaks_in_percent(page):
-    """Folded by default; its summary opens it without a request, and its
-    tooltip reads percentages, not francs."""
-    page.goto("/?preset=all")
-    panel = page.locator("#p-shares details.fold")
-    expect(panel).not_to_have_attribute("open", "")
-    panel.locator(":scope > summary").click()
-    expect(panel).to_have_attribute("open", "")
-    page.mouse.move(*_middle(page, "#sharesHit"), steps=5)
-    tip = page.locator("#tip")
-    expect(tip).to_have_class(SHOWN)
-    assert re.search(r"Need-?\d+\.\d %", tip.inner_text().replace("\n", "")), tip.inner_text()
-
-
-def test_a_smoothing_option_keeps_the_chart_open(page):
-    page.goto("/?preset=all&shares=income")
-    page.evaluate("window.__sameDocument = true")
-    page.locator("#p-shares a[data-nav]", has_text="6 mois").click()
-    expect(page).to_have_url(re.compile(r"smooth=6"))
-    expect(page.locator("#p-shares details.fold")).to_have_attribute("open", "")
-    expect(page.locator("#p-shares .raw-line").first).to_be_attached()
-    assert page.evaluate("window.__sameDocument") is True
-
-
-def test_question_mark_opens_the_help_and_escape_only_closes_it(page):
-    """Escape climbs the breadcrumb -- except while the help is open: then it
-    closes the help and nothing else."""
-    page.goto("/?from=2025-05-01&to=2025-05-31")
-    expect(page.locator("#helpBtn")).to_be_visible()
-    before = page.url
-    page.locator("body").press("?")
-    expect(page.locator("#shortcuts")).to_have_attribute("open", "")
-    page.keyboard.press("Escape")
-    expect(page.locator("#shortcuts")).not_to_have_attribute("open", "")
-    page.wait_for_timeout(300)
-    assert page.url == before
-
-
-def test_hovering_a_view_switch_fetches_it_before_the_click(page):
-    """The click finds the fragment ready: one request, made on hover -- and
-    the period bar comes back as its own small fragment, not a whole page."""
-    requests: list[str] = []
-    page.on("request", lambda r: requests.append(r.url))
-    page.goto("/?preset=12m")
-    link = page.locator("a[data-nav][href*='stack=bucket']").first
-    link.hover()
-    page.wait_for_timeout(400)
-    fragments = [u for u in requests if "stack=bucket" in u and "fragment=1" in u]
-    assert len(fragments) == 1, requests
-    link.click()
-    expect(page).to_have_url(re.compile(r"stack=bucket"))
-    expect(page.locator("#main")).to_contain_text("Need")
-    page.wait_for_load_state("networkidle")
-    after = [u for u in requests if "stack=bucket" in u]
-    assert sum("fragment=1" in u for u in after) == 1, after
-    assert any("fragment=controls" in u for u in after), after
-    assert not any("fragment" not in u for u in after), after
-
-
-def test_the_swap_crossfades_unless_motion_is_reduced(page):
-    spy = """() => { window.__transitions = 0;
-        const original = document.startViewTransition.bind(document);
-        document.startViewTransition = (cb) => { window.__transitions++; return original(cb); }; }"""
-    page.goto("/?preset=12m")
-    page.evaluate(spy)
-    page.locator("a[data-nav][href*='stack=bucket']").first.click()
-    expect(page).to_have_url(re.compile(r"stack=bucket"))
-    assert page.evaluate("window.__transitions") == 1
-
-    page.emulate_media(reduced_motion="reduce")
-    page.goto("/?preset=12m")
-    page.evaluate(spy)
-    page.locator("a[data-nav][href*='stack=bucket']").first.click()
-    expect(page).to_have_url(re.compile(r"stack=bucket"))
-    assert page.evaluate("window.__transitions") == 0
-
-
-def test_the_sommaire_is_a_strip_on_a_laptop_and_opens_what_it_points_at(browser, server):
-    """Under 1480px the rail used to vanish, leaving a laptop with nothing to
-    navigate by. It is now a strip under the header; a folded panel it points
-    at opens, and lands below the header and the strip, not under them."""
-    context = browser.new_context(base_url=server,
-                                  viewport={"width": 1280, "height": 800})
-    page = context.new_page()
-    try:
-        page.goto("/?preset=all")
-        strip = page.locator(".toc")
-        expect(strip).to_be_visible()
-        assert strip.evaluate("e => getComputedStyle(e).position") == "sticky"
-        page.mouse.wheel(0, 3000)
-        page.wait_for_timeout(400)
-        header = page.evaluate("document.querySelector('header.top').offsetHeight")
-        assert abs(strip.bounding_box()["y"] - header) <= 1   # stuck under it
-
-        requests: list[str] = []
-        page.on("request", lambda r: requests.append(r.url))
-        strip.locator("a[href='#p-custodian']").click()
-        panel = page.locator("#p-custodian details.fold")
-        # Smooth scrolling: wait until the page stops moving.
-        page.wait_for_function("""() => new Promise(done => {
-            let last = -1; const tick = () => { if (scrollY === last) done(true);
-            else { last = scrollY; setTimeout(tick, 120); } }; tick(); })""")
-        # Still open once the page has settled: an anchor is a scroll, not a
-        # page change -- nothing re-fetched <main> behind it.
-        expect(panel).to_have_attribute("open", "")
-        assert not [u for u in requests if "fragment=" in u], requests
-        top = page.locator("#p-custodian").bounding_box()["y"]
-        strip_bottom = strip.bounding_box()["y"] + strip.bounding_box()["height"]
-        assert top >= strip_bottom - 1
-
-        page.evaluate("location.hash = 'p-years'")
-        expect(page.locator("#p-years details.fold")).to_have_attribute("open", "")
-    finally:
-        context.close()
-
-
-def test_the_calendar_speaks_on_hover_and_builds_its_table_on_demand(page):
-    page.goto("/?preset=all")
-    cell = page.locator("#p-calendar rect.cell:not(.empty)").nth(40)
-    cell.scroll_into_view_if_needed()
-    cell.hover()
-    tip = page.locator("#tip")
-    expect(tip).to_have_class(SHOWN)
-    assert re.search(r"\d{2}\.\d{2}\.\d{4}", tip.inner_text())
-    assert AMOUNT.search(tip.inner_text())
-    lazy = page.locator("#p-calendar details[data-lazy-table]")
-    lazy.locator(":scope > summary").click()
-    expect(lazy.locator("tbody tr").first).to_be_attached()
-    assert lazy.locator("tbody tr").count() > 100
-
-
-def test_the_new_statement_notice_can_be_dismissed_for_good(page):
-    page.goto("/?preset=all")
-    notice = page.locator("[data-news]")
-    expect(notice).to_be_visible()
-    notice.locator(".news-close").click()
-    expect(page.locator("[data-news]")).to_have_count(0)
-    page.reload()
-    page.wait_for_load_state("load")
-    expect(page.locator("[data-news]")).to_have_count(0)
-
-
-def test_arrows_step_periods_even_with_a_link_focused(page):
-    """They used to go dead as soon as a link had focus -- after almost any
-    click. The default view is the month in progress; ← is last month."""
+def test_the_skip_link_leads_to_the_content(page):
     page.goto("/")
-    page.locator(".toc a").first.focus()
+    _ready(page)
+    page.keyboard.press("Tab")
+    link = page.get_by_role("link", name="Aller au contenu")
+    expect(link).to_be_focused()
+    assert link.get_attribute("href") == "#main"
+    assert page.locator("main#main").count() == 1
+
+
+def test_the_current_page_is_marked_in_the_navigation(page):
+    page.goto("/analyse")
+    _ready(page)
+    current = page.locator("nav[aria-label='Navigation principale'] [aria-current='page']")
+    expect(current).to_have_count(1)
+    expect(current).to_contain_text("Analyse")
+
+
+# --- the window -----------------------------------------------------------------------
+
+def test_the_arrows_step_the_period(page):
+    page.goto("/?from=2025-05-01&to=2025-05-31")
+    _ready(page)
     page.keyboard.press("ArrowLeft")
-    expect(page).to_have_url(re.compile(r"from=2026-06-01&to=2026-06-30"))
-    # Twice in a row, no pause: the second press must read the new period
-    # bar, not the one the first press left behind.
-    page.keyboard.press("ArrowLeft")
-    page.keyboard.press("ArrowLeft")
-    expect(page).to_have_url(re.compile(r"from=2026-04-01&to=2026-04-30"))
-    page.keyboard.press("ArrowRight")
-    expect(page).to_have_url(re.compile(r"from=2026-05-01&to=2026-05-31"))
-    # Alt+← is the browser's back, never ours.
-    before = page.url
-    page.keyboard.press("Alt+ArrowRight")
-    page.wait_for_timeout(300)
-    assert page.url == before
+    page.wait_for_url(re.compile(r"from=2025-04-01"))
+    assert _query(page)["to"] == "2025-04-30"
+    expect(page.locator("main h1").first).to_have_text("Avril 2025")
 
 
-def test_the_corrections_filter_narrows_and_unfolds(browser, tmp_path_factory, ledger_file):
-    import threading
-
-    from werkzeug.serving import make_server
-    from webhelpers import corrected_ledger
-
-    app = corrected_ledger(tmp_path_factory, ledger_file, pins=12)
-    httpd = make_server("127.0.0.1", 0, app, threaded=True)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    context = browser.new_context(base_url=f"http://127.0.0.1:{httpd.server_port}")
-    page = context.new_page()
-    try:
-        page.goto("/reclasser")
-        field = page.locator("#corrections-filter")
-        expect(field).to_be_visible()
-        pins = page.locator("details[data-group='pin']")
-        expect(pins).not_to_have_attribute("open", "")
-        field.fill("sushi")
-        expect(page.locator("details[data-group='rule'] tbody tr:not([hidden])")).to_have_count(1)
-        expect(pins).to_be_hidden()
-        field.fill("zzz-nothing")
-        expect(page.locator("[data-filter-empty]")).to_be_visible()
-        field.fill("")
-        expect(pins).to_be_visible()
-        expect(pins).not_to_have_attribute("open", "")
-    finally:
-        context.close()
-        httpd.shutdown()
+def test_escape_climbs_one_level(page):
+    page.goto("/?from=2025-05-01&to=2025-05-31")
+    _ready(page)
+    page.keyboard.press("Escape")
+    page.wait_for_url(re.compile(r"from=2025-01-01"))
+    expect(page.locator("main h1").first).to_have_text("Année 2025")
 
 
-def test_the_twint_triage_is_one_key_per_twint(browser, tmp_path_factory, ledger_file):
-    """1-9 classify, S skips, Z undoes -- each a real button or link."""
-    from werkzeug.serving import make_server
-
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("triagekeys")
-    (workdir / "ledger.json").write_bytes(ledger_file.read_bytes())
-    httpd = make_server("127.0.0.1", 0, create_app(workdir / "ledger.json"),
-                        threaded=True)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    context = browser.new_context(base_url=f"http://127.0.0.1:{httpd.server_port}")
-    page = context.new_page()
-    try:
-        page.goto("/reclasser/tri")
-        sub = page.locator(".title-row .sub")
-        count = int(re.search(r"(\d+) à identifier", sub.inner_text()).group(1))
-        first = page.locator("button[data-key='1']").get_attribute("value")
-
-        page.keyboard.press("1")
-        expect(sub).to_contain_text(f"{count - 1} à identifier")
-        expect(page.locator("[data-triage-undo]")).to_contain_text(first)
-
-        page.keyboard.press("s")
-        expect(page).to_have_url(re.compile(r"at=1"))
-
-        page.keyboard.press("z")
-        expect(sub).to_contain_text(f"{count} à identifier")
-    finally:
-        context.close()
-        httpd.shutdown()
+def test_the_picker_offers_presets_and_months(page):
+    page.goto("/?from=2025-05-01&to=2025-05-31")
+    _ready(page)
+    page.get_by_role("button", name="Changer la période").click()
+    page.get_by_role("button", name="12 mois").click()
+    page.wait_for_url(re.compile(r"preset=12m"))
+    expect(page.locator("main h1").first).to_have_text("12 derniers mois")
 
 
-def test_live_search_ends_on_the_last_thing_typed(page, server):
-    """One request per keystroke burst, answered out of order: an older,
-    broader result must never land last."""
-    page.goto("/transactions")
-    page.locator("#tx-q").press_sequentially("coop", delay=40)
-    body = page.request.get(f"{server}/transactions?q=coop&fragment=1").text()
-    count = re.search(r"([\d’]+) lignes?", body).group(1)
-    expect(page.locator("#txPanel")).to_contain_text(f"{count} ligne")
+def test_the_window_rides_along_to_the_next_page(page):
+    page.goto("/?from=2025-05-01&to=2025-05-31")
+    _ready(page)
+    page.get_by_role("navigation", name="Navigation principale").get_by_role(
+        "link", name="Transactions").click()
+    page.wait_for_url(re.compile(r"/transactions"))
+    assert (_query(page)["from"], _query(page)["to"]) == ("2025-05-01", "2025-05-31")
+
+
+# --- the timeline -----------------------------------------------------------------------
+
+def test_the_tooltip_reads_francs(page):
+    """Amounts with the Swiss apostrophe, never a lost decimal point."""
+    page.goto("/?from=2025-01-01&to=2025-12-31&grain=month")
+    _ready(page)
+    box = _timeline(page).bounding_box()
+    page.mouse.move(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5, steps=4)
+    tip = page.locator("[data-chart-tip]")
+    expect(tip).to_be_visible()
+    text = tip.inner_text()
+    assert re.search(r"\d+(’\d{3})*\.\d{2} CHF", text), text
+
+
+def test_a_long_tooltip_stays_on_screen(page):
+    """The card used to sit inside the panel, which clips: with more rows than
+    the chart was tall, its bottom was cut off at the panel's edge."""
+    page.set_viewport_size({"width": 1280, "height": 620})
+    page.goto("/?from=2025-01-01&to=2025-12-31&grain=month")
+    _ready(page)
+    chart = _timeline(page)
+    page.evaluate("(y) => window.scrollBy(0, y)",
+                  chart.bounding_box()["y"] + chart.bounding_box()["height"] - 600)
+    box = chart.bounding_box()
+    page.mouse.move(box["x"] + box["width"] * 0.3, box["y"] + box["height"] - 4, steps=4)
+    tip = page.locator("[data-chart-tip]")
+    expect(tip).to_be_visible()
+    card = tip.bounding_box()
+    assert 0 <= card["y"] and card["y"] + card["height"] <= 620, card
+
+
+def test_the_contents_jump_to_a_folded_panel_and_back_to_the_top(page):
+    page.goto("/?preset=all")
+    _ready(page)
+    contents = page.get_by_role("navigation", name="Sur cette page")
+    link = contents.get_by_role("link", name="Par jour de semaine et par mois")
+    link.click()
+    panel = page.locator(link.get_attribute("href"))
+    expect(panel.locator("[aria-expanded]").first).to_have_attribute("aria-expanded", "true")
+    expect(link).to_have_attribute("aria-current", "location")
+    top = page.get_by_role("button", name="Haut de page")
+    expect(top).to_be_visible()
+    top.click()
+    page.wait_for_function("window.scrollY === 0")
+
+
+def test_the_phone_reaches_the_contents_from_the_dock(phone):
+    phone.goto("/?preset=all")
+    _ready(phone)
+    phone.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+    phone.get_by_role("button", name="Sections de la page").tap()
+    sheet = phone.get_by_role("dialog")
+    sheet.get_by_role("link", name="Calendrier des dépenses").tap()
+    expect(sheet).to_be_hidden()
+    heading = phone.get_by_role("heading", name="Calendrier des dépenses")
+    phone.wait_for_function(
+        "(el) => { const t = el.getBoundingClientRect().top; return t > 0 && t < 200; }",
+        arg=heading.element_handle())
+
+
+def test_a_column_zooms_into_its_period(page):
+    page.goto("/?from=2025-01-01&to=2025-12-31&grain=month")
+    _ready(page)
+    box = _timeline(page).bounding_box()
+    page.mouse.click(box["x"] + box["width"] * 0.55, box["y"] + box["height"] * 0.5)
+    page.wait_for_url(lambda url: "from=2025-01-01" not in url)
+    query = _query(page)
+    assert query["from"][:7] == query["to"][:7], query     # one month
+
+
+def test_a_sideways_drag_selects_a_range(page):
+    page.goto("/?from=2025-01-01&to=2025-12-31&grain=month")
+    _ready(page)
+    box = _timeline(page).bounding_box()
+    y = box["y"] + box["height"] * 0.5
+    page.mouse.move(box["x"] + box["width"] * 0.3, y)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] * 0.7, y, steps=8)
+    page.mouse.up()
+    page.wait_for_url(lambda url: "from=2025-01-01" not in url)
+    query = _query(page)
+    assert "2025-02-01" <= query["from"] < query["to"] <= "2025-11-30", query
+
+
+def test_the_stack_switch_restacks_by_bucket(page):
+    page.goto("/?preset=all")
+    _ready(page)
+    page.get_by_role("group", name="Découpage des colonnes").get_by_role("link", name="Besoins / envies").click()
+    page.wait_for_url(re.compile(r"stack=bucket"))
+    expect(page.get_by_text("Ici « Épargne » ne compte que")).to_be_visible()
+
+
+# --- transactions ----------------------------------------------------------------------
+
+def test_the_search_filters_as_you_type(page):
+    page.goto("/transactions?preset=all")
+    _ready(page)
+    before = page.locator("main h1 + p").first.inner_text()
+    page.get_by_placeholder("Bénéficiaire, lieu, montant, date…").fill("coop")
+    page.wait_for_url(re.compile(r"q=coop"))
+    expect(page.locator("main h1 + p").first).not_to_have_text(before)
+    expect(page.get_by_role("cell", name="Coop").first).to_be_visible()
+
+
+def test_a_header_sorts_the_table(page):
+    page.goto("/transactions?preset=all")
+    _ready(page)
+    page.get_by_role("button", name="En CHF").click()
+    page.wait_for_url(re.compile(r"sort=chf"))
+    expect(page.locator("th[aria-sort='descending']")).to_contain_text("En CHF")
+
+
+def test_a_row_is_reclassified_and_the_correction_undone(page):
+    page.goto("/transactions?preset=all&q=coop")
+    _ready(page)
+    page.locator("tbody tr").first.click()
+    sheet = page.get_by_role("dialog")
+    expect(sheet).to_be_visible()
+    sheet.get_by_role("button", name="Shopping", exact=True).click()
+    sheet.get_by_role("button", name="Appliquer", exact=True).click()
+    toast = page.get_by_text("Reclassé en Shopping")
+    expect(toast).to_be_visible()
+    expect(page.get_by_role("cell", name="Shopping").first).to_be_visible()
+    page.get_by_role("button", name="Annuler").click()
+    expect(page.get_by_text("Correction annulée")).to_be_visible()
+
+
+# --- the shell --------------------------------------------------------------------------
+
+def test_the_command_palette_goes_anywhere(page):
+    """A page that matches comes before the search over the ledger; a word
+    no page matches searches the transactions."""
+    page.goto("/")
+    _ready(page)
+    page.keyboard.press("Control+k")
+    box = page.get_by_placeholder(re.compile("^Page, période"))
+    expect(box).to_be_focused()
+    box.fill("prévisions")
+    page.keyboard.press("Enter")
+    page.wait_for_url(re.compile(r"/previsions"))
+    page.keyboard.press("Control+k")
+    page.get_by_placeholder(re.compile("^Page, période")).fill("coop")
+    expect(page.get_by_text("Chercher « coop »")).to_be_visible()
+    page.keyboard.press("Enter")
+    page.wait_for_url(re.compile(r"/transactions\?.*q=coop"))
+
+
+def test_the_theme_switch_is_remembered(page):
+    page.goto("/")
+    _ready(page)
+    before = page.evaluate("getComputedStyle(document.body).backgroundColor")
+    page.locator("aside").get_by_role("button", name=re.compile("^Thème")).click()
+    after = page.evaluate("getComputedStyle(document.body).backgroundColor")
+    assert after != before
+    page.reload()
+    _ready(page)
+    assert page.evaluate("getComputedStyle(document.body).backgroundColor") == after
+
+
+def test_a_calendar_day_opens_in_a_sheet(page):
+    page.goto("/?preset=12m")
+    _ready(page)
+    cell = page.get_by_role("button", name=re.compile(r"CHF, \d+ transaction")).first
+    cell.scroll_into_view_if_needed()
+    cell.click()
+    sheet = page.get_by_role("dialog")
+    expect(sheet).to_be_visible()
+    expect(sheet.get_by_text(re.compile(r"\d+ mouvements?"))).to_be_visible()
+
+
+# --- on a phone --------------------------------------------------------------------------
+
+def test_the_phone_has_a_tab_bar_and_no_sidebar(phone):
+    phone.goto("/")
+    _ready(phone)
+    expect(phone.locator("aside")).to_have_count(0)
+    tabs = phone.get_by_role("navigation", name="Navigation principale")
+    expect(tabs.get_by_role("link", name="Accueil")).to_be_visible()
+    tabs.get_by_role("link", name="Épargne").tap()
+    phone.wait_for_url(re.compile(r"/epargne"))
+
+
+def test_the_period_opens_as_a_sheet_on_a_phone(phone):
+    phone.goto("/?from=2025-05-01&to=2025-05-31")
+    _ready(phone)
+    phone.get_by_role("button", name="Changer la période").tap()
+    sheet = phone.get_by_role("dialog")
+    expect(sheet).to_be_visible()
+    sheet.get_by_role("button", name="12 mois", exact=True).tap()
+    phone.wait_for_url(re.compile(r"preset=12m"))
+
+
+def test_a_first_tap_reads_a_column_and_a_second_opens_it(phone):
+    phone.goto("/?from=2025-01-01&to=2025-12-31&grain=month")
+    _ready(phone)
+    box = _timeline(phone).bounding_box()
+    x, y = box["x"] + box["width"] * 0.55, box["y"] + box["height"] * 0.5
+    phone.touchscreen.tap(x, y)
+    expect(phone.locator("[data-chart-tip]")).to_be_visible()
+    assert "from=2025-01-01" in phone.url
+    phone.touchscreen.tap(x, y)
+    phone.wait_for_url(lambda url: "from=2025-01-01" not in url)
+
+
+def test_a_scenario_is_created_renamed_deleted_and_brought_back(page):
+    page.goto("/previsions")
+    _ready(page)
+    page.get_by_role("button", name="Nouveau scénario").first.click()
+    sheet = page.get_by_role("dialog")
+    sheet.get_by_role("button", name="Prudent", exact=True).click()
+    sheet.get_by_role("button", name="Créer et modifier").click()
+    expect(page.locator("[data-plan-shown]")).to_contain_text("Prudent")
+
+    page.get_by_role("button", name="Renommer").click()
+    sheet = page.get_by_role("dialog")
+    sheet.get_by_role("textbox").fill("Prudent bis")
+    sheet.get_by_role("button", name="Renommer").click()
+    expect(page.locator("[data-plan-shown]")).to_contain_text("Prudent bis")
+
+    page.get_by_role("button", name="Actions sur « Prudent bis »").click()
+    page.get_by_role("menuitem", name="Supprimer").click()
+    expect(page.locator("[data-plan-shown]")).not_to_contain_text("Prudent bis")
+    page.get_by_role("button", name="Annuler").click()
+    expect(page.get_by_role("button", name="Actions sur « Prudent bis »")).to_be_visible()
+
+
+def test_the_savings_pockets_open_and_their_months_switch(page):
+    page.goto("/epargne?preset=all")
+    _ready(page)
+    page.get_by_role("link", name="Ouvrir IBKR").click()
+    page.wait_for_url(re.compile(r"focus=ibkr"))
+    expect(page.locator('[data-pocket="ibkr"] [aria-current="true"]')).to_have_count(1)
+    page.get_by_role("link", name="Revenir à toute l'épargne").click()
+    page.wait_for_url(lambda url: "focus=" not in url)
+
+    months = page.locator("#p-months")
+    expect(months.locator("[data-months=ibkr]")).to_be_visible()
+    months.get_by_role("button", name="Tout", exact=True).click()
+    expect(months.locator("[data-months=total]")).to_be_visible()
+
+    evolution = page.locator("#p-evolution")
+    evolution.get_by_role("button", name="Empilé").click()
+    expect(evolution).to_contain_text("chaque bande est une poche")
+
+
+def test_a_change_opens_its_category_up_close(page):
+    page.goto("/analyse")
+    _ready(page)
+    changes = page.locator("#p-changes")
+    first = changes.get_by_role("link").first
+    name = first.inner_text().split("\n")[0].strip()
+    first.click()
+    page.wait_for_url(re.compile(r"cat="))
+    detail = page.locator("#p-detail")
+    expect(detail).to_contain_text(name)
+    expect(detail).to_contain_text("À qui, sur 12 mois")
+    detail.get_by_role("link", name="Toutes les catégories").click()
+    page.wait_for_url(lambda url: "cat=" not in url)
+    expect(page.locator("#p-profile")).to_be_visible()
+
+
+def test_the_horizon_and_the_plan_are_chosen_beside_the_title(page):
+    page.goto("/previsions")
+    _ready(page)
+    page.get_by_role("button", name=re.compile(r"^Horizon : ")).click()
+    page.locator("[data-radix-popper-content-wrapper] a", has_text="2 ans").click()
+    page.wait_for_url(re.compile(r"months=24"))
+    page.get_by_role("button", name=re.compile(r"^Scénario affiché : ")).click()
+    page.locator("[data-radix-popper-content-wrapper] button", has_text="Nouveau scénario").click()
+    expect(page.get_by_role("dialog", name="Nouveau scénario")).to_be_visible()

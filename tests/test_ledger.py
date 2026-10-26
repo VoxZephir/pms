@@ -149,7 +149,7 @@ def test_rejects_a_different_account(statement, tmp_path):
         statement, statement.period_start, statement.period_end)
     other.iban = "CH00 0000 0000 0000 0000 0"
 
-    with pytest.raises(ValueError, match="does not match ledger"):
+    with pytest.raises(ValueError, match="autre compte"):
         ledger.merge(other)
 
 
@@ -365,3 +365,69 @@ def test_cli_says_a_known_file_was_not_read(tmp_path, capsys):
 
     assert code == 0
     assert "déjà importé, non relu" in capsys.readouterr().out
+
+
+def test_a_day_cut_by_an_earlier_export_is_ordered_by_the_later_one(statement, tmp_path):
+    """An export downloaded during the day holds only part of that day, each
+    row numbered within what it holds; the next export holds the whole day,
+    numbered differently. Kept as each export numbered it, the day's rows
+    interleaved and the balance broke inside the day ("entre le 22.08 et le
+    22.08"). The export that holds every row of a day orders it."""
+    by_day: dict = {}
+    for t in statement.transactions:
+        if t.currency == "CHF" and not t.account:
+            by_day.setdefault(t.date, []).append(t)
+    day = next(d for d, rows in sorted(by_day.items()) if len(rows) >= 3)
+    rows = sorted(by_day[day], key=lambda t: t.seq)
+    # The early export: everything before the day, and only the day's last
+    # row -- booked first, so numbered 0 there.
+    early_rows = [copy.deepcopy(t) for t in statement.transactions if t.date < day]
+    cut = copy.deepcopy(rows[-1])
+    cut.seq = 0
+    early = slice_statement(statement, statement.period_start, day)
+    early.transactions = early_rows + [cut]
+    late = slice_statement(statement, day, statement.period_end)
+    late.transactions = [copy.deepcopy(t) for t in late.transactions]
+
+    ledger = Ledger(tmp_path / "ledger.json")
+    ledger.merge(early)
+    ledger.merge(late)
+    assert ledger.gaps() == []
+    # And the other way round: an older, partial export arriving after the
+    # whole day does not reorder it.
+    ledger.merge(early)
+    assert ledger.gaps() == []
+
+
+def test_one_row_in_two_export_formats_is_one_movement(statement, tmp_path):
+    """Revolut's fr-ch export writes a fee "0", its fr-fr one "0.00": the
+    reference hashed from that text differs for the same row, which came in
+    twice and broke the balance by its own amount. By account, currency,
+    day, amount and balance after it, it is one row."""
+    ledger = Ledger(tmp_path / "ledger.json")
+    ledger.merge(statement, source=None)
+    again = slice_statement(statement, statement.period_start, statement.period_end)
+    again.transactions = [copy.deepcopy(t) for t in statement.transactions]
+    for t in again.transactions:
+        t.reference = f"other-{t.reference}"
+    report = ledger.merge(again)
+    assert report["added"] == 0 and report["already_known"] == len(statement.transactions)
+    assert len(ledger) == len(statement.transactions) and ledger.gaps() == []
+
+
+def test_a_twin_already_in_the_ledger_goes_at_the_next_load(statement, tmp_path):
+    ledger = Ledger(tmp_path / "ledger.json")
+    ledger.merge(statement)
+    for t in ledger.transactions.values():
+        t.source = "first-import"
+    original = next(t for t in ledger.transactions.values() if t.balance is not None)
+    twin = copy.deepcopy(original)
+    twin.reference, twin.source = "twin-ref", "second-import"
+    ledger.transactions["twin-ref|" + twin.currency] = twin
+    assert ledger.dedupe() == 1
+    assert len(ledger) == len(statement.transactions)
+    # Two equal rows of one same export are two movements: kept.
+    same = copy.deepcopy(original)
+    same.reference = "same-export-twin"
+    ledger.transactions["same|" + same.currency] = same
+    assert ledger.dedupe() == 0

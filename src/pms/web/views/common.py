@@ -1,17 +1,19 @@
-"""Plumbing every page shares: the blueprint, the store, the view-mode
+"""Plumbing every view shares: the blueprint, the store, the view-mode
 switches carried in the URL, and the table's filter and sort.
 
-Nothing here knows about a particular page. `dash_url` and `page_url` are
-template globals, so every template can build links that keep the window.
+Nothing here knows about a particular page. The switches are validated here
+and never echoed raw: an unknown value falls back to the default.
 """
 
 from __future__ import annotations
 
-import datetime as dt
+import unicodedata
+from pathlib import Path
 
-from flask import Blueprint, current_app, request, url_for
+from flask import Blueprint, current_app
 
-from ... import buckets
+from ... import benchmarks as benchmarks_module
+from ... import categories as categories_module
 from ...analysis import chf
 
 bp = Blueprint("dashboard", __name__)
@@ -83,7 +85,9 @@ DEFAULT_SPLIT = "account"
 # when the shape of the change is what matters.
 SCALES = {
     "zero": {"label": "Montants", "aria": "en francs, axe y ancré à zéro"},
-    "auto": {"label": "Zoom", "aria": "en francs, axe y ajusté aux valeurs"},
+    # "Zoom" (the y axis fitted to the values) is gone: the Swissquote line
+    # dips near zero, so the fitted axis was the zero-anchored one -- a
+    # button that changed nothing.
     # Each line rebased to 100 at its first point, versements taken out:
     # the pockets' performance side by side instead of their sizes.
     "index": {"label": "Base 100", "aria": "chaque ligne en base 100, versements retirés"},
@@ -105,9 +109,21 @@ PERFS = {
 DEFAULT_PERF = "twr"
 
 
+# Over the period, or per year. Per year only from a year on: under it, an
+# annual rate is an extrapolation (one good month printed as over +100 %/an), so
+# the period figure stays on screen and the panel says why.
+RATES = {
+    "period": {"label": "Période", "aria": "rendement sur la période affichée"},
+    "annual": {"label": "Par an", "aria": "rendement annualisé, à partir d'un an d'historique"},
+}
+
+
+DEFAULT_RATE = "period"
+
+
 # Which account the savings section focuses on -- the boxes are the
 # selector. Everything else (curve, performance) adapts to the pick.
-FOCUSES = ["total", "swissquote", "ibkr", "finpension"]
+FOCUSES = ["total", "swissquote", "ibkr", "finpension", "crypto", "titres"]
 
 
 DEFAULT_FOCUS = "total"
@@ -141,80 +157,38 @@ def perf_mode(args) -> str:
     return mode if mode in PERFS else DEFAULT_PERF
 
 
+def rate_mode(args) -> str:
+    """Whether returns read over the period or per year -- validated."""
+    mode = (args.get("rate") or "").strip()
+    return mode if mode in RATES else DEFAULT_RATE
+
+
+def bench_mode(args) -> tuple[str, ...]:
+    """Which reference indices the savings compare with, in catalogue order.
+
+    `?bench=sp500,smi` (or the key repeated, as checkboxes send it), `none`
+    for none at all; absent, the default pair. Unknown keys are dropped,
+    never echoed.
+    """
+    raw = []
+    for value in args.getlist("bench") if hasattr(args, "getlist") else [args.get("bench")]:
+        raw += [k.strip() for k in (value or "").split(",") if k.strip()]
+    if not raw:
+        return benchmarks_module.DEFAULT
+    picked = {k for k in raw if k in benchmarks_module.KEYS}
+    return tuple(k for k in benchmarks_module.KEYS if k in picked)
+
+
+def titres_mode(args) -> bool:
+    """Whether the savings count the unlisted shares (`holdings.py`):
+    yes unless `?titres=0`."""
+    return (args.get("titres") or "").strip() != "0"
+
+
 def focus_mode(args) -> str:
     """Which account the savings section zooms into -- validated."""
     mode = (args.get("focus") or "").strip()
     return mode if mode in FOCUSES else DEFAULT_FOCUS
-
-
-def shares_mode(args) -> str | None:
-    """The denominator of the shares-over-time chart, or None when nobody
-    asked for it. Its presence is also what renders the panel unfolded: the
-    options inside are real links, and a swap that re-rendered it folded
-    would close it under the reader's pointer at every click."""
-    mode = (args.get("shares") or "").strip()
-    return mode if mode in buckets.SHARE_BASES else None
-
-
-def smooth_mode(args) -> int:
-    """The rolling window of the shares chart, in months. Enums fall back."""
-    try:
-        months = int((args.get("smooth") or "").strip())
-    except ValueError:
-        return 1
-    return months if months in buckets.SMOOTHING else 1
-
-
-@bp.app_template_global()
-def page_url(endpoint: str, **params) -> str:
-    """A link to another page that carries the current window along.
-
-    The window lives in the URL, so leaving the dashboard for the previsions
-    page and coming back must not silently reset it to the default. The
-    destination ignores the parameters it does not use, and its own "back"
-    links read the same query string -- the round trip keeps the window
-    with no session state. Only the window keys ride along, never the full
-    query (that would drag `fragment=1` into every link).
-    """
-    for key in ("from", "to", "grain"):
-        value = request.args.get(key)
-        if value:
-            params[key] = value
-    return url_for(endpoint, **params)
-
-
-@bp.app_template_global()
-def dash_url(**params) -> str:
-    """A dashboard link that carries the display options the user picked.
-
-    Only the one whitelisted key rides along. Re-injecting `request.args` whole
-    would drag `fragment=1` into every link, and the fragment and the full page
-    would stop rendering identical markup.
-    """
-    params.setdefault("stack", stack_mode(request.args))
-    if params["stack"] == DEFAULT_STACK:
-        del params["stack"]  # the default never needs saying
-    params.setdefault("split", split_mode(request.args))
-    if params["split"] == DEFAULT_SPLIT:
-        del params["split"]
-    params.setdefault("scale", scale_mode(request.args))
-    if params["scale"] == DEFAULT_SCALE:
-        del params["scale"]
-    params.setdefault("focus", focus_mode(request.args))
-    if params["focus"] == DEFAULT_FOCUS:
-        del params["focus"]
-    params.setdefault("perf", perf_mode(request.args))
-    if params["perf"] == DEFAULT_PERF:
-        del params["perf"]
-    # `shares` is kept even at its default value: its presence is the
-    # unfolded state, which should survive a change of period.
-    params.setdefault("shares", shares_mode(request.args))
-    if params["shares"] is None:
-        del params["shares"]
-    params.setdefault("smooth", smooth_mode(request.args))
-    if params["smooth"] == 1:
-        del params["smooth"]
-    return url_for("dashboard.dashboard", **params)
 
 
 def _filtered(window, args) -> list:
@@ -228,8 +202,22 @@ def _filtered(window, args) -> list:
     category = args.get("category") or ""
     bucket = args.get("bucket") or ""
     direction = args.get("dir") or ""
+    low, high = _amount(args.get("amin")), _amount(args.get("amax"))
+    account = args.get("acct")
 
     rows = window.transactions
+    if account:
+        # "principal" is the primary account, whose name is "".
+        wanted = "" if account == PRIMARY else account
+        rows = [t for t in rows if t.account == wanted]
+    if low is not None:
+        rows = [t for t in rows if abs(t.amount_chf) >= low]
+    if high is not None:
+        rows = [t for t in rows if abs(t.amount_chf) <= high]
+    if args.get("fix") == "1":
+        rows = [t for t in rows if t.overridden]
+    if args.get("todo") == "1":
+        rows = [t for t in rows if t.category in TODO]
     if category:
         rows = [t for t in rows if t.category == category]
     if bucket:
@@ -239,10 +227,83 @@ def _filtered(window, args) -> list:
     elif direction == "in":
         rows = [t for t in rows if t.amount >= 0]
     if needle:
-        rows = [t for t in rows
-                if needle in f"{t.label} {t.location} {t.kind} "
-                             f"{t.category} {t.subcategory}".lower()]
+        words = _fold(needle).split()
+        rows = [t for t in rows if all(_hit(t, w) for w in words)]
     return rows
+
+
+# The primary account in the URL (its own name is ""): `?acct=principal`.
+PRIMARY = "principal"
+
+
+def account_options(transactions, sources: list[dict]) -> list[dict]:
+    """The accounts the rows come from, named by their bank: the primary
+    one by the bank of its latest import (Swissquote, UBS, a camt.053
+    bank), a secondary one by the bank that feeds it (Revolut) or its own
+    name. Ordered as the ledger meets them, the primary first."""
+    from ... import banks
+    present = sorted({t.account for t in transactions}, key=lambda a: (a != "", a))
+    by_account = {b.account: b.name for p, b in banks.BANKS.items() if b.account}
+    out = []
+    for account in present:
+        if account:
+            label = by_account.get(account, account)
+        else:
+            feeding = [s for s in sources if not s.get("account")]
+            latest = max(feeding, key=lambda s: s.get("ingested_at") or "", default={})
+            label = latest.get("bank") or ""
+            if not label:
+                # By its file's extension, as `news.late` reads it: an import
+                # naming no file is the account's first bank's.
+                suffix = Path(latest.get("file") or "").suffix.lower() or ".pdf"
+                label = next((b.name for p, b in banks.BANKS.items()
+                              if not b.account and Path(p).suffix.lower() == suffix), "Compte principal")
+        out.append({"id": account or PRIMARY, "label": label})
+    return out
+
+
+# What is left to classify: no rule knows the payee, or the line names none.
+TODO = (categories_module.UNCATEGORISED, categories_module.TWINT_UNKNOWN)
+
+
+def _amount(raw) -> float | None:
+    """An amount bound of the table's filter, in francs, either sign read as
+    its size; anything unreadable is no bound rather than an error."""
+    try:
+        value = abs(float(str(raw).replace("'", "").replace("’", "").replace(",", ".")))
+    except (TypeError, ValueError):
+        return None
+    return value if value == value and value != float("inf") else None
+
+
+def _hit(t, word: str) -> bool:
+    """A bare whole number is a figure, not a fragment: "20" means twenty
+    francs, or the 20th, or a month, or a year -- matched as text it would
+    find every row dated 2025 or 2026 and narrow nothing."""
+    if word.isdigit():
+        n = int(word)
+        return (int(abs(t.amount)) == n
+                or n in (t.date.day, t.date.month, t.date.year))
+    return word in _haystack(t)
+
+
+def _fold(text: str) -> str:
+    """Lower case, accents dropped: "regie" finds "Régie", "zurich" "Zürich"."""
+    decomposed = unicodedata.normalize("NFKD", text.lower())
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def _haystack(t) -> str:
+    """Everything a row can be searched by. Each word of the query must occur
+    somewhere in it, in any order: "coop carouge" finds one shop of the chain,
+    "twint 20.00" the 20-franc Twint payments. The amount is there as printed
+    (1234.50 and 1'234.50) and the date as shown (14.10.2026)."""
+    return _fold(" ".join([
+        t.label, t.merchant, t.location, t.kind, " ".join(t.detail),
+        t.category, t.subcategory, t.bucket, t.account,
+        f"{abs(t.amount):.2f}", chf(abs(t.amount), 2), t.currency,
+        t.date.strftime("%d.%m.%Y"),
+    ]))
 
 
 def _sorted(rows: list, args) -> list:
@@ -258,12 +319,3 @@ def _sorted(rows: list, args) -> list:
     return sorted(rows, key=SORT_KEYS.get(sort, SORT_KEYS["date"]),
                   reverse=descending)
 
-
-@bp.app_template_filter("chf")
-def _chf(value, decimals=2):
-    return chf(value or 0.0, decimals)
-
-
-@bp.app_template_filter("fr_date")
-def _fr_date(value: dt.date):
-    return value.strftime("%d.%m.%Y") if value else ""

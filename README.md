@@ -3,20 +3,31 @@
 Lit un relevé de transactions bancaire, catégorise les dépenses, chiffre ce que la
 banque a prélevé, et le rend explorable dans une app web locale.
 
-Le parser livré lit le relevé PDF de **Swissquote**. Toute autre banque se branche en
-écrivant un seul module — voir [Brancher une autre banque](#brancher-une-autre-banque) :
-le ledger, la catégorisation, l'analyse et l'app ne connaissent que le modèle commun.
+Deux banques sont livrées : le relevé PDF de **Swissquote** (le compte principal) et
+l'export CSV de **Revolut**, qui se lisent ensemble dans le même ledger. Toute autre
+banque se branche en écrivant un seul module — voir
+[Brancher une autre banque](#brancher-une-autre-banque) : le ledger, la catégorisation,
+l'analyse et l'app ne connaissent que le modèle commun.
 
 ## Démarrage
 
-Déposez votre relevé dans `inbox/`, puis :
+Lancez `run.bat` : sans relevé, l'app s'ouvre dans le navigateur sur un accueil qui propose
+d'en importer un. Ou déposez votre relevé dans `inbox/` — le PDF Swissquote à la racine, l'export Revolut
+(Relevé → CSV) dans `inbox/revolut/`, le relevé ISO 20022 (camt.053, XML) de la plupart
+des banques suisses — PostFinance, UBS, Raiffeisen, banques cantonales — dans `inbox/camt/` — puis :
 
 ```bash
 run.bat
 ```
 
-Le script crée l'environnement virtuel et installe les dépendances au premier lancement,
-ingère les PDF de `inbox/`, puis démarre l'app sur http://127.0.0.1:5000.
+Rien à installer avant : au premier lancement, le script installe [uv](https://docs.astral.sh/uv/),
+qui installe la bonne version de Python et les dépendances aux versions exactes de
+`uv.lock`. Il ingère ensuite les relevés de `inbox/`, puis démarre l'app sur http://127.0.0.1:5000.
+
+Ensuite, plus besoin de passer par `inbox/` : tant que l'app tourne, un relevé téléchargé
+dans le dossier Téléchargements est reconnu à son contenu, ingéré dans la minute et
+rangé dans `inbox/` (`--no-watch` pour l'éviter). Le tableau de bord rappelle quand un
+relevé date de plus de deux semaines. Détail : `docs/releves.md`.
 
 Pour sortir les données — déclaration d'impôts, tableur, quelqu'un d'autre — la page
 Transactions exporte la fenêtre courante, filtres compris, en CSV ou en xlsx.
@@ -24,11 +35,36 @@ Transactions exporte la fenêtre courante, filtres compris, en CSV ou en xlsx.
 Sans Windows :
 
 ```bash
-python -m venv .venv
-.venv/Scripts/pip install -e ".[web,dev]"
-.venv/Scripts/python -m pms        # ingestion + contrôle d'intégrité
-.venv/Scripts/python -m pms.web    # app web
+uv sync --extra web                # Python, .venv et dépendances (outils de test compris)
+uv run python -m pms               # ingestion + contrôle d'intégrité
+uv run python -m pms.web           # app web
 ```
+
+**Sans git ?** Téléchargez le ZIP depuis GitHub, décompressez, lancez `run.bat` : il
+propose d'installer git (par winget, l'outil d'installation de Windows), puis fait de la
+copie une copie suivie, à la dernière version. Un refus est retenu (`data/no-git`) et
+l'app marche quand même, avec des mises à jour à la main.
+
+**Mettre à jour** : quand la branche a avancé sur GitHub, l'app affiche « Mise à jour
+disponible » avec la liste des changements, et le bouton fait le `git pull` puis redémarre.
+Si les dépendances ont changé, il faut ensuite relancer `run.bat`.
+
+### Sans git : depuis le ZIP
+
+Sur la page GitHub du dépôt : **Code › Download ZIP**. Avant de dézipper, clic droit sur le
+ZIP › Propriétés › **Débloquer** (sinon Windows peut bloquer `run.bat`). Double-cliquez
+`run.bat` : il propose d'installer git, et la copie devient une copie suivie — le bouton
+« Mettre à jour » de l'app marche alors. Sans git, l'app marche, sans mise à jour d'un clic.
+
+Le PDF « Account transactions » d'UBS (e-banking **en anglais**) se dépose tel quel : il est
+reconnu à son contenu. Un export UBS s'arrête à 500 mouvements : exporter par tranches.
+
+### Publier pour les autres
+
+Le dépôt de travail peut rester privé : `python tools/publish.py` publie l'état commité dans
+le dépôt public, en un commit sans l'historique privé, et refuse si le nom, l'IBAN ou le
+numéro de client du titulaire (lus dans le ledger local) apparaissent dans un fichier suivi.
+Une copie venue du ZIP public suit ensuite le dépôt public (`run.bat`, `PMS_REPO`).
 
 ## Commandes
 
@@ -42,6 +78,12 @@ python -m venv .venv
 | `--export sortie.xlsx` | les transactions classées, en CSV ou en xlsx |
 | `--from 2025-01-01 --to 2025-12-31` | limite la fenêtre exportée |
 | `--no-ledger` | lecture directe d'un PDF, sans historique |
+| `--backup [DOSSIER]` | zippe et chiffre `data/` et `inbox/` (défaut : OneDrive/PMS-sauvegardes), seulement si quelque chose a changé ; `run.bat` le fait à chaque lancement |
+| `--restore ARCHIVE [--into DOSSIER]` | déchiffre une sauvegarde et redépose `data/` et `inbox/`, sans rien écraser |
+| `--benchmarks` | recapture les repères publics (MSCI World, S&P 500, SMI, or…), dividendes réinvestis |
+| `--crypto` | revalorise le relevé crypto Revolut aux cours du jour |
+| `--ibkr` | met à jour Interactive Brokers depuis son service Flex (jeton dans `data/ibkr_flex.json`, voir `docs/epargne.md`) |
+| `--refresh [--daily]` | IBKR, repères, indices du 3a et crypto d'un coup ; `run.bat` le lance une fois par jour |
 
 ## Naviguer dans le temps (app web)
 
@@ -63,8 +105,12 @@ granularité déterminent entièrement ce qui est affiché.
   précède immédiatement.
 
 Chaque niveau de zoom est une URL : partageable, marquable, et le bouton retour du
-navigateur défait le zoom. Tout fonctionne sans JavaScript ; celui-ci ne sert qu'à
-éviter le rechargement complet.
+navigateur défait le zoom. `Ctrl K` ouvre une palette qui va à une page, une période ou
+une transaction.
+
+L'app est une app React servie par Flask, qui calcule tout et lui envoie du JSON. Le
+build est versionné : `run.bat` n'a pas besoin de Node. Pour modifier l'interface,
+voir `frontend/README.md`.
 
 ## Réimporter un nouveau relevé
 
@@ -108,6 +154,12 @@ Tout est recalculé pour la fenêtre choisie.
 - **Cumuls annuels superposés**, **profil par jour de semaine**, **saisonnalité**,
   **dépenses par pays**.
 - **Coûts custodian** — le détail de chaque conversion et de la marge prélevée.
+- **Épargne** (si les snapshots existent) — compte courant, Interactive Brokers, 3a,
+  crypto : valeur, apports, rendement TWR ou MWR, sur la période ou par an, effet du
+  timing des versements, contribution de chaque poche, frais, risque, comparaison à des
+  repères dividendes réinvestis ; mois de réserve du compte courant, plafond 3a de
+  l'année, allocation cible et ce qu'il faut déplacer pour l'atteindre, et la fortune
+  au 31.12 pour la déclaration d'impôts (exportable en xlsx).
 - **Transactions** — filtrables et triables, jusqu'au détail d'une journée.
 
 Dans l'app, un panneau qui ne peut rien dire sur la fenêtre choisie est simplement
@@ -143,7 +195,8 @@ Le détail, pour le faire à la main ou relire ce qui a été fait.
 Tout ce qui suit le parser travaille sur trois objets de `src/pms/models.py` :
 `Statement`, `AccountSummary` et `Transaction`. Brancher une banque, c'est écrire une
 fonction `parse(path) -> Statement` pour son export (PDF, CSV, peu importe) — sur le
-modèle de `parser.parse_statement` — et la passer à l'ingestion.
+modèle de `parser.parse_statement` (PDF) ou de `revolut.parse_statement` (CSV) — et
+la déclarer dans `banks.py`.
 
 ### Ce que le parser doit remplir
 
@@ -156,6 +209,7 @@ modèle de `parser.parse_statement` — et la passer à l'ingestion.
 | `kind` | le type d'opération tel qu'imprimé (« Paiement par carte »…) | les règles et plusieurs vues s'y fient (voir plus bas) |
 | `merchant`, `location`, `detail` | contrepartie, lieu (`…, Pays` pour une carte), toutes les lignes brutes | catégorisation, géographie, recherche |
 | `Statement.accounts` | un `AccountSummary` par devise, soldes d'ouverture et de clôture | sans lui, `reconcile()` ne peut pas vérifier la clôture |
+| `Transaction.account` | `""` pour le compte principal, un nom court (`"revolut"`) pour tout autre | chaque compte garde sa propre chaîne de soldes ; le cash affiché est leur somme |
 | `Statement.reference_currency` | la devise de référence | aujourd'hui `CHF` est supposé partout (voir limites) |
 
 Le critère d'acceptation est le même que pour Swissquote : sur un vrai relevé,
@@ -176,18 +230,22 @@ normaliser `kind` vers ces libellés), soit étendre :
 | `review.CARD_KIND` | paiement par carte |
 | `analysis.country_of` | le pays est le dernier segment de `location` après une virgule |
 | `categories.py`, règle « Frais bancaires » | les libellés de change et d'intérêts |
+| `categories.INTERNAL` | un virement entre vos propres comptes (une recharge Revolut) : ni dépense ni revenu, des deux côtés |
 
 ### Le brancher
 
-L'ingestion prend la fonction de parsing en paramètre (`ledger.ingest(paths, ledger_path,
-parse)`) ; elle est aujourd'hui passée à deux endroits, `cli.py` et
-`web/views/system.py`, qui lisent `inbox/*.pdf`. Il n'y a pas de détection automatique
-de la banque : pour une seule banque, remplacer `parse_statement` à ces deux endroits
-(et le motif de fichier si l'export n'est pas un PDF) suffit.
+Une ligne dans `banks.SOURCES` : où ses exports sont déposés dans `inbox/`, et son
+parser. La CLI et le bouton ⟳ de l'app lisent ce registre ; un fichier déposé ailleurs
+est refusé plutôt que lu par le mauvais parser.
 
-Ajouter ensuite un test de parser à côté de `tests/test_parser.py` (sauté sans relevé
-réel), et, si la banque a une forme de données que le relevé fictif n'a pas, l'ajouter
-à `tests/synthetic.py` — inventée, jamais recopiée d'un vrai relevé.
+Si la banque est un **compte secondaire** (une carte de voyage, un néo-banque), ses
+lignes portent un `account` et vivent à côté du compte principal. Ses lignes antérieures
+au début du compte principal restent dans le ledger mais hors de l'analyse : une année
+où seul le petit compte est connu se lirait comme une année sans dépenses. Importer un
+relevé plus ancien du compte principal les fait entrer d'elles-mêmes.
+
+Ajouter ensuite ses tests sur un export inventé de la même forme (`tests/test_revolut.py`
+en est le modèle), jamais recopié d'un vrai relevé.
 
 ### Limites connues
 
@@ -205,6 +263,40 @@ réel), et, si la banque a une forme de données que le relevé fictif n'a pas, 
 `inbox/`, `data/` et `output/` sont exclus de git : les relevés, le ledger, les
 corrections et les exports restent sur votre machine. Un export CSV ou xlsx contient
 l'intégralité de vos transactions — ne le publiez pas.
+
+Ce que `data/` contient ne se reconstruit pas entièrement : le ledger se refait depuis
+les relevés, vos corrections, règles et budgets non. `run.bat` en dépose donc une copie
+zippée **et chiffrée** (avec `inbox/`) dans OneDrive à chaque lancement où quelque chose
+a changé, en gardant les dix dernières (`--backup DOSSIER --keep N` pour ailleurs ; un
+dossier dans le dépôt est refusé). La clé est créée au premier passage dans
+`data/backup.key` et n'entre jamais dans une copie : **gardez-en une copie dans votre
+gestionnaire de mots de passe**, sans elle les sauvegardes ne se relisent pas.
+Restaurer : `python -m pms --restore ARCHIVE` (la clé est demandée si `data/` n'existe
+plus). Détail : `docs/sauvegarde.md`.
+
+## L'assistant (facultatif)
+
+Un modèle de langage peut proposer une catégorie aux commerçants inconnus, résumer la
+revue du mois, expliquer pourquoi un mois a coûté plus, répondre à une question en
+français depuis `Ctrl K` et traduire une phrase en scénario de prévision. Il est éteint
+par défaut. Pour l'allumer : poser la clé du fournisseur seule sur une ligne dans
+`data/ai.anthropic.key` (Claude) ou `data/ai.deepseek.key` (DeepSeek) — rien pour
+Ollama, qui tourne sur le PC — puis choisir le fournisseur et le modèle dans la page
+**Assistant** de l'app, et « Tester ». Il ne calcule aucun chiffre : l'app lui donne les
+siens et écarte toute phrase qui en cite un autre. Les noms de personnes partent masqués
+et chaque envoi est noté dans `data/ai_log.jsonl`. Détail : `docs/assistant.md`.
+
+## Sur le téléphone
+
+L'app reste sur `127.0.0.1` ; [Tailscale](https://tailscale.com) la porte jusqu'à vos
+appareils, et à eux seuls. Une fois : installer Tailscale sur le PC et le téléphone avec
+le même compte, puis, sur le PC, `tailscale serve --bg 5000`. Au lancement, l'app affiche
+l'adresse à ouvrir sur le téléphone (`https://<pc>.<tailnet>.ts.net/`) et empêche Windows
+de se mettre en veille tant qu'elle tourne. Jamais `tailscale funnel`, qui la mettrait
+sur internet sans mot de passe. Sur le téléphone, l'app a des onglets en bas, des
+graphiques à la largeur de l'écran qu'on lit au doigt, et s'installe sur l'écran
+d'accueil. Un relevé s'envoie depuis le téléphone par « Plus › Importer » (`/importer`).
+Détail et raisons : `docs/acces-distant.md`.
 
 Les règles de catégorisation qui nommeraient un employeur, une régie, un praticien ou
 une personne vont dans `data/local_rules.json`, également exclu. Copiez

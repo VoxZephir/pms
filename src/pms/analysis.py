@@ -15,6 +15,11 @@ Two modelling decisions drive everything here.
    and, separately, the CHF amount actually debited. Those two disagree by a
    very stable ~0.97%: that difference is Swissquote's FX markup, and it is the
    only cost the bank charges on this account.
+
+3. **Money moved between one's own accounts is neither spent nor earned.** A
+   Revolut top-up is a card payment on Swissquote and a credit on Revolut;
+   both legs are `categories.INTERNAL` and leave spending and income alike
+   (`is_internal`). Same reason as the conversions, one level up.
 """
 
 from __future__ import annotations
@@ -25,7 +30,8 @@ import statistics
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 
-from .models import AccountSummary, Statement, Transaction
+from .categories import INTERNAL
+from .models import Statement, Transaction
 
 FX_KINDS = ("Transfert automatisé", "Transfert Forex manuel")
 
@@ -45,11 +51,16 @@ def is_fx_leg(txn: Transaction) -> bool:
     return txn.kind.startswith(FX_KINDS)
 
 
+def is_internal(txn: Transaction) -> bool:
+    """A conversion leg, or money moved between one's own accounts."""
+    return is_fx_leg(txn) or txn.category == INTERNAL
+
+
 def _fx_index(statement: Statement) -> dict[str, tuple[list[dt.date], list[float]]]:
     """Per currency, the effective CHF-per-unit rate of each conversion, by date.
 
     Built from the foreign leg, which carries both the credited foreign amount
-    and the CHF actually debited ("Montant: 763.86 CHF").
+    and the CHF actually debited ("Montant: 123.45 CHF").
     """
     points: dict[str, list[tuple[dt.date, float]]] = defaultdict(list)
     for txn in statement.transactions:
@@ -93,11 +104,14 @@ def annotate_chf(statement: Statement) -> None:
     for txn in statement.transactions:
         txn.amount_chf = to_chf(txn, index)
 
+    # Only the primary account's foreign pockets open and close at zero; a
+    # Revolut EUR balance is funded by top-ups as well, so its purchases keep
+    # the nearest-rate estimate.
     for currency in index:
         legs = [t for t in statement.transactions
-                if t.currency == currency and is_fx_leg(t)]
+                if t.currency == currency and is_fx_leg(t) and not t.account]
         purchases = [t for t in statement.transactions
-                     if t.currency == currency and not is_fx_leg(t)]
+                     if t.currency == currency and not is_fx_leg(t) and not t.account]
         target = -sum(t.fx_counter_amount or 0.0 for t in legs)
         estimate = sum(t.amount_chf for t in purchases)
         if estimate and target:
@@ -107,12 +121,13 @@ def annotate_chf(statement: Statement) -> None:
 
 
 def spending(statement: Statement) -> list[Transaction]:
-    """Outgoing money that represents real spending (conversions excluded)."""
-    return [t for t in statement.transactions if t.amount_chf < 0 and not is_fx_leg(t)]
+    """Outgoing money that represents real spending (conversions and moves
+    between own accounts excluded)."""
+    return [t for t in statement.transactions if t.amount_chf < 0 and not is_internal(t)]
 
 
 def income(statement: Statement) -> list[Transaction]:
-    return [t for t in statement.transactions if t.amount_chf > 0 and not is_fx_leg(t)]
+    return [t for t in statement.transactions if t.amount_chf > 0 and not is_internal(t)]
 
 
 def xirr(cashflows: list[tuple[dt.date, float]]) -> float | None:
@@ -208,7 +223,26 @@ def risk_stats(values: list[float], years: float,
     down_vol = statistics.stdev(downside) * (periods_per_year ** 0.5) \
         if len(downside) > 1 else 0.0
 
+    ulcer = (sum(d * d for d in drawdowns) / len(drawdowns)) ** 0.5
+
+    # The same measures over the series' own span, nothing scaled to a year:
+    # volatility over n steps is sigma * sqrt(n), the risk-free return is what
+    # 0.5 % a year earned over the span. A short window then reads as itself
+    # instead of being extrapolated or left blank.
+    cumulative = values[-1] / values[0] - 1
+    steps = len(returns) ** 0.5
+    vol_p = statistics.stdev(returns) * steps if len(returns) > 1 else 0.0
+    down_p = statistics.stdev(downside) * steps if len(downside) > 1 else 0.0
+    rf_p = (1 + risk_free) ** years - 1 if years > 0 else 0.0
+    period = {
+        "vol": vol_p,
+        "sharpe": (cumulative - rf_p) / vol_p if vol_p else None,
+        "sortino": (cumulative - rf_p) / down_p if down_p else None,
+        "calmar": (cumulative / abs(min(drawdowns))) if min(drawdowns) else None,
+        "upi": (cumulative - rf_p) / ulcer if ulcer else None,
+    }
     return {
+        "period": period,
         "final": values[-1],
         "cumulative": values[-1] / values[0] - 1,
         "cagr": cagr,
@@ -218,23 +252,75 @@ def risk_stats(values: list[float], years: float,
         "max_dd": min(drawdowns),
         "avg_dd": (sum(underwater) / len(underwater)) if underwater else 0.0,
         "longest_dd": longest,
-        "ulcer": (sum(d * d for d in drawdowns) / len(drawdowns)) ** 0.5,
+        "ulcer": ulcer,
         "calmar": (cagr / abs(min(drawdowns))) if min(drawdowns) else None,
+        # Ulcer Performance Index (Martin ratio): the Sharpe with the ulcer
+        # index for risk -- excess return per unit of drawdown pain.
+        "upi": (cagr - risk_free) / ulcer if ulcer else None,
     }
 
 
+def cash_points(transactions, rate=None) -> list[tuple[dt.date, float]]:
+    """The cash held across accounts, in francs, one point per row.
+
+    Each account's printed chain, summed: an account not yet started counts
+    at its opening balance -- the same backfill a single account always had,
+    so a second account adds its own money and nothing else. Without `rate`
+    only the CHF chains count (the balance chart); with it -- `rate(currency,
+    day)`, CHF per unit -- the EUR and GBP pockets too, which the savings
+    need: a crypto purchase paid from Revolut's euros left the cash, and
+    without them it read as a gain.
+    """
+    rows = [t for t in transactions if t.balance is not None
+            and (t.currency == "CHF" or rate is not None)]
+
+    def chf(t, amount):
+        if t.currency == "CHF":
+            return amount
+        r = rate(t.currency, t.date)
+        return amount * r if r else 0.0
+    held: dict[tuple[str, str], float] = {}
+    for t in rows:
+        held.setdefault((t.account, t.currency), chf(t, t.balance - t.amount))
+    points = []
+    for t in rows:
+        held[(t.account, t.currency)] = chf(t, t.balance)
+        points.append((t.date, round(sum(held.values()), 2)))
+    return points
+
+
+def fx_rate(statement: Statement):
+    """`rate(currency, day)`: CHF per unit, the conversion nearest in time."""
+    index = getattr(statement, "_fx_rate_index", None)
+    if index is None:
+        index = _fx_index(statement)
+        try:
+            statement._fx_rate_index = index
+        except AttributeError:
+            pass
+
+    def rate(currency: str, day: dt.date) -> float | None:
+        dates, rates = index.get(currency, ([], []))
+        if not dates:
+            return None
+        pos = bisect_left(dates, day)
+        best = min((p for p in (pos - 1, pos) if 0 <= p < len(dates)),
+                   key=lambda p: abs((dates[p] - day).days))
+        return rates[best]
+    return rate
+
+
 def balance_at(statement: Statement, day: dt.date) -> float:
-    """The CHF running balance on (or just before) `day`, from the printed chain.
+    """The CHF cash on (or just before) `day`, from the printed chains.
 
     Indexed once per statement and bisected: the savings section asks for
-    every day of the window, and a scan of 2'400 rows per day made a
+    every day of the window, and a scan of thousands of rows per day made a
     two-year daily curve cost seconds.
     """
     rows = statement.transactions
     cached = getattr(statement, "_balance_index", None)
     if cached is None or cached[0] is not rows or cached[1] != len(rows):
-        chf = [(t.date, t.balance) for t in rows
-               if t.currency == "CHF" and t.balance is not None]
+        chf = cash_points(rows, fx_rate(statement))
         ordered = all(a[0] <= b[0] for a, b in zip(chf, chf[1:]))
         cached = (rows, len(rows), [d for d, _ in chf], [b for _, b in chf],
                   ordered)
@@ -265,12 +351,50 @@ def balance_at(statement: Statement, day: dt.date) -> float:
 REFERENCE_FX_AS_OF = "02.08.2026"
 REFERENCE_FX_MARKUP = [
     {"name": "Wise", "rate": 0.41,
-     "note": "frais publiés sur les conversions CHF"},
+     "note": "frais publiés sur les conversions CHF", "as_of": "02.08.2026"},
     {"name": "neon", "rate": 1.5,
-     "note": "plan gratuit"},
-    {"name": "Revolut", "rate": 0.0,
-     "note": "plan standard, dans le forfait"},
+     "note": "plan gratuit", "as_of": "02.08.2026"},
 ]
+
+# Revolut does not charge one rate: its free plan converts at the interbank
+# rate up to a monthly allowance, then 1 %, and 1 % on every weekend
+# conversion; Premium has neither (fee page fr-CH, read 19.10.2026). Each
+# conversion of the statement is replayed on its own date.
+REVOLUT_AS_OF = "19.10.2026"
+REVOLUT_ALLOWANCE = 1250.0      # CHF per rolling month, weekdays, Standard
+REVOLUT_MARKUP = 1.0            # % above the allowance, and at weekends
+REVOLUT_PREMIUM_MONTH = 11.99   # CHF, the plan without either
+ROLLING_DAYS = 30
+
+
+def revolut_replay(conversions: list[dict]) -> dict:
+    """What Revolut's free plan would have charged for the same conversions:
+    1 % on a Saturday or Sunday, 1 % on the part of a weekday conversion
+    beyond 1'250 CHF converted in the last 30 days, nothing otherwise. The
+    weekend starts on Friday evening at Revolut; a date carries no hour, so
+    Friday counts as a weekday -- the replay leans cheap, and says so."""
+    cost = weekend = over = 0.0
+    window: list[tuple[dt.date, float]] = []
+    for c in sorted(conversions, key=lambda c: c["date"]):
+        base = c["reference_chf"]
+        if c["date"].weekday() >= 5:
+            fee = base * REVOLUT_MARKUP / 100
+            weekend += fee
+        else:
+            window = [(d, v) for d, v in window if (c["date"] - d).days < ROLLING_DAYS]
+            used = sum(v for _, v in window)
+            beyond = max(base - max(REVOLUT_ALLOWANCE - used, 0.0), 0.0)
+            fee = beyond * REVOLUT_MARKUP / 100
+            over += fee
+            window.append((c["date"], base))
+        cost += fee
+    return {"cost": round(cost, 2), "weekend": round(weekend, 2), "over": round(over, 2)}
+
+
+def closing_chf(statement: Statement) -> float:
+    """CHF held at the end of the statement, every account summed."""
+    return round(sum(a.closing_balance for a in statement.accounts
+                     if a.currency == "CHF"), 2)
 
 
 def custodian_costs(statement: Statement) -> dict:
@@ -331,6 +455,27 @@ def custodian_costs(statement: Statement) -> dict:
         "would_cost": round(base * ref["rate"] / 100, 2),
         "saved": round(markup_total - base * ref["rate"] / 100, 2),
     } for ref in REFERENCE_FX_MARKUP]
+    if conversions:
+        replay = revolut_replay(conversions)
+        first, last = conversions[0]["date"], conversions[-1]["date"]
+        months = max(((last - first).days + 1) / 30.44, 1.0)
+        premium = round(REVOLUT_PREMIUM_MONTH * months, 2)
+        parts = []
+        if replay["weekend"]:
+            parts.append(f"{chf(replay['weekend'])} CHF le week-end")
+        if replay["over"]:
+            parts.append(f"{chf(replay['over'])} CHF au-delà de {chf(REVOLUT_ALLOWANCE, 0)} CHF par mois")
+        references += [
+            {"name": "Revolut Standard", "rate": round(replay["cost"] / base * 100, 2) if base else 0.0,
+             "note": ("gratuit en semaine dans le forfait ; " + (" et ".join(parts) or "rien au-delà")
+                      + " (le vendredi soir compte déjà comme week-end chez Revolut)"),
+             "as_of": REVOLUT_AS_OF, "would_cost": replay["cost"],
+             "saved": round(markup_total - replay["cost"], 2)},
+            {"name": "Revolut Premium", "rate": 0.0,
+             "note": f"aucune marge, mais l'abonnement : {chf(REVOLUT_PREMIUM_MONTH)} CHF par mois sur {months:.0f} mois",
+             "as_of": REVOLUT_AS_OF, "would_cost": premium,
+             "saved": round(markup_total - premium, 2)},
+        ]
 
     return {
         "conversions": conversions,
@@ -452,7 +597,7 @@ def top_merchants(transactions: list[Transaction], limit: int = 20) -> list[dict
             "categories": len(weights),
             "category_share": weights[dominant] / amount * 100 if amount else 100.0,
             # Only worth mentioning when the split is real. A Coop petrol stop
-            # among 434 grocery runs rounds to 100% -- saying "2 categories"
+            # among hundreds of grocery runs rounds to 100% -- saying "2 categories"
             # there states something false.
             "mixed": len(weights) > 1
                      and (weights[dominant] / amount * 100 if amount else 100.0) < 95.0,
@@ -501,19 +646,8 @@ def slice_period(statement: Statement, start: dt.date | None,
     if end:
         rows = [t for t in rows if t.date <= end]
 
-    accounts = []
-    for currency in sorted({t.currency for t in rows}):
-        series = [t for t in rows if t.currency == currency]
-        with_balance = [t for t in series if t.balance is not None]
-        opening = ((with_balance[0].balance - with_balance[0].amount)
-                   if with_balance else 0.0)
-        accounts.append(AccountSummary(
-            currency=currency,
-            opening_balance=round(opening, 2),
-            closing_balance=with_balance[-1].balance if with_balance else 0.0,
-            credit_total=round(sum(t.amount for t in series if t.amount > 0), 2),
-            debit_total=round(-sum(t.amount for t in series if t.amount < 0), 2),
-        ))
+    from .ledger import _accounts
+    accounts = _accounts(rows)
 
     return Statement(
         holder=statement.holder,
@@ -1104,8 +1238,28 @@ def seasonality(transactions: list[Transaction]) -> list[dict]:
     return rows
 
 
+_MONTHS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+           "août", "septembre", "octobre", "novembre", "décembre")
+
+
+def _times(count: int, noun: str) -> str:
+    """"1 transaction", "3 transactions": the facts read as sentences, and
+    "1 transactions" was what a one-off row printed."""
+    return f"{count} {noun}{'s' if count > 1 else ''}"
+
+
+def _month(key: str) -> str:
+    year, month = key.split("-")
+    return f"{_MONTHS[int(month) - 1]} {year}"
+
+
 def highlights(statement: Statement, custodian: dict) -> list[dict]:
-    """Notable facts, each with a headline figure and an explanation."""
+    """Notable facts, each with a headline figure and an explanation.
+
+    A fact that cannot say anything on this window is left out rather than
+    printed: the dearest month of a single month, or a savings rate when the
+    income is a refund (thousands of percent negative said nothing but "the
+    salary is not in")."""
     spend = spending(statement)
     earn = income(statement)
     months = monthly(statement)
@@ -1113,75 +1267,82 @@ def highlights(statement: Statement, custodian: dict) -> list[dict]:
 
     total_spend = sum(abs(t.amount_chf) for t in spend)
     total_income = sum(t.amount_chf for t in earn)
-    days = max((statement.period_end - statement.period_start).days, 1)
+    # Both ends count, as everywhere else: the dashboard's "per day" tile
+    # divides by the same span, and a window of one month must not read 134
+    # there and 138 here.
+    days = max((statement.period_end - statement.period_start).days + 1, 1)
     full_months = [m for m in months if m["count"] > 5]
 
     items: list[dict] = []
 
     biggest = max(spend, key=lambda t: abs(t.amount_chf))
     items.append({
-        "icon": "\U0001F4B8", "label": "Plus grosse dépense",
-        "value": f"{chf(abs(biggest.amount_chf))} CHF",
+        "label": "Plus grosse dépense",
+        "value": f"{chf(abs(biggest.amount_chf), 0)} CHF",
         "detail": f"{biggest.label} — {biggest.date:%d.%m.%Y} ({biggest.category})",
     })
 
     merchants = top_merchants(spend, limit=1)
-    if merchants:
+    # The top payee paid once is the biggest expense again: said once.
+    if merchants and not (merchants[0]["count"] == 1 and merchants[0]["name"] == biggest.label):
         top = merchants[0]
+        detail = f"{top['name']} — {_times(top['count'], 'paiement')}"
+        if top["count"] > 1:
+            detail += f", {chf(top['average'])} CHF en moyenne"
         items.append({
-            "icon": "\U0001F3C6", "label": "Premier bénéficiaire",
-            "value": f"{chf(top['amount'])} CHF",
-            "detail": f"{top['name']} — {top['count']} paiements, "
-                      f"{chf(top['average'])} CHF en moyenne",
+            "label": "Premier bénéficiaire",
+            "value": f"{chf(top['amount'], 0)} CHF",
+            "detail": detail,
         })
 
     items.append({
-        "icon": "\U0001F4C5", "label": "Dépense moyenne par jour",
-        "value": f"{chf(total_spend / days)} CHF",
-        "detail": f"sur {days} jours et {len(spend)} transactions",
+        "label": "Dépense moyenne par jour",
+        "value": f"{chf(total_spend / days, 0)} CHF",
+        "detail": f"sur {_times(days, 'jour')} et {_times(len(spend), 'transaction')}",
     })
 
-    if full_months:
+    if len(full_months) > 1:
         peak = max(full_months, key=lambda m: m["spending"])
         quiet = min(full_months, key=lambda m: m["spending"])
         items.append({
-            "icon": "\U0001F4C8", "label": "Mois le plus cher",
-            "value": f"{chf(peak['spending'])} CHF",
-            "detail": f"{peak['month']} — contre {chf(quiet['spending'], 0)} CHF "
-                      f"le mois le plus sobre ({quiet['month']})",
+            "label": "Mois le plus cher",
+            "value": f"{chf(peak['spending'], 0)} CHF",
+            "detail": f"{_month(peak['month'])} — contre {chf(quiet['spending'], 0)} CHF "
+                      f"en {_month(quiet['month'])}, le plus sobre",
         })
 
     savings = (total_income - total_spend) / total_income * 100 if total_income else 0
-    items.append({
-        "icon": "\U0001F4B0", "label": "Taux d'épargne",
-        "value": f"{savings:.1f} %",
-        "detail": f"{chf(total_income, 0)} CHF encaissés, "
-                  f"{chf(total_spend, 0)} CHF dépensés",
-    })
+    if total_income and savings >= -100:
+        items.append({
+            "label": "Taux d'épargne",
+            "value": f"{savings:.1f} %",
+            "detail": f"{chf(total_income, 0)} CHF encaissés, "
+                      f"{chf(total_spend, 0)} CHF dépensés",
+        })
 
     if cats:
         first = cats[0]
         items.append({
-            "icon": "\U0001F3AF", "label": "Premier poste de dépense",
+            "label": "Premier poste de dépense",
             "value": f"{first['share']:.1f} %",
             "detail": f"{first['category']} — {chf(first['amount'], 0)} CHF "
-                      f"sur {first['count']} transactions",
+                      f"sur {_times(first['count'], 'transaction')}",
         })
 
     if custodian["count"]:
         items.append({
-            "icon": "\U0001F3E6", "label": "Marge de change Swissquote",
+            "label": "Marge de change Swissquote",
             "value": f"{chf(custodian['markup_chf'])} CHF",
             "detail": f"{custodian['effective_pct']:.2f} % sur "
                       f"{chf(custodian['volume_chf'], 0)} CHF convertis "
-                      f"en {custodian['count']} opérations",
+                      f"en {_times(custodian['count'], 'opération')}",
         })
 
     card = [t for t in spend if "carte" in t.kind]
     twint = [t for t in spend if t.kind == "Paiement Twint"]
     if card and twint:
         items.append({
-            "icon": "\U0001F4B3", "label": "Carte contre Twint",
+            "label": "Carte contre Twint",
             "value": f"{len(card)} / {len(twint)}",
             "detail": f"{chf(sum(abs(t.amount_chf) for t in card), 0)} CHF par carte, "
                       f"{chf(sum(abs(t.amount_chf) for t in twint), 0)} CHF par Twint",
@@ -1190,10 +1351,10 @@ def highlights(statement: Statement, custodian: dict) -> list[dict]:
     weekdays = weekday_profile(spend)
     busiest = max(weekdays, key=lambda d: d["amount"])
     items.append({
-        "icon": "\U0001F5D3️", "label": "Jour le plus dépensier",
+        "label": "Jour le plus dépensier",
         "value": busiest["day"],
         "detail": f"{chf(busiest['amount'], 0)} CHF cumulés sur "
-                  f"{busiest['count']} transactions",
+                  f"{_times(busiest['count'], 'transaction')}",
     })
 
     frequent = most_frequent_amount(spend)
@@ -1203,7 +1364,7 @@ def highlights(statement: Statement, custodian: dict) -> list[dict]:
             detail += (f", dont {frequent['label_count']} chez "
                        f"{frequent['label']}")
         items.append({
-            "icon": "🔁", "label": "Paiement le plus fréquent",
+            "label": "Paiement le plus fréquent",
             "value": f"{chf(frequent['amount'])} CHF",
             "detail": detail,
         })
@@ -1211,8 +1372,8 @@ def highlights(statement: Statement, custodian: dict) -> list[dict]:
     small = [t for t in spend if abs(t.amount_chf) < 10]
     small_total = sum(abs(t.amount_chf) for t in small)
     items.append({
-        "icon": "\U0001FA99", "label": "Micro-dépenses (< 10 CHF)",
-        "value": f"{len(small)} transactions",
+        "label": "Micro-dépenses (< 10 CHF)",
+        "value": _times(len(small), "transaction"),
         "detail": f"{chf(small_total, 0)} CHF au total, soit "
                   f"{small_total / total_spend * 100:.1f} % des dépenses",
     })

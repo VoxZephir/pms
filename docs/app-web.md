@@ -1,200 +1,295 @@
-# Mécanismes de l'app web : panneaux, redémarrage, sommaire, brush, parts dans le temps, fluidité
+# L'app web : architecture React, graphiques, gestes, panneaux
 
-<!-- Détaché de CLAUDE.md le 22.09.2026 : lu à la demande, quand on
-     travaille sur ce sujet (voir « Où lire avant de toucher »). -->
+<!-- Détaché de CLAUDE.md le 22.09.2026, réécrit le 17.10.2026 pour l'app
+     React : lu à la demande (voir « Où lire avant de toucher »). -->
+
+## Qui fait quoi
+
+**Flask calcule, le navigateur dessine.** Chaque page de l'app a son endpoint JSON
+dans `web/api/` (`/api/dashboard`, `/api/transactions`, `/api/savings`,
+`/api/previsions`, `/api/analyse`, `/api/corrections`, `/api/triage`, `/api/imports`,
+plus `/api/period` et `/api/meta` pour la coquille). Ils appellent les mêmes fonctions
+d'analyse qu'avant : aucun chiffre n'est calculé en TypeScript. Le front (`frontend/`)
+met en page et dessine.
+
+`web/api/encode.py` transforme ce que l'analyse renvoie en JSON : dates en ISO, une
+transaction en ligne plate (`key` = `référence:devise`, l'identité des épingles), un
+`Statement` jamais expédié entier, un flottant non fini en `null` — le JSON n'a pas de
+NaN et le navigateur refuserait toute la réponse pour un seul.
+
+**Le build est versionné** (`src/pms/web/static/spa/`) : `run.bat` sert l'app sans Node.
+Node ne sert qu'à modifier le front (`frontend/README.md`). Vite nomme chaque fichier par
+le hash de son contenu : les assets sont servis `immutable` pour un an, `index.html` en
+`no-cache`, si bien qu'un nouveau build atteint le téléphone au rechargement suivant.
+`test_the_committed_build_matches_the_sources` reconstruit dans un dossier temporaire et
+compare les noms : une modification de `frontend/src` sans rebuild casse la suite.
+
+Les pages (`/`, `/transactions`, `/epargne`, `/analyse`, `/previsions`,
+`/corrections`, `/corrections/tri`, `/importer`, `/jour/<date>`) servent toutes le même
+document ; le routeur du navigateur lit l'adresse. Les anciennes adresses redirigent
+(`/reclasser` → `/corrections`, `/day/…` → `/jour/…`, `/app/…` → `/…`) : les favoris et
+l'icône de l'écran d'accueil continuent de mener quelque part. Une adresse inconnue
+répond 404 avec l'app, qui dit « Page introuvable » ; une route d'API inconnue répond
+404 en JSON.
+
+## La pile, et pourquoi
+
+| Brique | Rôle |
+|---|---|
+| React 19, TypeScript, Vite 8 | l'app ; `tsc --noEmit` et Vitest tournent dans la suite (`test_frontend.py`) |
+| React Router 7 | **l'URL est l'état** : fenêtre, granularité, vues, filtres |
+| TanStack Query | cache des réponses par URL, la vue précédente reste affichée pendant le chargement de la suivante, préchargement au survol des flèches de période |
+| Tailwind 4 | les tokens de couleur sont des variables CSS (`styles.css`), redéfinies en sombre : les utilitaires suivent le thème sans variante `dark:` |
+| Radix (dialog, popover), vaul, sonner, cmdk | fenêtres accessibles, feuilles du bas sur téléphone, toasts avec « Annuler », palette Ctrl K |
+| motion | transitions : chiffres qui roulent, barres qui poussent, cartes qui glissent ; coupées sous `prefers-reduced-motion` |
+| d3-scale / d3-shape | la géométrie des graphiques, calculée dans le navigateur à la largeur réelle de l'écran |
+
+Mesuré le 17.10 sur le ledger réel : premier chargement 244 Ko de JS et CSS gzippés,
+plus la police (48 Ko), puis plus rien tant que le build ne change pas. Une vue coûte
+ensuite son JSON : 4,6 Ko pour le mois en cours, 25 Ko pour douze mois, 44 Ko pour tout
+l'historique. Les pages autres que le tableau de bord sont chargées à leur première
+ouverture.
+
+## L'URL est l'état
+
+Comme avant : `?from=&to=&grain=` (ou `?preset=`) déterminent la fenêtre, et chaque vue
+est un lien. `lib/url.ts` construit les liens :
+
+- `WINDOW_KEYS` (`from`, `to`, `grain`, `preset`) suivent d'une page à l'autre (`pageHref`) ;
+- `VIEW_KEYS` (`stack`, `split`, `scale`, `focus`, `perf`, `rate`, `bench`, `shares`,
+  `smooth`) suivent un changement de période ;
+- `TABLE_KEYS` (`q`, `category`, `bucket`, `dir`, `sort`, `dir_sort`, `per`) restent sur
+  les transactions.
+
+Une fenêtre donnée par ses dates efface le préréglage et inversement : les deux ne se
+contredisent jamais dans une URL. Le serveur valide chaque clé et retombe sur la valeur
+par défaut si elle est inconnue (`views/common.py`) ; il n'y a rien à valider côté client.
+Une fenêtre glissante porte le nom de son préréglage (« 12 derniers mois ») plutôt que
+deux dates (`api/shell.PRESET_TITLES`).
+
+**Les écritures passent par `send()`** (`lib/api.ts`) : elle vide tout le cache après la
+requête. Une vue lue avant une correction ne peut donc pas revenir avec ses anciens
+chiffres. Une correction propose « Annuler » dans son toast : le serveur renvoie ce qu'il
+faut restaurer (`undo`), comme avant. Un formulaire refusé (plan, budgets, règles
+personnelles) reçoit les erreurs par champ, garde ce qui a été tapé, et rien n'est écrit.
+
+## La période
+
+Elle est toujours à portée, dans la barre collée en haut : `‹ titre ›`. Les flèches,
+←/→ au clavier et Échap (remonter d'un niveau dans le fil d'ariane) suivent les mêmes
+règles qu'avant (`periods.neighbours`) : une unité calendaire avance d'une unité, le
+mois en cours recule sur le mois entier précédent, toute autre fenêtre de sa propre
+durée. Le titre ouvre le sélecteur : fil d'ariane, préréglages, un mois au choix dans une
+année, des dates précises, la granularité. C'est un popover sur ordinateur, une feuille
+du bas sur téléphone.
+
+## Les graphiques
+
+Une seule implémentation par forme, dans `frontend/src/charts/` : colonnes empilées
+(`Columns`), courbes (`Lines`), calendrier (`Calendar`). La géométrie de `charts.py`
+(supprimé) y a été portée, avec ses règles :
+
+- **une série s'arrête où ses données s'arrêtent** : `null` coupe la ligne, jamais
+  rembourré (le cumul annuel, le 3a avant son premier relevé) ;
+- **les axes** : pas de 1, 2, 2,5 ou 5 × 10^k, choisis pour gaspiller le moins de hauteur
+  (`axisScale`, testé dans `scale.test.ts`) ; axe log sur 1-2-5 pour le patrimoine sur
+  plusieurs décennies, linéaire dès qu'une valeur n'est pas strictement positive ;
+- **huit teintes validées**, jamais une neuvième : au-delà, « Autres » (`palette.py`) ;
+- **le calendrier** : du pâle au foncé, le plus foncé est le plus dépensier, dans les
+  deux thèmes ; un jour sans dépense est dessiné creux, jamais gris. Sur un écran large,
+  une bande de semaines (continue si la fenêtre tient en un an) ; sur un téléphone, un
+  petit calendrier par mois, trois de front, parce que 53 semaines feraient des cases de
+  6 px impossibles à toucher.
+
+**Gestes** (pointer events : souris, stylet et doigt, le même code) :
+
+- survol, ou premier toucher, affiche les chiffres d'une colonne ;
+- clic, ou second toucher sur la même colonne, l'ouvre : un niveau plus fin, ou la
+  journée dans une feuille ;
+- un glissement de côté sur les colonnes sélectionne une plage ; sur une courbe, il lit
+  les points un à un ;
+- le défilement vertical reste celui de la page (`touch-action: pan-y` sur le SVG) ;
+- au clavier, le graphique prend le focus, ←/→ parcourent les colonnes et Entrée ouvre.
+
+L'infobulle dit toujours la vraie valeur, même quand l'axe est borné (une part à des milliers de % négatifs).
+Elle est dessinée hors du panneau (un portail, en `position: fixed`) puis bornée à
+l'écran une fois mesurée : les panneaux rognent leur contenu, et une infobulle de huit
+catégories sous un graphique de 300 px passait sous le bord bas de la carte.
+
+## Se déplacer dans une page
+
+Le sommaire n'est déclaré nulle part : chaque `Panel` se marque `data-section`, et
+`shell/Sections.tsx` lit la page telle qu'elle est dessinée. Un panneau que l'API a
+écarté (fenêtre trop courte) n'y figure donc pas, et un nouveau panneau y entre seul.
+
+- Au bureau, « Sur cette page » sous la navigation de la barre latérale ; la section à
+  l'écran est marquée en suivant le défilement.
+- Une fois la page descendue, un bouton « Haut de page » en bas à droite ; sur le
+  téléphone, il porte aussi le sommaire, dans une feuille.
+- Aller à un panneau replié le déplie. Le défilement est animé à la main (`glide`) et
+  non par le `smooth` du navigateur : motion, en mesurant la hauteur d'un panneau qui se
+  déplie, remet la fenêtre où elle était, et chaque remise annulait le défilement natif.
+- La section demandée reste marquée jusqu'au prochain geste du lecteur : en bas de page,
+  un panneau ne peut pas remonter jusqu'à la ligne, et « le dernier passé » en
+  marquerait un autre.
+
+## Sur le téléphone
+
+Sous 1024 px, la barre latérale laisse la place à une barre d'onglets en bas :
+Accueil, Transactions, Épargne, Prévisions, et Plus pour le reste. Les fenêtres
+deviennent des feuilles qu'on ferme en les glissant vers le bas. Le reste suit :
+
+- les zones de sécurité sont respectées (`safe-area-inset`) ;
+- les champs sont en 16 px, sinon iOS zoome ;
+- les tables deviennent des listes de cartes (`Table`) ;
+- les transactions sont groupées par jour, avec le net du jour ;
+- les scénarios des prévisions défilent de côté, carte par carte.
+
+**Le corps de page ne défile jamais de côté.** Une carte dans une grille porte `min-w-0`,
+sinon un contrôle segmenté de cinq options élargit la page de 34 px. Le test
+`test_no_page_scrolls_sideways_on_a_phone` le vérifie sur chaque page à 390 px.
+
+## Panneaux et données
 
 **Une seule chose empêche le panneau « Engagements sans passage récent » d'être du
 bruit.** `recurring_labels` teste la stabilité du *montant*, ce qui suffit au socle
 contraint mais laisse passer une cantine fréquentée tous les jours ouvrés. Alerter sur un
 déjeuner en retard, c'est apprendre à l'utilisateur à ignorer le panneau. D'où deux
-conditions supplémentaires, toutes deux sur le rythme : facturé au plus une fois par
-mois (`LATE_MIN_INTERVAL_DAYS`) et régulièrement espacé (`LATE_MAX_JITTER`, l'écart
-médian des intervalles contre leur médiane). Le rythme est une **médiane** : la moyenne
+conditions sur le rythme : facturé au plus une fois par mois (`LATE_MIN_INTERVAL_DAYS`)
+et régulièrement espacé (`LATE_MAX_JITTER`). Le rythme est une **médiane** : la moyenne
 serait étirée par le mois manquant qu'on cherche justement.
 
-**Le bouton ⟳ redémarre vraiment le processus.** Recharger le ledger n'a jamais été le
-problème — le `Store` le fait déjà sur changement de mtime. Ce qu'il ne pouvait pas faire,
-c'est remarquer que le *code* avait bougé sous lui, donc une session passée à modifier le
-backend restait servie par ce qui avait été chargé au démarrage. D'où deux choses :
-
-- `python -m pms.web` tourne sous le reloader de Werkzeug par défaut (`--no-reload` pour
-  l'éteindre). Modifier un fichier source relance le serveur tout seul.
-- Le bouton fait un vrai redémarrage en sortant avec le code que le superviseur respawne
-  (`views.system.RESTART_EXIT_CODE = 3`). C'est le mécanisme du reloader lui-même ; tuer la socket
-  ou se ré-exécuter sur place se battrait avec l'ancien processus pour le port. Hors
-  superviseur (client de test, `--no-reload`, hôte WSGI), `_restartable()` est faux et
-  l'endpoint le dit au lieu de tuer le serveur pour de bon — sans ça, la suite de tests
-  s'arrêterait au premier appel.
-
-Le navigateur attend un **changement de PID**, pas une réponse : l'ancien processus répond
-à `/api/health` jusqu'à l'instant où il sort, donc « le serveur a répondu » n'est pas le
-signal. Sans JavaScript, l'attente est un meta refresh (`restarting.html.j2`) — une
-redirection enverrait le navigateur sur une socket qui se ferme. Le superviseur n'ouvre le
-navigateur qu'une fois : ouvrir depuis l'enfant donnerait un onglet par sauvegarde.
-
 **La bande « D'où vient l'argent » donne des parts, pas des montants.** Chaque colonne
-occupe toute la hauteur et se divise selon la part de chaque payeur dans la période. La
-question à laquelle elle répond est « qui me payait, et quand ça a changé » ; mettre la
-hauteur à l'échelle du montant laisserait un gros mois écraser la transition qu'elle existe
-pour montrer — et le combien est déjà au-dessus, en repère d'encaissement sur la timeline.
-Une période sans aucune entrée est dessinée **creuse**, même convention que le calendrier :
-un gris de remplissage se lirait « un peu ».
+occupe toute la hauteur et se divise selon la part de chaque payeur. Elle répond à « qui
+me payait, et quand ça a changé » ; une hauteur au montant laisserait un gros mois écraser
+la transition. Le combien est le repère vert des colonnes de dépenses. Une période sans
+entrée est creuse. Le classement des payeurs est fait sur toute la fenêtre, sinon un payeur
+changerait de teinte d'un mois à l'autre ; au-delà de `INCOME_SLOTS` (7), « Autres ».
 
-Le classement des payeurs est calculé sur toute la fenêtre, pas par colonne, sinon un payeur
-changerait de teinte d'un mois à l'autre. Au-delà de `INCOME_SLOTS` (7), la queue se replie
-sur « Autres » — 22 contreparties ont versé de l'argent sur ce compte, mais huit teintes
-seulement sont validées.
+**Évolution des parts Need / Want / Save** (`buckets.shares_by_month`). La série brute
+est très bosselée : la part Need des dépenses peut aller du simple au quintuple d'un mois
+à l'autre, et un mois presque sans revenu met Save à des milliers de % négatifs des
+revenus. D'où :
 
-**Le sommaire de gauche vit sur les pages à plusieurs sections.** Le rail `.toc` (fixe,
-masqué sous 1480px) liste les sections par ancre et s'allume au défilement ; le
-dashboard, `/previsions` et `/reclasser` le portent, chacun avec les sections réellement
-rendues — pas de lien vers un panneau absent. Le libellé de chaque entrée est le début du
-titre de sa section (`test_toc_labels_mirror_the_heading_text` le verrouille sur les
-trois pages).
+- **deux bases, le même argent** (`?shares=income|spending`). En part des revenus, les
+  quatre parts font 100 % et Save est ce qui n'a pas été dépensé, négatif un mois qui a
+  dépensé plus qu'il n'a encaissé. En part des dépenses, c'est toujours 0–100 %, sans
+  Save. Un mois où la base est nulle n'a pas de part (`None`) ;
+- **l'axe des revenus est borné à −100 / 200 %** : un point au-delà est posé sur le bord,
+  l'infobulle dit sa valeur ;
+- **le lissage est un rapport de sommes glissantes** (`?smooth=3|6|12`), jamais une
+  moyenne des parts, où un mois à 200 CHF de revenu pèserait autant qu'un mois de salaire.
+  La somme remonte avant la fenêtre quand le ledger a ces mois. Les mois bruts restent
+  dessinés en pâle ;
+- **mois entiers seulement** : le premier et le dernier mois du ledger sont exclus, et
+  il en faut deux dans la fenêtre.
 
-## Sélection par glissement
+**Panneaux repliés** : cumul annuel, jours de semaine et mois, pays, custodian,
+évolution des parts — lus de temps en temps, ils ne coûtent qu'une ligne.
 
-L'overlay du brush est injecté par JavaScript, jamais présent dans le markup : sinon il
-avalerait les clics qui font marcher le zoom sans JavaScript. Un appui court retombe sur
-le lien de la colonne, un vrai glissement sélectionne la plage. `test_the_bands_tile_the_axis_without_gaps`
-vérifie qu'aucune plage de pixels ne correspond à aucune date.
+**La recherche lit chaque mot séparément** (`views.common._filtered`). Casse et accents
+sont ignorés, et chaque mot doit se trouver quelque part sur la ligne, dans n'importe
+quel ordre :
 
-L'overlay masque aussi le `mouseover` des colonnes : il relaie donc le survol vers la
-colonne sous le curseur, sinon ajouter le brush aurait coûté l'infobulle de détail.
+- bénéficiaire, lieu, lignes d'information, catégorie ;
+- montant, écrit `1234.50` comme `1’234.50` ;
+- date, écrite `14.10.2026`.
 
-## Évolution des parts Need / Want / Save
+Un nombre entier seul est un chiffre : « 20 » veut dire 20 francs, le 20 du mois, octobre
+ou 2020, sinon il trouverait toutes les lignes de 2025 et 2026. Le champ coupe la
+correction automatique : sur le téléphone, « twint » devenait « twin ». La palette
+Ctrl K applique la même règle à ses pages, périodes et catégories ; la recherche dans le
+ledger y vient en dernier, toujours proposée.
 
-Le bloc « Besoins, envies, épargne » donne les parts d'une fenêtre ; ce panneau les
-montre mois par mois (`buckets.shares_by_month`, `charts.shares_chart`,
-`partials/shares_panel.html.j2`).
+**L'app s'ouvre sur le mois en cours**, titré « Octobre 2026, jusqu'au 14 », avec sa
+revue. Après un import (`web/news.py`, `/api/meta`), pendant une semaine, un bandeau
+annonce le relevé et mène au dernier mois entier qu'il couvre. Il est masquable, et le
+masquage est mémorisé par import dans `localStorage` (`pms-news-dismissed`, sous
+`try/catch`). Un relevé en retard est rappelé sur le tableau de bord et dans la barre
+latérale.
 
-**Mesurée avant d'être dessinée, la série brute est très bosselée** (25 mois entiers,
-août 24 → août 26) : la part Need des dépenses va de 15 à 89 % d'un mois à l'autre, et
-en part des revenus un mois presque sans revenu met Save à −2560 %. Tout le reste
-découle de là.
+**« Non classé » a sa couleur** (`--unsorted`, 3:1 au moins contre la surface dans les
+deux thèmes, WCAG 1.4.11). Un test le calcule depuis `frontend/src/styles.css`. Un autre
+vérifie que les surfaces contre lesquelles les huit teintes ont été validées n'ont pas
+bougé.
 
-**Deux bases, le même argent** (`?shares=income|spending`, comme le stack de la
-timeline). *Revenus* est la définition du bloc d'où l'on vient : les quatre parts font
-100 % des revenus, Save = revenus − Need − Want − Non classé, négatif un mois qui a
-dépensé plus qu'il n'a encaissé. C'est la seule base où Save existe, et elle n'est pas
-bornée. *Dépenses* répartit ce qui a été consommé : toujours définie, 0–100 %, sans
-Save. Un mois où la base est nulle n'a pas de part (`None`), pas 0 %.
+## Relire les relevés
 
-**L'axe de la base revenus est borné à −100 / 200 %** (`SHARE_FLOOR`, `SHARE_CEILING`).
-Un axe étiré jusqu'à −2560 % aplatirait tous les autres mois en une ligne. Un point hors
-cadre est posé sur le bord, marqué d'un cercle creux ; l'infobulle et la table disent sa
-vraie valeur — le payload du crosshair porte la valeur, pas la position.
+« Relire les relevés » appelle `/api/refresh?restart=0` : il ingère `inbox/` et ne
+redémarre pas le serveur. `/api/refresh` sans ce paramètre redémarre encore le processus
+quand le reloader de Werkzeug le supervise, en sortant avec le code qu'il respawne
+(`views.system.RESTART_EXIT_CODE = 3`). Hors superviseur, `_restartable()` est faux et
+l'endpoint le dit au lieu de tuer le serveur.
 
-**Le lissage est un rapport de sommes glissantes, jamais une moyenne des parts**
-(`?smooth=1|3|6|12`). Σ bloc / Σ base sur les N derniers mois : dans une moyenne de
-ratios, un mois à 200 CHF de revenu pèse autant qu'un mois de salaire, et c'est
-exactement lui qui fait le −2560 %. La somme remonte avant la fenêtre quand le ledger a
-ces mois (zoomer sur 2026 ne perd pas les mois qui nourrissent son premier point) ; sinon
-la valeur est `None` tant que la fenêtre n'est pas pleine. Les mois bruts restent dessinés
-en pâle derrière la ligne lissée : le lissage ne cache jamais la donnée qu'il lisse. Pas
-d'EWMA : une somme glissante s'explique en une phrase.
+**La mise à jour suit la branche que la copie suit vraiment** (`web/updates.py`,
+`_target`). Une copie clonée sur `main` puis mise à jour par `git pull origin
+<branche>` a `origin/main` pour amont, qui ne bouge jamais : comparée à lui seul, elle
+se disait à jour pour toujours et le bouton n'apparaissait jamais. La cible est l'amont
+s'il a du nouveau, sinon la branche distante dont la copie est un ancêtre (une avance
+rapide y mène) qui a bougé en dernier ; « Mettre à jour » s'y avance en `--ff-only` et
+en fait l'amont. Quand il n'y a rien à installer, la barre latérale le dit (« À jour ·
+vérifié il y a 12 min », la branche, ou la raison d'un échec) avec « Vérifier » : un
+bouton qui n'apparaît qu'en cas de nouveauté passait pour une fonction absente.
 
-**Mois entiers seulement, quelle que soit la granularité affichée.** Une part
-journalière ne veut rien dire, et un mois que le relevé ne couvre qu'en partie bouge pour
-une raison qui n'est pas celle du lecteur (le salaire est tombé, le loyer pas encore).
-Le premier et le dernier mois du ledger sont donc exclus — le relevé ne commence ni ne
-finit presque jamais un premier ou un dernier du mois. Moins de deux mois entiers dans
-la fenêtre : le panneau est absent.
+**Une connexion coupée pendant la mise à jour est un redémarrage, pas un échec** (19.10).
+Le `merge` réécrit des `.py` ; le reloader de Werkzeug le voit dans la seconde et arrête
+le processus — ce jour-là pendant que `apply()` posait encore ses questions à git :
+la réponse n'est jamais partie, la page a lu l'erreur réseau comme un échec et ne s'est
+pas rechargée, alors que le code était bien à jour. Désormais `apply()` interroge git
+*avant* le merge, et la page note le pid du serveur avant d'envoyer : une réponse
+perdue (pas une erreur HTTP) la fait attendre un nouveau pid, puis recharger, et
+« Mise à jour installée » s'affiche après le rechargement.
 
-**Replié par défaut, ouvert par l'URL.** Un `<details>` natif, qui s'ouvre sans
-JavaScript. La présence de `?shares=` le rend ouvert côté serveur : ses options sont des
-liens `data-nav`, et un swap qui le re-rendrait replié le refermerait sous le pointeur à
-chaque clic. `dash_url()` garde `shares` même à sa valeur par défaut — c'est l'état
-ouvert, qui doit survivre à un changement de période — et laisse tomber `smooth=1`. Le
-lien du bloc « Besoins, envies, épargne » est un lien simple, pas `data-nav` : le swap
-ne suit pas une ancre, et le but est d'atterrir sur le graphique.
+**`run.bat` installe git s'il manque** (étape 0). Sans git, l'app tourne mais le bouton
+« Mettre à jour » ne peut rien faire : c'est l'obstacle d'une personne qui ne code pas,
+pas Python (uv s'en charge). L'étape propose une fois d'installer git par winget ; un
+refus est retenu dans `data/no-git`. Une copie venue d'un ZIP (pas de `.git`) devient
+une copie suivie de `PMS_REPO` / `PMS_BRANCH`, à la dernière version : `checkout -f`
+réécrit les fichiers du dépôt, `data/` et `inbox/` (ignorés) ne sont pas touchés, et
+les anciens assets du build sont nettoyés. Cette conversion réécrit `run.bat` lui-même :
+elle vit dans un seul bloc entre parenthèses, que cmd lit en entier avant de
+l'exécuter, et qui se termine en relançant la nouvelle version — sinon cmd lirait la
+suite du nouveau fichier à l'ancien décalage. Pas de `!` dans les messages : l'expansion
+retardée les avale. Le dépôt doit être joignable par la personne : public, ou elle
+invitée comme collaboratrice (git ouvre alors une fenêtre de connexion GitHub une fois).
 
-Les étiquettes de fin de ligne sont empilées à au moins une ligne d'écart : Want et Non
-classé finissent souvent à quelques points l'un de l'autre, et deux noms superposés ne
-se lisent ni l'un ni l'autre.
+## Le tableau de bord, refonte du 19.10
 
-## Fluidité
+- **« À faire » en une carte** : sauvegarde absente, rupture des soldes, relevé
+  attendu, nouveau relevé — une ligne chacun, son action à côté. Trois encadrés empilés
+  repoussaient les chiffres sous le pli.
+- **Les tuiles** disent contre quoi elles comparent (« vs juin 26 », `previous.label` ;
+  des dates quand la fenêtre d'avant n'est pas un mois ou une année), et portent leur
+  courbe en miniature : dépenses et revenus de la timeline, le solde.
+- **« Le mois en cours »** (`lookback.month_pace`), seulement pour un mois qui est le
+  dernier du relevé : la dépense cumulée jour par jour contre un mois ordinaire
+  (médiane et moitié centrale des douze derniers mois entiers, la même que le rythme de
+  `/analyse`), l'écart au même jour, la **fin de mois probable** — le dépensé plus ce
+  qu'un mois ordinaire dépense encore après ce jour, jamais une extrapolation linéaire
+  qui ferait d'un loyer payé le 1er un mois à 50'000. Les budgets y sont lus contre la
+  part du mois écoulée (un trait), pas seulement contre leur plafond.
+- **« Par rapport à … »** (`api/dashboard._versus`) : chaque catégorie contre la
+  fenêtre d'avant, en francs, triée par l'ampleur — le pourquoi de la variation de la
+  tuile « Dépensé ». Barres divergentes partagées avec `/analyse`
+  (`components/Diverging.tsx`).
 
-Mesuré le 22.09 dans Edge, sur le ledger réel, à 1280 × 800 : les pages se chargeaient
-vite (60–390 ms, aucun décalage de mise en page) ; ce qui manquait, c'était de se
-repérer dans une page de 17 écrans et de sentir la réponse à l'instant.
+## Le change, rejoué chez Revolut (19.10)
 
-**Préchargement à l'intention.** Un échange de `<main>` coûtait 92 à 263 ms, surtout
-la construction du fragment côté serveur — à peu près le temps entre pointer un lien et
-cliquer. Le fragment d'un lien `data-nav` est donc chargé au survol (après 65 ms de
-pause : balayer une rangée de liens ne tire pas une requête par lien) ou au focus
-clavier, et le clic le trouve prêt : 32 à 61 ms. Le cache vit 10 s, jamais pour la page
-déjà affichée, et **se vide à chaque écriture** : toute requête qui écrit (reclassement,
-annulation, masse, formulaires, réingestion) passe par `send()` dans app.js, sinon une
-vue préchargée avant une correction reviendrait avec ses anciens chiffres.
+Le panneau « Ce que le custodian a prélevé » comparait la marge Swissquote (≈ 0.97 %) à
+un Revolut à 0 %. Faux en dehors du forfait : le plan gratuit change au taux interbancaire
+en semaine jusqu'à 1'250 CHF par mois glissant, puis à 1 %, et à 1 % tout le week-end ;
+Premium n'a ni l'un ni l'autre mais coûte 11.99 CHF par mois (page tarifaire fr-CH, lue le
+19.10.2026). `analysis.revolut_replay` rejoue chaque conversion du relevé à sa date :
+samedi et dimanche à 1 %, la part d'une conversion en semaine qui dépasse ce qui reste du
+forfait des 30 derniers jours à 1 %. Le vendredi soir est déjà le week-end chez Revolut ;
+une date n'a pas d'heure, le vendredi compte donc en semaine et le rejeu penche du côté
+favorable, ce que la ligne dit. Premium est compté avec son abonnement sur la durée
+couverte par les conversions. Chaque tarif porte sa date de lecture.
 
-**Un fondu, pas un clignotement** : 140 ms de View Transitions autour du remplacement,
-sauté sous `prefers-reduced-motion` et là où le navigateur ne l'a pas.
+## Le bouton « Mettre à jour » et la branche main (19.10)
 
-**La barre de période se rafraîchit depuis `?fragment=controls`** — le même partial,
-sans agrégation (`_controls_context`). Elle rechargeait la page entière : une seconde
-construction du tableau de bord à chaque clic.
-
-**Une ancre n'est pas un changement de page.** Un clic sur une ancre du sommaire
-déclenche `popstate`, et le gestionnaire re-téléchargeait tout `<main>` pour un simple
-défilement — en remplaçant au passage le panneau que l'ancre venait de déplier par une
-copie repliée. `popstate` n'échange plus que si le chemin ou la requête ont changé.
-
-**Le sommaire devient une bande sous 1480 px.** Il disparaissait, laissant un laptop
-sans rien pour naviguer 17 écrans. C'est maintenant une bande collée sous l'entête, dont
-app.js mesure la hauteur (`--header-h` : l'entête passe sur deux lignes en fenêtre
-étroite), qui défile de côté et garde la section courante en vue. Les ancres atterrissent
-sous l'entête et la bande (`main [id]`, en fin de feuille : la règle de 84 px l'emportait
-par ordre de déclaration).
-
-**Les panneaux lus de temps en temps sont repliés** derrière leur titre : cumul annuel,
-jours de semaine et mois, pays, custodian — comme l'évolution des parts. Une ancre (le
-sommaire, un lien, un `#hash`, un `hashchange`) déplie le panneau visé avant que le
-navigateur défile.
-
-**La table du tableau de bord montre 20 lignes** (`COMPACT_PAGE_SIZE`) : à 60, elle
-faisait 4,7 écrans à elle seule. `?per=` est porté par sa pagination, ses filtres et ses
-puces — sinon la page 2 recommencerait à la ligne 61. La page Transactions garde 60.
-Au total : 17 → 11,6 écrans.
-
-**Le calendrier envoie ses chiffres une fois.** Chacune des 730 cases portait un titre,
-une liste JSON et un indice d'infobulle : 35 à 47 % du poids de la page. Les chiffres du
-jour vivent dans `#chartData`, indexés par date, et l'infobulle les y lit ; chaque case
-garde un `aria-label` complet. Sa table jumelle (une ligne par jour de dépense) est
-construite par app.js à la première ouverture ; sans JavaScript, `?table=calendar` la
-rend côté serveur, dépliée. Tableau de bord 540 → 385 Ko, « Tout » 862 → 575 Ko,
-chargement 386 → 260 ms.
-
-**L'app s'ouvre sur le mois en cours** (du 1er au dernier mouvement), titré comme un
-mois (« Septembre 2026, jusqu'au 21 »), avec sa revue. Une première version n'y venait
-qu'après un import, et encore sur le mois entier précédent : l'utilisateur, relançant
-l'app, attendait septembre et tombait sur douze mois. **Après un import** (`web/news.py`),
-pendant une semaine, un bandeau annonce le relevé et mène au dernier mois entier qu'il
-couvre, jusqu'à ce que ce mois soit affiché. Fermable, mémorisé par import dans le
-navigateur (une commodité, donc `localStorage` sous `try/catch`). Un `--reparse` est de
-la maintenance, pas une nouvelle.
-
-**L'aide des raccourcis** (`?`, ou le bouton de l'entête) liste les gestes que rien
-n'annonce : ←/→, Échap, le glisser sur la frise, le glisser-déposer. Un `<dialog>`
-natif ; son bouton est caché dans le markup et révélé par app.js, puisque sans JavaScript
-aucun de ces gestes n'existe. Ouverte, elle garde le clavier : Échap la ferme et ne
-remonte pas le fil d'ariane derrière elle.
-
-**« Non classé » a sa couleur** (`--unsorted`) : il empruntait le gris des axes, à
-1,75:1 en clair et 1,48:1 en sombre. 3:1 est le seuil d'une marque (WCAG 1.4.11) ; un
-test le calcule depuis app.css dans les deux thèmes.
-
-**←/→ marchent sur toute fenêtre.** Ils n'existaient que sur une unité calendaire exacte
-(jour, semaine, mois, année) : ni sur « 12 mois », ni sur le mois en cours — et ils
-s'éteignaient dès qu'un lien avait le focus, c'est-à-dire après presque n'importe quel
-clic. Désormais le mois en cours recule sur le mois entier précédent, une unité sur sa
-voisine, toute autre fenêtre de sa propre durée (« Précédente » / « Suivante », les
-dates dans le titre du bouton) ; seules les flèches du calendrier et les touches
-modifiées (Alt+← est le retour du navigateur) leur échappent. Deux pressions de suite
-attendent que la barre de période de la première soit en place (`settled` dans app.js) :
-sinon la seconde lisait la flèche de l'ancienne barre.
-
-**`/reclasser` groupe ses corrections par nature** — règles, épingles, fusions — chaque
-groupe avec son nombre, replié au-delà de dix lignes ; une recherche instantanée (révélée
-par app.js) filtre tous les groupes et ouvre ceux où elle trouve. 227 corrections tenaient
-en une table de 16 écrans ; la page en fait 2,3.
+Le travail se fait sur une branche, fusionnée dans `main`. Quand la fusion arrive, la mise
+à jour qui l'apporte déplace la copie sur `main` (`git checkout -B main origin/main`,
+jamais si un `main` local a des commits à lui) ; une copie sur `main` ne suit ensuite que
+`origin/main` (`updates.HOME_BRANCH`). Une copie restée sur une branche de travail garde
+l'ancien comportement : elle suit la branche distante qui a bougé.

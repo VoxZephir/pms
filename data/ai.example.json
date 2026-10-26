@@ -1,0 +1,7 @@
+{
+  "provider": "anthropic",
+  "model": "claude-opus-5-5",
+  "effort": "low",
+  "enabled": true,
+  "_aide": "Se règle dans la page Assistant de l'app, qui écrit data/ai.json. La clé se pose seule sur une ligne dans data/ai.anthropic.key ou data/ai.deepseek.key (rien pour ollama). effort : low par défaut (Claude seulement)."
+}

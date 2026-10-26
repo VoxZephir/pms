@@ -1,0 +1,4 @@
+{
+  "token": "<jeton du Flex Web Service : IBKR → Paramètres → Rapports → Flex Web Service>",
+  "query_id": "<numéro de la requête Flex : IBKR → Performance et rapports → Requêtes Flex>"
+}

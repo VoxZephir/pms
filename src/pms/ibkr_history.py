@@ -1,16 +1,16 @@
 """The brokerage's own transaction history: the CSV IBKR exports.
 
 The connector gives *states* and one year of daily NAV -- it made the app
-believe the account opened in August 2025. The exported "Transaction
-History" (`inbox/ibkr/*.csv`) goes back to the first deposit, September
-2023: every deposit and withdrawal, every trade with its commission,
+believe the account opened a year before the capture. The exported
+"Transaction History" (`inbox/ibkr/*.csv`) goes back to the first deposit:
+every deposit and withdrawal, every trade with its commission,
 dividends, US withholding tax, interest. Three things come out of it:
 
-* the flows of the whole history (the app knew one deposit of five);
+* the flows of the whole history (the ledger alone sees only some of them);
 * the costs since the opening, not since the connector's horizon;
 * the positions and the cash day by day, from which the value of the
   account can be rebuilt with weekly prices where the broker's daily NAV
-  does not reach -- the April 2025 tariff crash the account went through.
+  does not reach -- a crash older than the connector's year included.
 
 Amounts in the file are in the base currency (CHF); quantities and prices
 in the instrument's own.
@@ -98,12 +98,12 @@ def costs(rows: list[dict]) -> list[dict]:
 
     The conversions it books in pairs (FXCONV: the same dollars bought and
     sold back at two prices within the second, no commission) cost their
-    net "gross" -- 2.50 CHF on 28.09.2026, exactly the spread. A lone
+    net "gross" -- exactly the spread. A lone
     conversion's gross is a currency gain or loss, not a fee, and stays out.
     """
     out = []
-    # Withholding nets per dividend: DBMF's of 29.12.2023 is two charges and
-    # a refund, 2.69 CHF in all -- not the 5.71 of the charges alone.
+    # Withholding nets per dividend: one dividend can carry two charges and
+    # a refund -- the tax is their sum, not the charges alone.
     withheld: dict[tuple, float] = {}
     for r in rows:
         if r["type"] == WITHHOLDING:
@@ -233,8 +233,8 @@ def rebuild(positions_: list[dict], prices: dict[str, list],
     on that Friday, with the holdings and cash of that day, each share at
     the week's close and dollars at the week's USD.CHF close. A week holding
     an instrument without a price series is skipped rather than guessed --
-    the app reads from the ledger's first day (July 2024), when the account
-    held RSST alone.
+    the app reads from the ledger's first day, when the account held only
+    instruments whose prices are captured.
 
     Checked against the broker's exact NAV where both exist.
     """
@@ -269,12 +269,3 @@ def rebuild(positions_: list[dict], prices: dict[str, list],
             value += amount * (rate if currency == "USD" else 1.0)
         out.append((friday, round(value, 2)))
     return out
-
-
-def summary_cash(path: Path | str) -> float | None:
-    """The "final cash" the export prints, in CHF -- a check on `positions`."""
-    raw = Path(path).read_bytes().decode("utf-8-sig", errors="replace")
-    for record in csv.reader(io.StringIO(raw)):
-        if len(record) >= 4 and record[0] == "Summary" and "finale" in record[2]:
-            return _num(record[3])
-    return None

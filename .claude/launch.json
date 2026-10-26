@@ -10,7 +10,7 @@
     {
       "name": "pms-web-preview",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "pms.web", "--no-open", "--no-reload", "--port", "5057"],
+      "runtimeArgs": ["-m", "pms.web", "--no-open", "--no-reload", "--no-watch", "--port", "5057"],
       "port": 5057
     }
   ]

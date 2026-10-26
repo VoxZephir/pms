@@ -241,6 +241,60 @@ def test_bulk_undo_removes_exactly_what_it_added(store, rows):
     assert len(store) == before
 
 
+# --- a row's own pin, and undoing ---------------------------------------------
+
+def test_a_row_reclassified_by_its_merchant_drops_its_conflicting_pin(store, rows):
+    """15.10: a payment pinned to "Non catégorisé", dragged onto Restaurants
+    -- the rule was written and the row stayed put, its pin outranking it."""
+    target = rows[10]
+    key = key_of(target)
+    store.pin(key, category="Non catégorisé", label=target.label)
+    store.rule(target.label, category="Restaurants & bars")
+    store.yield_to_rule(key, category="Restaurants & bars")
+    store.apply(rows)
+    assert target.category == "Restaurants & bars"
+    assert key not in store.pins
+
+
+def test_a_pinned_bucket_outlives_a_rule_that_names_a_category(store, rows):
+    target = rows[10]
+    key = key_of(target)
+    store.pin(key, category="Non catégorisé", bucket=buckets.WANT, label=target.label)
+    store.yield_to_rule(key, category="Restaurants & bars")
+    assert store.pins[key]["bucket"] == buckets.WANT
+    assert store.pins[key]["category"] == ""
+
+
+def test_undo_puts_back_what_was_there_not_nothing(store, rows):
+    """A rule restated over an older one, a pin written over a bucket-only
+    pin: undoing used to leave no rule and no pin at all."""
+    target = rows[10]
+    key = key_of(target)
+    store.rule(target.label, category="Courses")
+    store.rule("Autre marchand", category="Transport")
+    store.pin(key, bucket=buckets.NEED, label=target.label)
+    before_rules = copy.deepcopy(store.rules)
+    before_pin = dict(store.pins[key])
+
+    snap = store.snapshot([key], [target.label])
+    store.rule(target.label, category="Restaurants & bars")
+    store.pin(key, category="Loisirs & voyages", label=target.label)
+    store.restore(json.loads(json.dumps(snap)))      # it travels as JSON
+
+    assert store.rules == before_rules                # same rule, same place
+    assert store.pins[key] == before_pin
+
+
+def test_undo_of_something_new_removes_it(store, rows):
+    target = rows[10]
+    key = key_of(target)
+    snap = store.snapshot([key], [target.label])
+    store.rule(target.label, category="Courses")
+    store.pin(key, category="Courses", label=target.label)
+    store.restore(snap)
+    assert store.empty
+
+
 # --- aliases ----------------------------------------------------------------
 
 def test_merging_two_spellings_makes_one_counterparty(store, rows):
@@ -374,3 +428,16 @@ def test_merging_does_not_move_a_branch_out_of_its_category(store, rows):
     still = [t.category for t in rows
              if t.label == "Coop" and t.category == "Transport"]
     assert len(still) == len(petrol)
+
+
+def test_a_pin_under_a_renamed_category_lands_in_the_new_one(tmp_path):
+    import datetime as dt
+
+    from pms.models import Transaction
+    from pms.overrides import Overrides, key_of
+    t = Transaction(date=dt.date(2025, 1, 1), reference="R9", currency="CHF", amount=-50.0,
+                    value_date=None, balance=None, kind="Ordre de paiement", merchant="Guichet")
+    store = Overrides(tmp_path / "o.json")
+    store.pins[key_of(t)] = {"category": "Impôts & administration", "subcategory": "Services publics"}
+    store.apply([t])
+    assert (t.category, t.subcategory) == ("Administration", "Documents & autorités")

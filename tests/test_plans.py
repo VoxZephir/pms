@@ -434,9 +434,10 @@ def test_plan_save_is_clean_json(tmp_path):
     path = tmp_path / "plans.json"
     plans.Plan(path).save()
     assert json.loads(path.read_text(encoding="utf-8")) == {
-        "version": plans.VERSION, "income": None, "rate": None,
-        "rate_segments": [], "vol": None,
-        "scenarios": {}, "contributions": [],
+        "version": plans.VERSION, "income": None, "spend": None, "rate": None,
+        "rate_segments": [], "vol": None, "pocket_rates": {},
+        "scenarios": {}, "plan_scenarios": {}, "active_scenario": None,
+        "contributions": [],
         "one_offs": [], "ignored_seasonal": []}
 
 
@@ -536,9 +537,14 @@ def test_scenario_summary_tells_two_scenarios_apart():
 def test_builtin_scenarios_are_valid():
     for spec in plans.BUILTIN_SCENARIOS.values():
         assert spec["label"]
-        assert spec["vol"] is None
+        # A market shape keeps the measured volatility; a scenario per pocket
+        # declares each one, as part of its hypothesis.
+        assert spec["vol"] is None if "pockets" not in spec else 0 <= spec["vol"] <= 1
         for months, rate in spec["rate_segments"]:
             assert months >= 1 and -100 <= rate <= 100
+        for pocket, (segments, vol) in spec.get("pockets", {}).items():
+            assert pocket in plans.POCKET_KEYS and 0 <= vol <= 1
+            assert all(m >= 1 and -1 < r < 1 for m, r in segments)
         # A scenario horizon is any length the projection accepts -- 180 for
         # the lost decade is a hand-picked value, and the select shows its
         # own option rather than lying about a preset.
@@ -970,3 +976,76 @@ def test_upsert_replaces_the_same_entry(tmp_path):
     plan.add_one_off("2026-12", "Santé", 3500.0)
     assert len(plan.one_offs) == 1
     assert plan.one_offs[0]["amount"] == 3500.0
+
+def test_a_transfer_to_the_pockets_is_not_part_of_the_usual_month():
+    """The ledger books a monthly 2'500 to the brokerage as spending; left in
+    the baseline, a declared series would charge it a second time."""
+    statement = _two_years()
+    statement.transactions += [_txn(dt.date(2025, m, 20), -2500.0, "Épargne & investissement")
+                               for m in range(1, 13)]
+    analysis.annotate_chf(statement)
+    assert plans.baseline(statement) == 2900.0
+    assert "Épargne & investissement" not in {
+        s["category"] for s in plans.seasonal_one_offs(statement)}
+
+
+def test_a_confirmed_bill_shadows_its_own_year_only():
+    """Confirming December 2026's insurance must not erase December 2027's
+    from a longer horizon."""
+    plan = plans.Plan("unused")
+    plan.add_one_off("2026-12", "Assurance maladie", 3500.0, seasonal=("Santé", 12))
+    rows = {r["key"]: r for r in plans.project(_two_years(), plan, 24)["rows"]}
+    assert [o["source"] for o in rows["2026-12"]["one_offs"]] == ["declared"]
+    assert rows["2027-12"]["one_offs"] == [
+        {"label": "Santé", "amount": 3400.0, "source": "suggestion",
+         "transfer": plans.SPENT, "date": ""}]
+
+
+def test_a_declared_spend_replaces_the_history_baseline():
+    plan = plans.Plan("unused")
+    plan.spend = 4000.0
+    result = plans.project(_two_years(), plan)
+    assert result["baseline"] == 4000.0 and result["baseline_source"] == "declared"
+    assert result["baseline_history"] == 2900.0
+    assert result["rows"][1]["spend"] == 4000.0
+
+
+def test_plan_scenarios_keep_their_edits_and_survive_the_file(tmp_path):
+    path = tmp_path / "plans.json"
+    plan = plans.Plan(path)
+    plan.income = 7000.0
+    plan.save_scenario_as("Base")
+    plan.save_scenario_as("Loyer")
+    plan.spend = 4400.0
+    plan.add_one_off("2027-01", "Caution", 3000.0)
+    plan.save()
+
+    loaded = plans.Plan.load(path)
+    assert loaded.active == "Loyer" and loaded.spend == 4400.0
+    assert loaded.switch_scenario("Base")
+    assert loaded.spend is None and loaded.one_offs == [] and loaded.income == 7000.0
+    # The scenario left behind kept what was typed into it.
+    assert loaded.scenario_plan("Loyer").spend == 4400.0
+    assert loaded.scenario_plan("Base") is loaded
+    assert not loaded.switch_scenario("Absent")
+    assert loaded.remove_plan_scenario("Base")
+    assert loaded.active is None and loaded.income == 7000.0
+
+
+def test_the_growth_path_compounds_like_the_projection():
+    path = plans.growth_path([(12, 0.10), (12, -0.10)], 24)
+    assert path["points"][0] == 1.0
+    assert path["end"] == pytest.approx(1.10 * 0.90, abs=1e-4)
+    assert path["annual"] == pytest.approx((1.10 * 0.90) ** 0.5 - 1, abs=1e-4)
+    assert path["low_month"] == 24  # ends below where it started
+    crash = plans.growth_path([(102, -0.118), (69, 0.2027)], 180)
+    assert crash["low_month"] == 102 and crash["low"] == pytest.approx(0.88 ** 8.5, abs=0.01)
+    assert len(crash["points"]) <= 62 and crash["points"][-1] == crash["end"]
+    assert plans.growth_path([], 12)["end"] == 1.0
+
+
+def test_each_builtin_says_what_it_stands_for_and_keeps_its_word():
+    assert all(spec.get("note") for spec in plans.BUILTIN_SCENARIOS.values())
+    crash = plans.growth_path(plans.BUILTIN_SCENARIOS["crash-slow"]["rate_segments"], 72)
+    assert crash["low"] == pytest.approx(0.67, abs=0.01)   # a third lost in a year
+    assert crash["end"] == pytest.approx(1.0, abs=0.02)    # back where it was five years on

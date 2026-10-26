@@ -55,10 +55,10 @@ def test_load_snapshot(tmp_path):
     path = tmp_path / "finpension.json"
     path.write_text(json.dumps({
         "value": 8300.0, "value_as_of": "2025-12-31", "deposits": 7000.0,
-        "dividends": 91.02, "fees": 42.04,
+        "dividends": 90.0, "fees": 40.0,
         "holdings": {"CH123": 3.849},
         "first": "2024-05-23", "last": "2026-07-07",
-        "yearly": [["2025-12-31", 8300.0], ["2024-12-31", 7834.7]],
+        "yearly": [["2025-12-31", 8300.0], ["2024-12-31", 7800.0]],
     }), encoding="utf-8")
     data = finpension.load(path)
     assert data["value"] == 8300.0
@@ -163,7 +163,7 @@ def test_value_at_reconstructs_daily_between_anchors(tmp_path):
     path.write_text(json.dumps({
         "value": 9500.0, "value_as_of": "2026-08-03", "deposits": 0.0,
         "dividends": 0.0, "interests": 0.0, "fees": 0.0,
-        "yearly": [["2026-06-30", 9371.85]],
+        "yearly": [["2026-06-30", 9350.0]],
         "holdings": {"CH123": {"shares": 1.0, "price": 100.0,
                                "name": "Fonds", "class": "Actions"}},
         "proxies": {"CH123": "SMI"},
@@ -171,10 +171,10 @@ def test_value_at_reconstructs_daily_between_anchors(tmp_path):
                                  ["2026-07-02", 99.5], ["2026-07-03", 102.0]]},
     }), encoding="utf-8")
     data = finpension.load(path)
-    assert finpension.value_at(data, dt.date(2026, 6, 30)) == 9371.85
-    assert finpension.value_at(data, dt.date(2026, 7, 1)) == 9465.57
-    assert finpension.value_at(data, dt.date(2026, 7, 2)) == 9324.99
-    assert finpension.value_at(data, dt.date(2026, 7, 3)) == 9559.29
+    assert finpension.value_at(data, dt.date(2026, 6, 30)) == 9350.0
+    assert finpension.value_at(data, dt.date(2026, 7, 1)) == 9443.5
+    assert finpension.value_at(data, dt.date(2026, 7, 2)) == 9303.25
+    assert finpension.value_at(data, dt.date(2026, 7, 3)) == 9537.0
 
 
 def test_parse_report_value_on_the_real_report():

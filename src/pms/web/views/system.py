@@ -1,4 +1,5 @@
-"""Health, re-ingestion and the restart button."""
+"""Health, re-ingestion and the restart button. A statement sent from the
+phone goes through `/api/import` (api/imports.py), into the same inbox."""
 
 from __future__ import annotations
 
@@ -7,10 +8,11 @@ import threading
 import time
 from pathlib import Path
 
-from flask import jsonify, redirect, render_template, request, url_for
+from flask import current_app, jsonify, request
 
+from ... import banks, intake
+from .. import updates
 from ...ledger import ingest
-from ...parser import parse_statement
 from .common import bp, store
 
 INBOX = Path(__file__).resolve().parents[4] / "inbox"
@@ -59,6 +61,31 @@ def health():
                     "restartable": _restartable()})
 
 
+@bp.route("/api/update")
+def update_check():
+    """Commits waiting upstream (`updates.check`). Only in the process that
+    serves: under the test client, or with `--no-update-check`, nothing."""
+    if not current_app.config.get("PMS_UPDATES"):
+        return jsonify({"available": False, "reason": "off"})
+    return jsonify(updates.check(force=request.args.get("force") == "1"))
+
+
+@bp.route("/api/update", methods=["POST"])
+def update_apply():
+    """Pull, then restart -- unless the dependencies changed: those need
+    run.bat's `uv sync`, which cannot replace a package this process holds."""
+    if not current_app.config.get("PMS_UPDATES"):
+        return jsonify({"error": "mise à jour désactivée"}), 409
+    try:
+        done = updates.apply()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    restarting = not done["dependencies"] and _restartable()
+    if restarting:
+        _schedule_restart()
+    return jsonify({**done, "restarting": restarting, "pid": os.getpid()})
+
+
 @bp.route("/api/refresh", methods=["POST"])
 def refresh():
     """Re-ingest inbox/, then restart the server.
@@ -79,12 +106,16 @@ def refresh():
     error = ""
 
     try:
-        pdfs = sorted(INBOX.glob("*.pdf")) if INBOX.exists() else []
-        if pdfs:
-            ledger, reports = ingest(pdfs, data.path, parse_statement)
-            ledger.save()
-            added = sum(r["added"] for r in reports)
-            imported = [r["file"] for r in reports if not r.get("skipped")]
+        with intake.LOCK:
+            exports = banks.discover(INBOX)
+            if exports:
+                ledger, reports = ingest(exports, data.path, strict=False)
+                ledger.save()
+                added = sum(r["added"] for r in reports)
+                imported = [r["file"] for r in reports
+                            if not r.get("skipped") and not r.get("refused")]
+                error = " ".join(f"{r['file']} : {r['refused']}"
+                                 for r in reports if r.get("refused"))
     except Exception as exc:  # a bad PDF must not take the running app down
         error = str(exc)
 
@@ -108,21 +139,10 @@ def refresh():
         "pid": os.getpid(),
     }
 
-    wants_json = (request.headers.get("Accept", "").startswith("application/json")
-                  or request.args.get("fragment"))
-    if wants_json:
-        response = jsonify(payload), (500 if error else 200)
-    elif restarting:
-        # The no-JavaScript path cannot poll, so the wait is a meta refresh:
-        # redirecting straight away would send the browser at a socket that is
-        # about to close.
-        response = render_template(
-            "restarting.html.j2",
-            back=request.referrer or url_for("dashboard.dashboard"),
-            added=added, movements=len(statement.transactions))
-    else:
-        response = redirect(request.referrer or url_for("dashboard.dashboard"))
-
+    response = jsonify(payload), (500 if error else 200)
     if restarting:
         _schedule_restart()
     return response
+
+
+# --- a statement sent from the import page ----------------------------------

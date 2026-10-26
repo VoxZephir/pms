@@ -232,30 +232,6 @@ def test_each_income_column_accounts_for_all_of_its_period(statement):
         assert sum(row["sources"].values()) == pytest.approx(row["total"], abs=0.01)
 
 
-def test_the_band_fills_its_height_wherever_money_came_in(statement):
-    """Shares, not amounts: every non-empty column is drawn full height, so a
-    large month cannot flatten the transition next to it."""
-    from pms import analysis
-    from pms.web import charts
-
-    rows = analysis.income_timeline(statement, "month",
-                                    statement.period_start,
-                                    statement.period_end)
-    sources = analysis.income_sources(statement)
-    fills = {r["label"]: f"var(--s{i})"
-             for i, r in enumerate(sources[:analysis.INCOME_SLOTS])}
-    fills[analysis.OTHER] = "var(--s7)"
-
-    band = charts.income_band(rows, fills)
-    assert band["gap_count"] >= 1
-    for col in band["columns"]:
-        if col["empty"]:
-            assert not col["segments"]
-            continue
-        assert sum(s["h"] for s in col["segments"]) == pytest.approx(
-            band["band_h"], abs=0.05)
-
-
 def test_the_income_palette_never_needs_a_ninth_colour(statement):
     """More counterparties paid into this account than there are validated
     hues, so the tail has to fold."""
@@ -296,3 +272,18 @@ def test_xirr_and_the_money_weighted_return():
     assert 0.13 < mwr < 0.14
     assert analysis.money_weighted(100.0, 110.0, [], jan, dec) == \
         pytest.approx(0.1, abs=1e-6)
+
+
+def test_revolut_replays_its_allowance_and_weekends():
+    import datetime as dt
+
+    from pms.analysis import revolut_replay
+
+    def conv(day, chf):
+        return {"date": dt.date.fromisoformat(day), "reference_chf": chf}
+    # A Tuesday inside the allowance costs nothing; the next week goes 250
+    # over it (1 % of 250); a Saturday costs 1 % whatever the allowance.
+    r = revolut_replay([conv("2025-03-04", 1000), conv("2025-03-11", 500), conv("2025-03-15", 100)])
+    assert r == {"cost": 3.5, "weekend": 1.0, "over": 2.5}
+    # Thirty days later the allowance is whole again.
+    assert revolut_replay([conv("2025-03-04", 1250), conv("2025-04-08", 1250)])["cost"] == 0

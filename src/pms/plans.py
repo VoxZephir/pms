@@ -26,9 +26,24 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import analysis
+from .buckets import CATEGORY_BUCKET, SAVE
 from .models import Statement
 
 VERSION = 1
+
+
+def _saved(category: str) -> bool:
+    """A transfer to the 3a or the brokerage, which the ledger books as
+    spending. It is not consumption: left in the baseline, a monthly transfer
+    to IBKR would be charged twice -- once in the median, once as the
+    declared series that already subtracts it."""
+    return CATEGORY_BUCKET.get(category) == SAVE
+
+
+def _consumed(row: dict) -> float:
+    """A monthly row's spending without its transfers to the pockets."""
+    return row["spending"] - sum(amount for category, amount in row["categories"].items()
+                                 if _saved(category))
 
 # Below this amount it is a shop bill, not a one-off worth planning around.
 SEASONAL_MIN_AMOUNT = 1500.0
@@ -50,6 +65,14 @@ SPENT = ""
 SHELTERED = "3a"
 TAXABLE = "taxable"
 DESTINATIONS = (SPENT, SHELTERED, TAXABLE)
+
+# The invested pockets a barème of its own can be given (`Plan.pocket_rates`),
+# as the forecast names them. Unlisted shares are held at their declared
+# value until told otherwise: a market return on a share nobody trades would
+# be a number nobody chose.
+POCKET_KEYS = ("ibkr", "finp", "crypto", "titres")
+POCKET_LABELS = {"ibkr": "IBKR", "finp": "3a", "crypto": "Crypto", "titres": "Titres non cotés"}
+FIXED_BY_DEFAULT = frozenset({"titres"})
 DESTINATION_LABELS = {
     SPENT: "dépense",
     SHELTERED: "virement 3a (hors impôt sur la fortune)",
@@ -68,9 +91,34 @@ CONTRIBUTION_LABELS = {"month": "chaque mois", "quarter": "chaque trimestre",
 #: (measured) everywhere: dispersion is an observation on the user's own
 #: pockets, not a hypothesis to template. A scenario may also carry `months`,
 #: the horizon its shape is about -- applying it sets the view length too.
+# Shapes, not forecasts: each says what kind of market it stands for in its
+# `note`, and only the lost decade is a measured path. Round numbers on
+# purpose -- a decimal would read as a precision nobody has.
 BUILTIN_SCENARIOS: dict[str, dict] = {
+    "prudent": {"label": "Prudent",
+                "note": "un portefeuille surtout obligataire, ou un compte rémunéré",
+                "rate_segments": [(12, 0.02)], "vol": None},
     "constant-growth": {"label": "Croissance constante",
+                        "note": "un portefeuille équilibré, sans accident",
                         "rate_segments": [(12, 0.04)], "vol": None},
+    "dynamic": {"label": "Dynamique",
+                "note": "surtout des actions, sur une longue période sans crise",
+                "rate_segments": [(12, 0.06)], "vol": None},
+    # 2022: world equities lost about a sixth in francs (MSCI World, net,
+    # roughly −17 % in CHF over the calendar year), bonds fell with them.
+    "bad-year": {"label": "Une mauvaise année",
+                 "note": "l'ordre de grandeur de 2022 en francs, puis la croissance constante",
+                 "rate_segments": [(12, -0.17), (48, 0.04)], "vol": None, "months": 60},
+    "crash-slow": {"label": "Krach puis reprise lente",
+                   "note": "une chute d'un tiers en un an, cinq ans pour s'en remettre",
+                   "rate_segments": [(12, -0.33), (60, 0.085), (120, 0.04)],
+                   "vol": None, "months": 120},
+    "stagnation": {"label": "Stagnation longue",
+                   "note": "dix ans sans rendement, puis un retour à la moyenne",
+                   "rate_segments": [(120, 0.0), (120, 0.04)], "vol": None, "months": 240},
+    "stagflation": {"label": "Stagflation",
+                    "note": "trois ans de baisse lente pendant que les prix montent",
+                    "rate_segments": [(36, -0.05), (84, 0.05)], "vol": None, "months": 120},
     # The lost decade in CHF, measured on the real path (S&P 500 total return
     # x USDCHF, pic 2000-09-07 -> creux 2009-03-09 -> recouvrement 2014-12-19):
     # -11.8 %/an pendant 102 mois est le CAGR qui mène au creux de -65.6 %, et
@@ -80,11 +128,33 @@ BUILTIN_SCENARIOS: dict[str, dict] = {
     # longue en CHF (3.9 %/an, mesurée 1999-2018, épisode compris) -- c'est ce
     # qui s'applique ensuite, au lieu du taux de recouvrement porté à vie.
     "lost-decade": {"label": "Décennie perdue — S&P 500 en CHF",
+                    "note": "le chemin mesuré de 2000 à 2014 : −66 % au creux, puis la moyenne longue",
                     "rate_segments": [(102, -0.1180), (69, 0.2027),
                                       (300, 0.0389)],
                     "vol": None, "months": 180},
     "rebound": {"label": "Rebond après crise",
+                "note": "une année à −10 %, puis neuf ans de bonne croissance",
                 "rate_segments": [(12, -0.10), (108, 0.06)], "vol": None},
+    # One barème per pocket, constant, nominal in francs and net of fees --
+    # what each pocket can plausibly be expected to do over a long horizon,
+    # not a forecast of any year:
+    # - IBKR, equities with managed futures stacked on top: 8 %. The
+    #   simulated long history in francs, after drag and fees, is well above
+    #   this, but it covers a period that lifted both legs (rising valuations,
+    #   decades of falling rates), so a forward figure sits below it.
+    # - the 3a, an equity strategy: ~5 % less its fees; volatility ~14 %.
+    # - crypto: no cash flow to anchor a return; a modest 5 %, a volatility of
+    #   70 % (the order of the major coins' history) -- the band says the rest.
+    # - unlisted shares: mostly the dividend (the 35 % withheld comes back
+    #   through the tax return), which the plan's income, a monthly median,
+    #   never sees as a yearly payment, plus a little revaluation of the
+    #   declared tax value. 12 % in all, no volatility: nobody quotes it.
+    # The common barème (4 %, 12 %) is for whatever has none of its own.
+    "baseline-claude": {"label": "Baseline Claude",
+                        "note": "une hypothèse par poche, plausible sur le long terme : nominale en francs, nette de frais",
+                        "rate_segments": [(12, 0.04)], "vol": 0.12,
+                        "pockets": {"ibkr": ([(12, 0.08)], 0.23), "finp": ([(12, 0.045)], 0.14),
+                                    "crypto": ([(12, 0.05)], 0.70), "titres": ([(12, 0.12)], 0.0)}},
 }
 
 
@@ -132,6 +202,55 @@ def _destination(value) -> str:
     return SPENT
 
 
+def _amount(value) -> float | None:
+    """A declared monthly figure, `{"amount": x}`, or None when absent. Zero
+    reads as absent, as it always has for the income: a month of nothing
+    is not a declaration anyone makes."""
+    if isinstance(value, dict) and value.get("amount"):
+        try:
+            amount = float(value["amount"])
+        except (TypeError, ValueError):
+            return None
+        return amount if amount > 0 else None
+    return None
+
+
+def _segments(pairs) -> list[tuple[int, float]]:
+    """(months, rate) pairs, the malformed ones dropped."""
+    out: list[tuple[int, float]] = []
+    for pair in pairs or []:
+        try:
+            months, rate = pair
+            months = int(months)
+            rate = float(rate)
+        except (TypeError, ValueError):
+            continue
+        if months >= 1 and -100 <= rate <= 100:
+            out.append((months, rate))
+    return out
+
+
+def _vol(value) -> float | None:
+    """A volatility outside [0, 100] % would silently invert or explode the
+    band. A hand edit that wrote one is demoted to the measured fallback,
+    never echoed into the chart."""
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= 1.0 else None
+
+
+def _detached(declarations: dict) -> "Plan":
+    """A plan holding these declarations, tied to no file -- a saved
+    scenario, to project or compare without touching the live one."""
+    plan = Plan(Path("unused"))
+    plan._restore(declarations)
+    return plan
+
+
 def rate_at(segments: list[tuple[int, float]], row: int) -> float | None:
     """Annual rate for the `row`-th projected month (1-based).
 
@@ -147,6 +266,74 @@ def rate_at(segments: list[tuple[int, float]], row: int) -> float | None:
         if row <= covered:
             return rate
     return segments[-1][1] if segments else None
+
+
+def projection_keys(as_of: dt.date, months_ahead: int) -> list[str]:
+    """The months `project()` lays out, in row order: the rest of the
+    statement's month when it does not end on the last day, then
+    `months_ahead` whole months."""
+    first = _add_months(as_of, 1)
+    keys = [month_key(_add_months(first, i)) for i in range(months_ahead)]
+    if as_of != _last_of_month(as_of):
+        keys.insert(0, month_key(as_of))
+    return keys
+
+
+def rate_years(segments: list[tuple[int, float]], keys: list[str]) -> list[dict]:
+    """The barème read per calendar year over the projected months: each
+    year, how many of its months the horizon holds, and its rate -- None
+    when the year straddles two periods (`mixed`) or nothing is declared.
+    What the year-by-year editor shows; past the declared periods the last
+    rate carries on, so a year there reads that rate."""
+    years: list[dict] = []
+    for row, key in enumerate(keys, start=1):
+        year = int(key[:4])
+        rate = rate_at(segments, row)
+        if not years or years[-1]["year"] != year:
+            years.append({"year": year, "months": 0, "rate": rate, "mixed": False})
+        entry = years[-1]
+        entry["months"] += 1
+        if entry["rate"] != rate:
+            entry["mixed"] = True
+    for entry in years:
+        if entry["mixed"]:
+            entry["rate"] = None
+    return years
+
+
+def parse_percent(text: str) -> float | None:
+    """A rate as people type it: "5.25", "5,25", "-3", "5,25 %". None when it
+    is not a number."""
+    cleaned = (text or "").strip().replace("%", "").replace("\u2212", "-").replace(",", ".").replace(" ", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def segments_from_years(years: list[dict], rates: list[str]
+                        ) -> tuple[list[tuple[int, float]], dict[int, str]]:
+    """One rate per year (`rate_years`' years, in order) into a barème:
+    each year's months at its rate, neighbouring years at the same rate
+    merged into one period. Errors are keyed by the year's index."""
+    errors: dict[int, str] = {}
+    segments: list[tuple[int, float]] = []
+    if len(rates) != len(years):
+        return [], {-1: "Les années ne correspondent plus à l'horizon affiché : rechargez la page."}
+    for i, (entry, text) in enumerate(zip(years, rates)):
+        percent = parse_percent(text)
+        if percent is None:
+            errors[i] = "Un taux en %, par exemple 4,5."
+            continue
+        if not -100 < percent <= 100:
+            errors[i] = "Le taux est entre -100 % et 100 %."
+            continue
+        rate = round(percent / 100, 6)
+        if segments and segments[-1][1] == rate:
+            segments[-1] = (segments[-1][0] + entry["months"], rate)
+        else:
+            segments.append((entry["months"], rate))
+    return (segments if not errors else []), errors
 
 
 def _month_no(key: str) -> int:
@@ -248,10 +435,37 @@ def scenario_summary(segments, vol, months=None) -> str:
     return out
 
 
+def growth_path(segments: list[tuple[int, float]], months: int,
+                points: int = 60) -> dict:
+    """What a barème does to one franc placed today, month by month, with
+    the same compounding as the projection (`_monthly_rate`): the curve a
+    scenario card draws, its low point, where it ends, and the steady annual
+    rate that would end at the same place. `points` thins the curve for a
+    sparkline; the low point and the end are read on every month."""
+    monthly_at = _monthly_rate(None, segments or None)
+    value, path = 1.0, [1.0]
+    for row in range(1, months + 1):
+        value *= 1.0 + monthly_at(row)
+        path.append(value)
+    step = max(1, months // points)
+    shown = path[::step]
+    if shown[-1] is not path[-1]:
+        shown.append(path[-1])
+    low = min(range(len(path)), key=path.__getitem__)
+    end = path[-1]
+    return {
+        "months": months,
+        "points": [round(v, 4) for v in shown],
+        "end": round(end, 4),
+        "low": round(path[low], 4),
+        "low_month": low,
+        "annual": round(end ** (12 / months) - 1, 4) if months and end > 0 else None,
+    }
+
+
 def closing_chf(statement: Statement) -> float:
-    """What the account actually holds: the CHF closing balance."""
-    return next((a.closing_balance for a in statement.accounts
-                 if a.currency == "CHF"), 0.0)
+    """What the accounts actually hold: the CHF closing balances, summed."""
+    return analysis.closing_chf(statement)
 
 
 # --- what the history suggests ----------------------------------------------
@@ -268,6 +482,8 @@ def seasonal_one_offs(statement: Statement) -> list[dict]:
     """
     per_year: dict[tuple[str, int, int], float] = defaultdict(float)
     for txn in analysis.spending(statement):
+        if _saved(txn.category):
+            continue  # a yearly 3a transfer is a declaration, not a bill
         per_year[(txn.category, txn.date.year, txn.date.month)] += abs(txn.amount_chf)
 
     by_month: dict[tuple[str, int], list[tuple[int, float]]] = defaultdict(list)
@@ -342,6 +558,23 @@ class Plan:
         # Recurring transfers to the pockets: x CHF every month/quarter/
         # semester/year for `months` months. Declared facts, like one_offs.
         self.contributions: list[dict] = []
+        # A barème and a volatility of their own for some pockets: pocket ->
+        # {"rate_segments", "vol"}, or {"common": True} for a pocket fixed by
+        # default that was told to follow the common barème. A pocket not
+        # here follows the common one (`own_rates`).
+        self.pocket_rates: dict[str, dict] = {}
+        # The usual month's spend, declared. `None` is the history's own
+        # baseline -- a median over the whole ledger, which lags a new rent.
+        self.spend: float | None = None
+        # Whole plans kept under a name: every declaration above but the
+        # market presets (`scenarios`), which are shared by all of them. The
+        # live fields are the active one's working copy -- an edit lands in
+        # it on save, and switching stores it before loading the other.
+        self.plan_scenarios: dict[str, dict] = {}
+        self.active: str | None = None
+        # The last plan deleted, whole, so the toast that confirms the
+        # deletion can undo it. One deep: an undo, not a recycle bin.
+        self.deleted: dict | None = None
 
     @classmethod
     def load(cls, path: Path | str) -> "Plan":
@@ -352,15 +585,64 @@ class Plan:
             raw = json.loads(plan.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return plan
+        if not isinstance(raw, dict):
+            return plan
 
-        income = raw.get("income")
-        if isinstance(income, dict) and income.get("amount"):
+        plan._restore(raw)
+
+        for name, spec in (raw.get("scenarios") or {}).items():
+            if not isinstance(spec, dict) or not str(name).strip():
+                continue
+            segments = _segments(spec.get("rate_segments", []))
+            scenario_vol = _vol(spec.get("vol"))
             try:
-                plan.income = float(income["amount"])
+                months = int(spec.get("months") or 0)
             except (TypeError, ValueError):
-                pass
+                months = 0
+            plan.scenarios[str(name)] = {"rate_segments": segments,
+                                         "vol": scenario_vol,
+                                         "months": months if months >= 1 else 0}
+
+        for name, spec in (raw.get("plan_scenarios") or {}).items():
+            if isinstance(spec, dict) and str(name).strip():
+                # Kept as written, normalised through a detached load: the
+                # same validation as the live fields, and what is saved is
+                # what a switch would restore.
+                plan.plan_scenarios[str(name)] = _detached(spec)._declarations()
+        active = raw.get("active_scenario")
+        plan.active = active if active in plan.plan_scenarios else None
+        deleted = raw.get("deleted_scenario")
+        if isinstance(deleted, dict) and str(deleted.get("name") or "").strip() \
+                and isinstance(deleted.get("plan"), dict):
+            plan.deleted = {"name": str(deleted["name"]).strip(),
+                            "plan": _detached(deleted["plan"])._declarations()}
+        return plan
+
+    def _restore(self, raw: dict) -> None:
+        """Set every declared field from a plan dict -- the file's top level,
+        or a saved plan scenario. Bad entries are dropped one by one, never
+        the whole file."""
+        self.income = _amount(raw.get("income"))
+        self.spend = _amount(raw.get("spend"))
+        self.one_offs = []
+        self.rate_segments = []
+        self.rate = None
+        self.vol = None
+        self.contributions = []
+        self.ignored = []
+        self.pocket_rates = {}
+        for pocket, entry in (raw.get("pocket_rates") or {}).items():
+            if pocket not in POCKET_KEYS or not isinstance(entry, dict):
+                continue
+            if entry.get("common"):
+                self.pocket_rates[pocket] = {"common": True}
+            else:
+                self.pocket_rates[pocket] = {"rate_segments": _segments(entry.get("rate_segments", [])),
+                                             "vol": _vol(entry.get("vol"))}
 
         for entry in raw.get("one_offs", []):
+            if not isinstance(entry, dict):
+                continue
             day = parse_day(entry.get("date"))
             month = entry.get("month") or (month_key(day) if day else None)
             if not (month and entry.get("label")):
@@ -372,7 +654,7 @@ class Plan:
             if amount <= 0:
                 continue
             seasonal = entry.get("seasonal")
-            plan.one_offs.append({
+            self.one_offs.append({
                 "month": month,
                 # An optional precise day. Without it the entry is simply "some
                 # time that month", which is all a yearly bill needs; with it,
@@ -389,66 +671,18 @@ class Plan:
                 "transfer": _destination(entry.get("transfer")),
             })
 
-        for pair in raw.get("rate_segments", []):
-            try:
-                months, rate = pair
-                months = int(months)
-                rate = float(rate)
-            except (TypeError, ValueError):
-                continue
-            if months >= 1 and -100 <= rate <= 100:
-                plan.rate_segments.append((months, rate))
-
+        self.rate_segments = _segments(raw.get("rate_segments", []))
         rate = raw.get("rate")
         if rate is not None:
             try:
-                plan.rate = float(rate)
+                self.rate = float(rate)
             except (TypeError, ValueError):
                 pass
-        if plan.rate_segments:
+        if self.rate_segments:
             # The first segment is the closest single-number reading of the
             # schedule; the segments themselves stay canonical.
-            plan.rate = plan.rate_segments[0][1]
-
-        vol = raw.get("vol")
-        if vol is not None:
-            try:
-                vol = float(vol)
-            except (TypeError, ValueError):
-                vol = None
-            # A volatility outside [0, 100] % would silently invert or explode
-            # the band. A hand edit that wrote one is demoted to the measured
-            # fallback, never echoed into the chart.
-            plan.vol = vol if vol is not None and 0 <= vol <= 1.0 else None
-
-        for name, spec in (raw.get("scenarios") or {}).items():
-            if not isinstance(spec, dict) or not str(name).strip():
-                continue
-            segments: list[tuple[int, float]] = []
-            for pair in spec.get("rate_segments", []):
-                try:
-                    months, rate = pair
-                    months = int(months)
-                    rate = float(rate)
-                except (TypeError, ValueError):
-                    continue
-                if months >= 1 and -100 <= rate <= 100:
-                    segments.append((months, rate))
-            scenario_vol = spec.get("vol")
-            if scenario_vol is not None:
-                try:
-                    scenario_vol = float(scenario_vol)
-                except (TypeError, ValueError):
-                    scenario_vol = None
-                if scenario_vol is not None and not 0 <= scenario_vol <= 1.0:
-                    scenario_vol = None
-            try:
-                months = int(spec.get("months") or 0)
-            except (TypeError, ValueError):
-                months = 0
-            plan.scenarios[str(name)] = {"rate_segments": segments,
-                                         "vol": scenario_vol,
-                                         "months": months if months >= 1 else 0}
+            self.rate = self.rate_segments[0][1]
+        self.vol = _vol(raw.get("vol"))
 
         for entry in raw.get("contributions", []):
             if not isinstance(entry, dict):
@@ -484,23 +718,23 @@ class Plan:
                     valid = False
                 if not valid:
                     continue
-            plan.contributions.append({"pocket": pocket, "amount": amount,
+            self.contributions.append({"pocket": pocket, "amount": amount,
                                        "every": every, "months": months,
                                        "start": start})
 
         for pair in raw.get("ignored_seasonal", []):
             try:
                 category, month = pair
-                plan.ignored.append((str(category), int(month)))
+                self.ignored.append((str(category), int(month)))
             except (TypeError, ValueError):
                 continue
-        return plan
 
-    def save(self) -> Path:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": VERSION,
+    def _declarations(self) -> dict:
+        """The declared fields as the file writes them -- the top level, and
+        each saved plan scenario."""
+        return {
             "income": {"amount": self.income} if self.income is not None else None,
+            "spend": {"amount": self.spend} if self.spend is not None else None,
             # `rate` stays written so an older checkout reading the file
             # compounds at the first segment's rate -- a real number the user
             # typed -- rather than at nothing.
@@ -508,14 +742,31 @@ class Plan:
                      else self.rate),
             "rate_segments": [[m, r] for m, r in self.rate_segments],
             "vol": self.vol,
+            "pocket_rates": {k: ({"common": True} if v.get("common") else
+                                 {"rate_segments": [[m, r] for m, r in v["rate_segments"]],
+                                  "vol": v["vol"]})
+                             for k, v in self.pocket_rates.items()},
+            "contributions": [dict(c) for c in self.contributions],
+            "one_offs": [dict(e) for e in self.one_offs],
+            "ignored_seasonal": [[c, m] for c, m in self.ignored],
+        }
+
+    def save(self) -> Path:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.active in self.plan_scenarios:
+            # The live fields are the active scenario's working copy.
+            self.plan_scenarios[self.active] = self._declarations()
+        payload = {
+            "version": VERSION,
+            **self._declarations(),
             "scenarios": {name: {"rate_segments": [[m, r] for m, r in
                                                     s["rate_segments"]],
                                  "vol": s["vol"],
                                  "months": s.get("months", 0)}
                           for name, s in self.scenarios.items()},
-            "contributions": self.contributions,
-            "one_offs": self.one_offs,
-            "ignored_seasonal": [[c, m] for c, m in self.ignored],
+            "plan_scenarios": self.plan_scenarios,
+            "active_scenario": self.active,
+            **({"deleted_scenario": self.deleted} if self.deleted else {}),
         }
         # Write then move, so an interrupted save cannot leave a truncated file.
         temporary = self.path.with_suffix(".tmp")
@@ -595,6 +846,33 @@ class Plan:
         self.rate = segments[0][1] if segments else None
         self.vol = vol if vol is not None and 0 <= vol <= 1.0 else None
 
+    def own_rates(self, pocket: str) -> dict | None:
+        """The pocket's own {"rate_segments", "vol"}, or None when it follows
+        the common barème. An empty barème of its own holds it at its value."""
+        entry = self.pocket_rates.get(pocket)
+        if entry is None:
+            return {"rate_segments": [], "vol": 0.0} if pocket in FIXED_BY_DEFAULT else None
+        return None if entry.get("common") else entry
+
+    def set_pocket_rates(self, pocket: str, segments, vol) -> None:
+        """Give a pocket a barème of its own; `vol` None is the volatility
+        measured on that pocket."""
+        self.pocket_rates[pocket] = {"rate_segments": list(segments),
+                                     "vol": vol if vol is not None and 0 <= vol <= 1.0 else None}
+
+    def follow_common(self, pocket: str) -> None:
+        """Back to the common barème."""
+        if pocket in FIXED_BY_DEFAULT:
+            self.pocket_rates[pocket] = {"common": True}
+        else:
+            self.pocket_rates.pop(pocket, None)
+
+    def schedules(self) -> dict[str, list[tuple[int, float]]]:
+        """The barèmes of the pockets that have their own: what
+        `project_pockets` grows them by."""
+        return {k: own["rate_segments"] for k in POCKET_KEYS
+                if (own := self.own_rates(k)) is not None}
+
     def set_scenario(self, name: str, segments, vol, months: int = 0) -> None:
         """Save the live (rate_segments, vol) pair -- and the horizon it was
         read on -- under a name. Upsert: a name already taken is overwritten,
@@ -632,6 +910,15 @@ class Plan:
                                    "every": every, "months": months,
                                    "start": start})
 
+    def replace_contribution(self, index: int, pocket: str, amount: float, every: str,
+                             months: int, start: str = "") -> bool:
+        """Edit one series in place: its position in the list stays."""
+        if not 0 <= index < len(self.contributions):
+            return False
+        self.contributions[index] = {"pocket": pocket, "amount": amount, "every": every,
+                                     "months": months, "start": start}
+        return True
+
     def remove_contribution(self, pocket: str, amount: float, every: str,
                             months: int, start: str) -> bool:
         """Remove every series equal to the declared one. A series has no
@@ -642,6 +929,70 @@ class Plan:
         before = len(self.contributions)
         self.contributions = [c for c in self.contributions if c != wanted]
         return len(self.contributions) < before
+
+    # --- whole-plan scenarios ---------------------------------------------
+
+    def save_scenario_as(self, name: str) -> None:
+        """Keep the live plan under a name, and make it the active one --
+        "save as": the next edits go to the copy, the original stays put."""
+        name = name.strip()
+        if not name:
+            return
+        self.plan_scenarios[name] = self._declarations()
+        self.active = name
+
+    def switch_scenario(self, name: str) -> bool:
+        """Make another saved plan the live one. The active one keeps the
+        edits made to it: they are stored before the other is loaded."""
+        if name not in self.plan_scenarios:
+            return False
+        if self.active in self.plan_scenarios:
+            self.plan_scenarios[self.active] = self._declarations()
+        self._restore(self.plan_scenarios[name])
+        self.active = name
+        return True
+
+    def remove_plan_scenario(self, name: str) -> bool:
+        """Forget a saved plan. Deleting the active one keeps the live
+        fields as they are, unnamed -- nothing on screen changes. The plan
+        is kept aside (`deleted`) until the next deletion, for the undo."""
+        if name not in self.plan_scenarios:
+            return False
+        kept = self._declarations() if name == self.active else self.plan_scenarios[name]
+        self.deleted = {"name": name, "plan": kept}
+        del self.plan_scenarios[name]
+        if self.active == name:
+            self.active = None
+        return True
+
+    def undelete_scenario(self) -> str | None:
+        """Bring back the last plan deleted, under its name -- unless another
+        took that name since. Returns the name, or None."""
+        if not self.deleted or self.deleted["name"] in self.plan_scenarios:
+            return None
+        name = self.deleted["name"]
+        self.plan_scenarios[name] = self.deleted["plan"]
+        self.deleted = None
+        return name
+
+    def rename_scenario(self, old: str, new: str) -> bool:
+        """Give a saved plan another name; its place as the active one goes
+        with it. False when `old` is unknown or `new` already taken."""
+        new = new.strip()
+        if old not in self.plan_scenarios or not new or new in self.plan_scenarios:
+            return False
+        self.plan_scenarios = {(new if k == old else k): v
+                               for k, v in self.plan_scenarios.items()}
+        if self.active == old:
+            self.active = new
+        return True
+
+    def scenario_plan(self, name: str) -> "Plan":
+        """The saved plan `name`, detached -- the live plan itself when it is
+        the active one, so the comparison sees edits not yet switched away."""
+        if name == self.active:
+            return self
+        return _detached(self.plan_scenarios[name])
 
     def ignore(self, category: str, month: int) -> None:
         if (category, month) not in self.ignored:
@@ -655,10 +1006,10 @@ class Plan:
     def empty(self) -> bool:
         # A contribution is an active declaration; a saved scenario is not --
         # it changes nothing until it is applied.
-        return (self.income is None and not self.one_offs
+        return (self.income is None and self.spend is None and not self.one_offs
                 and not self.ignored and self.rate is None
                 and not self.rate_segments and self.vol is None
-                and not self.contributions)
+                and not self.contributions and not self.pocket_rates)
 
 
 # --- the projection -----------------------------------------------------------
@@ -677,7 +1028,7 @@ def baseline(statement: Statement) -> float:
 
     adjusted = []
     for row in months:
-        total = row["spending"]
+        total = _consumed(row)
         for s in seasonal:
             if s["month"] != calendar_month(row["month"]):
                 continue
@@ -734,13 +1085,13 @@ def monthly_profile(statement: Statement,
         year_no, cal = int(row["month"][:4]), calendar_month(row["month"])
         if year is not None and year_no != year:
             continue
-        total = row["spending"]
+        total = _consumed(row)
         for s in seasonal:
             if s["month"] != cal:
                 continue
             carried = row["categories"].get(s["category"], 0.0)
             total -= min(s["amount"], carried)
-        raw[(year_no, cal)] = row["spending"]
+        raw[(year_no, cal)] = _consumed(row)
         stripped[(year_no, cal)] = max(total, 0.0)
 
     profile = []
@@ -864,10 +1215,10 @@ def project(statement: Statement, plan: Plan | None = None,
         income = monthly_income(statement)
         income_source = "history" if income else None
 
-    base = baseline(statement)
+    history_base = baseline(statement)
+    base = plan.spend if plan.spend is not None else history_base
     suggestions = seasonal_one_offs(statement)
     as_of = statement.period_end
-    first = _add_months(as_of, 1)
 
     # The statement almost never ends on the last of the month, and everything
     # planned for the rest of that month used to fall in the gap: the first
@@ -880,19 +1231,18 @@ def project(statement: Statement, plan: Plan | None = None,
     # already records for that month. A salary already paid leaves nothing to
     # add; a month already over its usual spend adds no more.
     partial = as_of != _last_of_month(as_of)
-    keys = [month_key(_add_months(first, i)) for i in range(months_ahead)]
-    if partial:
-        keys.insert(0, month_key(as_of))
+    keys = projection_keys(as_of, months_ahead)
 
     month_start = as_of.replace(day=1)
-    spent_so_far = sum(abs(t.amount_chf) for t in analysis.spending(statement)
-                       if t.date >= month_start)
-    earned_so_far = sum(t.amount_chf for t in analysis.income(statement)
-                        if t.date >= month_start)
     spent_by_category: dict[str, float] = defaultdict(float)
     for txn in analysis.spending(statement):
         if txn.date >= month_start:
             spent_by_category[txn.category] += abs(txn.amount_chf)
+    # A transfer to a pocket already made this month is not part of the
+    # month's usual spend either: it would eat the remaining base.
+    spent_so_far = sum(v for c, v in spent_by_category.items() if not _saved(c))
+    earned_so_far = sum(t.amount_chf for t in analysis.income(statement)
+                        if t.date >= month_start)
 
     def still_ahead(entry: dict) -> bool:
         """A dated entry whose day has passed is not a forecast any more --
@@ -943,9 +1293,12 @@ def project(statement: Statement, plan: Plan | None = None,
         # A confirmed suggestion is a declared entry, whether it kept its
         # category name or was renamed -- either way it must not be counted
         # twice. The provenance field ties the two together.
+        # Both shadows are of this month only: confirming December 2026's
+        # insurance must not erase December 2027's from a longer horizon.
         declared_labels = {e["label"] for e in plan.one_offs if e["month"] == key}
         seasonal_shadows = {(e["seasonal"]["category"], e["seasonal"]["month"])
-                            for e in plan.one_offs if e.get("seasonal")}
+                            for e in plan.one_offs
+                            if e.get("seasonal") and e["month"] == key}
         for s in suggestions:
             if s["month"] != calendar_month(key):
                 continue
@@ -996,12 +1349,26 @@ def project(statement: Statement, plan: Plan | None = None,
         "income": round(income, 2),
         "income_source": income_source,
         "baseline": round(base, 2),
+        "baseline_source": "declared" if plan.spend is not None else "history",
+        "baseline_history": round(history_base, 2),
         # The horizon the caller asked for -- the page copy reads it back, so
         # the subtitle and the curve never drift apart from what was asked.
         "months": months_ahead,
         "rows": rows,
         "low": low,
     }
+
+
+def _monthly_rate(rate: float | None, rate_schedule: list[tuple[int, float]] | None):
+    """The monthly rate of the `row`-th projected month (1-based), from the
+    declared barème, or the single `rate`, or nothing."""
+    if rate_schedule:
+        def monthly_at(row: int) -> float:
+            declared = rate_at(rate_schedule, row)
+            return (1.0 + declared) ** (1 / 12) - 1 if declared is not None else 0.0
+        return monthly_at
+    monthly = (1.0 + rate) ** (1 / 12) - 1 if rate else 0.0
+    return lambda row: monthly
 
 
 def project_wealth(projection: dict, invested: float,
@@ -1049,14 +1416,7 @@ def project_wealth(projection: dict, invested: float,
     growing it would put invented interest into the one number on the page
     that comes straight from the bank.
     """
-    if rate_schedule:
-        def monthly_at(row: int) -> float:
-            declared = rate_at(rate_schedule, row)
-            return (1.0 + declared) ** (1 / 12) - 1 if declared is not None else 0.0
-    else:
-        monthly = (1.0 + rate) ** (1 / 12) - 1 if rate else 0.0
-        monthly_at = lambda row: monthly  # noqa: E731
-
+    monthly_at = _monthly_rate(rate, rate_schedule)
     rows = []
     held = invested
     for i, row in enumerate(projection["rows"], start=1):
@@ -1089,4 +1449,119 @@ def project_wealth(projection: dict, invested: float,
         "final": rows[-1] if rows else None,
         "change": round(rows[-1]["total"] - start, 2) if rows else 0.0,
         "moved": round(sum(r["moved"] for r in rows), 2),
+    }
+
+
+def wealth_from_pockets(projection: dict, split: dict, include_cash: bool = True) -> dict:
+    """`project_wealth`'s curve, read off `project_pockets`: what the page
+    draws when each pocket may grow at its own rate. The cash is the
+    projection's; the band is the split's (each pocket's own σ), the low
+    side floored at no invested value at all."""
+    rows = []
+    start_invested = sum(split["start"].values())
+    for row in split["rows"]:
+        cash_now = row["cash"] if include_cash else 0.0
+        held = sum(row["pockets"].values())
+        rows.append({
+            "key": row["key"], "label": row["label"], "partial": row["partial"],
+            "cash": round(cash_now, 2), "invested": round(held, 2), "moved": row["moved"],
+            "total": round(cash_now + held, 2),
+            "low": round(cash_now + max(held - row["spread"], 0.0), 2),
+            "high": round(cash_now + held + row["spread"], 2),
+        })
+    start = (projection["cash"] if include_cash else 0.0) + start_invested
+    return {
+        "start": round(start, 2), "invested": round(start_invested, 2), "rows": rows,
+        "final": rows[-1] if rows else None,
+        "change": round(rows[-1]["total"] - start, 2) if rows else 0.0,
+        "moved": round(sum(r["moved"] for r in rows), 2),
+    }
+
+
+def project_pockets(projection: dict, pockets: dict[str, float],
+                    routes: dict[str, str], rate: float | None,
+                    rate_schedule: list[tuple[int, float]] | None = None,
+                    include_cash: bool = True,
+                    schedules: dict[str, list[tuple[int, float]]] | None = None,
+                    vols: dict[str, float] | None = None) -> dict:
+    """`project_wealth`, pocket by pocket, and where the change comes from.
+
+    Same arithmetic, split: each invested pocket compounds at the declared
+    rate (the plan has one rate, not one per pocket -- the page says so) and
+    receives the declared transfers routed to it (`routes`: destination ->
+    pocket, a 3a transfer to the 3a). Since the growth is linear in the
+    holdings, the pockets add up to `project_wealth`'s `invested`, to the
+    centime -- the test holds them to it. A transfer to a destination with no
+    pocket here (the 3a, in the taxable view) leaves the picture: the cash
+    pays it and nothing receives it.
+
+    `flows` explains the move from today's total to the horizon's: the
+    income, the usual spending, the one-offs spent, the transfers that leave
+    the view, and each pocket's growth. They add up to the change exactly;
+    the transfers between the cash and a pocket of the view cancel, and are
+    reported apart (`moved`).
+
+    `schedules` gives some pockets a barème of their own (an empty one holds
+    the pocket at its value); the others follow `rate` / `rate_schedule`.
+    `vols` is each pocket's volatility: the band of a row is the sum of each
+    pocket's ±1σ -- the pockets taken as moving together, the prudent
+    reading, and exactly `project_wealth`'s band when they share one vol.
+    """
+    common_at = _monthly_rate(rate, rate_schedule)
+    own_at = {k: _monthly_rate(None, s or None) for k, s in (schedules or {}).items()}
+    vols = vols or {}
+    held = dict(pockets)
+    paid = {k: 0.0 for k in held}
+    growth = {k: 0.0 for k in held}
+    income = base = spent = left = 0.0
+    rows = []
+    for i, row in enumerate(projection["rows"], start=1):
+        for key in held:
+            gain = held[key] * own_at.get(key, common_at)(i)
+            growth[key] += gain
+            held[key] += gain
+        moved = 0.0
+        for o in row["one_offs"]:
+            target = routes.get(o.get("transfer") or "")
+            if not o.get("transfer"):
+                spent += o["amount"]
+            elif target is None:
+                left += o["amount"]
+            else:
+                held.setdefault(target, 0.0)
+                paid.setdefault(target, 0.0)
+                growth.setdefault(target, 0.0)
+                held[target] += o["amount"]
+                paid[target] += o["amount"]
+                moved += o["amount"]
+        income += row["income"]
+        base += row["spend"] - sum(o["amount"] for o in row["one_offs"])
+        spread = sum(max(v, 0.0) * vols.get(k, 0.0) for k, v in held.items()) * (i / 12) ** 0.5
+        rows.append({"key": row["key"], "label": row["label"],
+                     "partial": row.get("partial", False),
+                     "cash": round(row["end"], 2) if include_cash else None,
+                     "pockets": {k: round(v, 2) for k, v in held.items()},
+                     "moved": round(moved, 2), "spread": spread})
+
+    flows = []
+    if include_cash:
+        flows += [{"key": "income", "label": "Revenus", "amount": round(income, 2)},
+                  {"key": "base", "label": "Dépense courante", "amount": round(-base, 2)},
+                  {"key": "spent", "label": "Ponctuels", "amount": round(-spent, 2)}]
+        if left:
+            flows.append({"key": "left", "label": "Versé hors de cette vue",
+                          "amount": round(-left, 2)})
+    else:
+        flows += [{"key": f"paid:{k}", "pocket": k, "label": "Versements",
+                   "amount": round(v, 2)} for k, v in paid.items() if v]
+    flows += [{"key": f"growth:{k}", "pocket": k, "label": "Rendement",
+               "amount": round(v, 2)} for k, v in growth.items() if v]
+    return {
+        "rows": rows,
+        "start": {k: round(v, 2) for k, v in pockets.items()},
+        "end": {k: round(v, 2) for k, v in held.items()},
+        "paid": {k: round(v, 2) for k, v in paid.items()},
+        "growth": {k: round(v, 2) for k, v in growth.items()},
+        "flows": flows,
+        "moved": round(sum(paid.values()), 2) if include_cash else 0.0,
     }

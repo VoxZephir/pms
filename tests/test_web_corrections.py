@@ -1,249 +1,168 @@
-"""Manual corrections: drop targets, the personal rules file, /reclasser."""
+"""Manual corrections: reclassifying a row or its payee, undoing it, the
+personal rules file, the merges (`/api/reclassify*`, `/api/corrections`)."""
 
 from __future__ import annotations
 
-import re
+import json
 
-from webhelpers import corrected_ledger, text
-
-# --- the drop palette -------------------------------------------------------
-
-def test_every_category_drop_zone_carries_its_name(client):
-    """A dropzone with an empty data-drop-category posts nothing and the API
-    answers "rien a appliquer" -- which is exactly what a name collision between
-    the filter's category list and by_category() produced."""
-    body = text(client.get("/?preset=all"))
-    zones = re.findall(r'<button class="dropzone" data-drop-category="([^"]*)"', body)
-    assert zones, "the palette must offer category targets"
-    assert all(zones), f"{zones.count('')} drop zones have no category"
+import pytest
+from webhelpers import corrected_ledger
 
 
-def test_bucket_drop_zones_are_present(client):
-    body = text(client.get("/?preset=all"))
-    buckets_found = re.findall(r'data-drop-bucket="([^"]+)"', body)
-    for name in ("Need", "Want", "Save", "Non classé"):
-        assert name in buckets_found
-
-
-def test_drop_zone_colours_resolve(client):
-    """`var(--s)` means the slot was missing; the swatch renders invisible."""
-    body = text(client.get("/?preset=all"))
-    assert "var(--s)" not in body
-
-
-def test_a_bucket_only_correction_is_visible_in_the_table(client, ledger_file,
-                                                          tmp_path_factory):
-    """Reclassifying Need/Want/Save leaves the category cell untouched, so the
-    bucket has to be shown or the change looks like it did nothing."""
+@pytest.fixture
+def app(tmp_path_factory, ledger_file):
+    """A private ledger copy: every test here writes corrections."""
     from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("bucketview")
+    workdir = tmp_path_factory.mktemp("corrections")
     ledger_copy = workdir / "ledger.json"
     ledger_copy.write_bytes(ledger_file.read_bytes())
+    return create_app(ledger_copy)
 
-    app = create_app(ledger_copy)
+
+def _first_key(c) -> str:
+    return c.get("/api/transactions?preset=all&per=20").get_json()["rows"][0]["key"]
+
+
+def _rules(app):
+    return app.extensions["pms_store"].path.with_name("local_rules.json")
+
+
+def test_a_bucket_only_correction_shows_on_the_row(app):
+    """Reclassifying Need/Want/Save leaves the category untouched, so the row
+    says it was corrected, or the change looks like it did nothing."""
     with app.test_client() as c:
-        first = re.search(r'data-key="([^"]+)"',
-                          c.get("/?preset=all").get_data(as_text=True)).group(1)
-        response = c.post("/api/reclassify",
-                          json={"key": first, "scope": "pin", "bucket": "Need"},
-                          headers={"Accept": "application/json"})
-        assert response.status_code == 200
-        body = c.get("/?preset=all").get_data(as_text=True)
-        assert 'class="chip ovr"' in body
-        assert "is-overridden" in body
+        key = _first_key(c)
+        assert c.post("/api/reclassify", json={"key": key, "scope": "pin",
+                                               "bucket": "Need"}).status_code == 200
+        row = next(r for r in c.get("/api/transactions?preset=all&per=20").get_json()["rows"]
+                   if r["key"] == key)
+        assert row["overridden"] and row["bucket"] == "Need"
+
+
+def test_a_pinned_row_moves_when_its_merchant_is_reclassified(app):
+    """Pinned to "Non catégorisé", then reclassified with its payee (a rule):
+    the row lands in Restaurants, and "Annuler" gives back the pin."""
+    from pms.overrides import key_of
+    data = app.extensions["pms_store"]
+
+    def category_of(key):
+        return next(t.category for t in data.statement.transactions if key_of(t) == key)
+
+    target = next(t for t in data.statement.transactions
+                  if t.label and t.category != "Restaurants & bars" and t.amount < 0)
+    key = key_of(target)
+    with app.test_client() as c:
+        c.post("/api/reclassify", json={"key": key, "scope": "pin", "category": "Non catégorisé"})
+        assert category_of(key) == "Non catégorisé"
+        answer = c.post("/api/reclassify", json={"key": key, "scope": "merchant",
+                                                 "category": "Restaurants & bars"}).get_json()
+        assert category_of(key) == "Restaurants & bars"
+        c.post("/api/reclassify/undo", json=answer["undo"])
+        assert category_of(key) == "Non catégorisé"
+        assert not [r for r in data.overrides.rules if r["match"] == target.label]
 
 
 def test_reclassify_rejects_an_empty_target(client):
-    body = text(client.get("/?preset=all"))
-    key = re.search(r'data-key="([^"]+)"', body).group(1)
-    response = client.post("/api/reclassify",
-                           json={"key": key, "scope": "pin"},
-                           headers={"Accept": "application/json"})
+    key = _first_key(client)
+    assert client.post("/api/reclassify", json={"key": key, "scope": "pin"}).status_code == 400
+
+
+def test_a_bulk_correction_of_the_whole_filter_and_its_undo(app):
+    """Everything matching the filter, across pages, as the screen counted it."""
+    with app.test_client() as c:
+        listed = c.get("/api/transactions?preset=all&q=coop").get_json()["total"]
+        answer = c.post("/api/reclassify/bulk", json={
+            "preset": "all", "q": "coop", "scope_all": 1,
+            "to_bucket": "Want", "apply_as": "pin"}).get_json()
+        assert answer["count"] == listed
+        rows = c.get("/api/transactions?preset=all&q=coop&per=60").get_json()["rows"]
+        assert {r["bucket"] for r in rows} == {"Want"}
+        c.post("/api/reclassify/bulk/undo", json=answer["undo"])
+        assert c.get("/api/corrections").get_json()["total"] == 0
+
+
+def test_the_corrections_list_every_kind(tmp_path_factory, ledger_file):
+    app = corrected_ledger(tmp_path_factory, ledger_file, pins=12)
+    with app.test_client() as c:
+        data = c.get("/api/corrections").get_json()
+    kinds = [e["kind"] for e in data["entries"]]
+    assert kinds.count("pin") == 12 and kinds.count("rule") == 2 and kinds.count("alias") == 1
+    assert data["total"] == 15
+
+
+def test_a_correction_is_removed_by_kind(tmp_path_factory, ledger_file):
+    app = corrected_ledger(tmp_path_factory, ledger_file, pins=2)
+    with app.test_client() as c:
+        entries = c.get("/api/corrections").get_json()["entries"]
+        for entry in entries:
+            assert c.post("/api/corrections", json={"action": "delete", **entry}).status_code == 200
+        assert c.get("/api/corrections").get_json()["total"] == 0
+
+
+def test_two_spellings_merge_and_a_chain_merges_by_prefix(app):
+    with app.test_client() as c:
+        assert c.post("/api/corrections", json={"action": "merge", "variant": "Coop-1234 Carouge",
+                                                "canonical": "Coop"}).status_code == 200
+        assert c.post("/api/corrections", json={"action": "merge", "prefix": "Migros",
+                                                "canonical": "Migros"}).status_code == 200
+        assert c.post("/api/corrections", json={"action": "merge", "canonical": "Coop"}).status_code == 400
+        aliases = [e for e in c.get("/api/corrections").get_json()["entries"] if e["kind"] == "alias"]
+    assert len(aliases) == 2
+
+
+# --- personal rules (data/local_rules.json) ------------------------------------
+
+def test_the_personal_rules_are_listed_from_the_file(app):
+    _rules(app).write_text(json.dumps([
+        {"category": "Revenus", "subcategory": "Salaire / clients", "pattern": "Employeur Test"},
+        {"category": "Logement", "subcategory": "Loyer / régie", "pattern": "Regie Test"},
+    ], ensure_ascii=False), encoding="utf-8")
+    with app.test_client() as c:
+        rules = c.get("/api/corrections").get_json()["local_rules"]
+    assert [r["pattern"] for r in rules] == ["Employeur Test", "Regie Test"]
+
+
+def test_an_invalid_pattern_is_refused_and_the_file_untouched(app):
+    original = json.dumps([{"category": "Revenus", "subcategory": "", "pattern": "Employeur Test"}])
+    _rules(app).write_text(original, encoding="utf-8")
+    with app.test_client() as c:
+        response = c.post("/api/corrections", json={"action": "lr-add", "pattern": "(",
+                                                    "category": "Revenus", "subcategory": ""})
     assert response.status_code == 400
+    assert response.get_json()["errors"]["lr-pattern"].startswith("Motif invalide")
+    assert _rules(app).read_text(encoding="utf-8") == original
 
 
-def test_the_corrections_table_is_sortable_once_it_has_rows(tmp_path_factory,
-                                                            ledger_file):
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("rulessort")
-    ledger_copy = workdir / "ledger.json"
-    ledger_copy.write_bytes(ledger_file.read_bytes())
-
-    app = create_app(ledger_copy)
-    with app.test_client() as c:
-        assert "Aucune correction" in c.get("/reclasser").get_data(as_text=True)
-
-        key = re.search(r'data-key="([^"]+)"',
-                        c.get("/?preset=all").get_data(as_text=True)).group(1)
-        c.post("/api/reclassify",
-               json={"key": key, "scope": "pin", "bucket": "Need"},
-               headers={"Accept": "application/json"})
-        assert "sortable-table" in c.get("/reclasser").get_data(as_text=True)
-
-
-# --- personal rules (data/local_rules.json) --------------------------------
-
-def test_local_rules_section_lists_the_personal_rules(tmp_path_factory,
-                                                      ledger_file):
-    """The Corrections page edits data/local_rules.json: the section is
-    titled and the current rules are listed from the file."""
-    import json as _json
-
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("localrules")
-    ledger_copy = workdir / "ledger.json"
-    ledger_copy.write_bytes(ledger_file.read_bytes())
-    (workdir / "local_rules.json").write_text(_json.dumps([
-        {"category": "Revenus", "subcategory": "Salaire / clients",
-         "pattern": "Employeur Test"},
-        {"category": "Logement", "subcategory": "Loyer / régie",
-         "pattern": "Regie Test"},
-    ], ensure_ascii=False, indent=1), encoding="utf-8")
-
-    app = create_app(ledger_copy)
-    with app.test_client() as c:
-        body = text(c.get("/reclasser"))
-        assert "Règles personnelles" in body
-        assert "data/local_rules.json" in body
-        assert "gitignoré" in body
-        assert "Employeur Test" in body
-        assert "Regie Test" in body
-        assert "Salaire / clients" in body
-
-
-def test_local_rules_invalid_pattern_rerenders_and_keeps_the_value(
-        tmp_path_factory, ledger_file):
-    """An unterminated regex is not silently dropped: the page comes back
-    with the error stated, the typed pattern kept, and the file untouched."""
-    import json as _json
-
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("lrinvalid")
-    ledger_copy = workdir / "ledger.json"
-    ledger_copy.write_bytes(ledger_file.read_bytes())
-    rules_path = workdir / "local_rules.json"
-    original = _json.dumps([
-        {"category": "Revenus", "subcategory": "", "pattern": "Employeur Test"},
-    ], ensure_ascii=False, indent=1)
-    rules_path.write_text(original, encoding="utf-8")
-
-    app = create_app(ledger_copy)
-    with app.test_client() as c:
-        response = c.post("/reclasser", data={
-            "action": "lr-add", "pattern": "(", "category": "Revenus",
-            "subcategory": "Salaire / clients"})
-        body = text(response)
-        assert response.status_code == 200
-        assert "Vérifiez les champs suivants" in body
-        assert "Motif invalide" in body
-        assert 'href="#lr-pattern"' in body
-        field = re.search(r'<input[^>]*id="lr-pattern"[^>]*>', body).group(0)
-        assert 'aria-invalid="true"' in field
-        assert 'value="("' in field
-        assert rules_path.read_text(encoding="utf-8") == original
-
-
-def test_local_rules_reject_a_pattern_that_matches_everything(
-        tmp_path_factory, ledger_file):
-    """`|` and `a*` compile fine but match the empty string, hence every
-    transaction: one keystroke would silently reclassify the whole ledger
-    into a single category. The page must refuse them."""
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("lrempty")
-    ledger_copy = workdir / "ledger.json"
-    ledger_copy.write_bytes(ledger_file.read_bytes())
-    rules_path = workdir / "local_rules.json"
-    rules_path.write_text("[]", encoding="utf-8")
-
-    app = create_app(ledger_copy)
+def test_a_pattern_that_matches_everything_is_refused(app):
+    """`|` and `a*` compile but match the empty string, hence every
+    transaction: one keystroke would reclassify the whole ledger."""
+    _rules(app).write_text("[]", encoding="utf-8")
     with app.test_client() as c:
         for evil in ("|", "a*", ".*", "()"):
-            response = c.post("/reclasser", data={
-                "action": "lr-add", "pattern": evil,
-                "category": "Logement", "subcategory": ""})
-            body = text(response)
-            assert response.status_code == 200, evil
-            assert "ne doit pas matcher une chaîne vide" in body, evil
-        assert rules_path.read_text(encoding="utf-8").strip() == "[]"
+            response = c.post("/api/corrections", json={"action": "lr-add", "pattern": evil,
+                                                        "category": "Logement"})
+            assert "chaîne vide" in response.get_json()["errors"]["lr-pattern"], evil
+    assert _rules(app).read_text(encoding="utf-8").strip() == "[]"
 
 
-def test_local_rules_require_a_known_category(tmp_path_factory, ledger_file):
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("lrcategory")
-    ledger_copy = workdir / "ledger.json"
-    ledger_copy.write_bytes(ledger_file.read_bytes())
-
-    app = create_app(ledger_copy)
+def test_a_personal_rule_needs_a_known_category(app):
     with app.test_client() as c:
-        body = text(c.post("/reclasser", data={
-            "action": "lr-add", "pattern": "Employeur Test",
-            "category": "", "subcategory": ""}))
-        assert "La catégorie est requise." in body
-        assert 'href="#lr-category"' in body
-        assert not (workdir / "local_rules.json").exists()
-
-        body = text(c.post("/reclasser", data={
-            "action": "lr-add", "pattern": "Employeur Test",
-            "category": "Catégorie Inventée", "subcategory": ""}))
-        assert "Catégorie inconnue." in body
-        assert not (workdir / "local_rules.json").exists()
+        missing = c.post("/api/corrections", json={"action": "lr-add", "pattern": "Employeur Test",
+                                                   "category": ""}).get_json()
+        assert missing["errors"]["lr-category"] == "La catégorie est requise."
+        unknown = c.post("/api/corrections", json={"action": "lr-add", "pattern": "Employeur Test",
+                                                   "category": "Catégorie Inventée"}).get_json()
+        assert unknown["errors"]["lr-category"] == "Catégorie inconnue."
+    assert not _rules(app).exists()
 
 
-def test_local_rules_add_persists_and_redirects(tmp_path_factory, ledger_file):
-    """A valid rule is written next to the ledger and the page redirects
-    (PRG) -- the next render lists it."""
-    import json as _json
-
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("lradd")
-    ledger_copy = workdir / "ledger.json"
-    ledger_copy.write_bytes(ledger_file.read_bytes())
-
-    app = create_app(ledger_copy)
+def test_a_personal_rule_is_added_and_removed(app):
+    rule = {"category": "Revenus", "subcategory": "Salaire / clients", "pattern": "Employeur Test"}
     with app.test_client() as c:
-        response = c.post("/reclasser", data={
-            "action": "lr-add", "pattern": "Employeur Test",
-            "category": "Revenus", "subcategory": "Salaire / clients"})
-        assert response.status_code == 302
-        assert response.headers["Location"].endswith("/reclasser")
-
-        payload = _json.loads(
-            (workdir / "local_rules.json").read_text(encoding="utf-8"))
-        assert {"category": "Revenus", "subcategory": "Salaire / clients",
-                "pattern": "Employeur Test"} in payload
-        assert "Employeur Test" in text(c.get("/reclasser"))
-
-
-def test_local_rules_delete_removes_the_rule(tmp_path_factory, ledger_file):
-    import json as _json
-
-    from pms.web import create_app
-
-    workdir = tmp_path_factory.mktemp("lrdelete")
-    ledger_copy = workdir / "ledger.json"
-    ledger_copy.write_bytes(ledger_file.read_bytes())
-    rules_path = workdir / "local_rules.json"
-    rules_path.write_text(_json.dumps([
-        {"category": "Revenus", "subcategory": "Salaire / clients",
-         "pattern": "Employeur Test"},
-    ], ensure_ascii=False, indent=1), encoding="utf-8")
-
-    app = create_app(ledger_copy)
-    with app.test_client() as c:
-        assert "Employeur Test" in text(c.get("/reclasser"))
-        response = c.post("/reclasser", data={
-            "action": "lr-delete", "pattern": "Employeur Test",
-            "category": "Revenus", "subcategory": "Salaire / clients"})
-        assert response.status_code == 302
-        assert _json.loads(rules_path.read_text(encoding="utf-8")) == []
-        assert "Employeur Test" not in text(c.get("/reclasser"))
+        assert c.post("/api/corrections", json={"action": "lr-add", **rule}).status_code == 200
+        assert rule in json.loads(_rules(app).read_text(encoding="utf-8"))
+        assert c.post("/api/corrections", json={"action": "lr-delete", **rule}).status_code == 200
+    assert json.loads(_rules(app).read_text(encoding="utf-8")) == []
 
 
 def test_the_store_fingerprint_tracks_the_local_rules_file(tmp_path):
@@ -257,16 +176,42 @@ def test_the_store_fingerprint_tracks_the_local_rules_file(tmp_path):
     assert store._fingerprint() != before
 
 
-def test_corrections_are_grouped_by_kind_and_long_groups_fold(tmp_path_factory,
-                                                              ledger_file):
-    """228 corrections in one table were sixteen screens. One group per kind,
-    with its count; a group past ten rows starts folded."""
-    app = corrected_ledger(tmp_path_factory, ledger_file, pins=12)
-    with app.test_client() as c:
-        body = c.get("/reclasser").get_data(as_text=True)
-    groups = {kind: bool(opened) for opened, kind in re.findall(
-        r'<details class="fold group-fold"( open)? data-group="(\w+)"', body)}
-    assert groups == {"rule": True, "pin": False, "alias": True}
-    assert "Épingles <span class=\"muted num\">(12)</span>" in body
-    # The filter only makes sense with JavaScript, which reveals it.
-    assert re.search(r'<div class="field mb-3" hidden data-filter-wrap>', body)
+def test_a_rule_is_edited_in_place_and_the_edit_undone(tmp_path_factory, ledger_file):
+    """An edit keeps the rule's reach; its undo puts the old category back.
+    A delete answers with the body that restores it, and a merge with the
+    one that removes it."""
+    import shutil
+
+    from pms.web import create_app
+    work = tmp_path_factory.mktemp("edit") / "ledger.json"
+    shutil.copy(ledger_file, work)
+    c = create_app(work).test_client()
+    H = {"Origin": "http://localhost"}
+    store_ = c.application.extensions["pms_store"]
+    store_.overrides.rule("Coop City Neuchâtel", category="Shopping")
+    store_.overrides.save()
+    store_.invalidate()
+
+    r = c.post("/api/corrections", json={"action": "edit", "kind": "rule", "match": "Coop City Neuchâtel",
+                                         "mode": "exact", "category": "Loisirs & voyages"}, headers=H)
+    assert r.status_code == 200
+    undo = r.get_json()["undo"]
+    rules = c.get("/api/corrections").get_json()["entries"]
+    assert next(e for e in rules if e["match"] == "Coop City Neuchâtel")["category"] == "Loisirs & voyages"
+    assert c.post("/api/corrections", json=undo, headers=H).status_code == 200
+    rules = c.get("/api/corrections").get_json()["entries"]
+    assert next(e for e in rules if e["match"] == "Coop City Neuchâtel")["category"] == "Shopping"
+
+    r = c.post("/api/corrections", json={"action": "delete", "kind": "rule", "match": "Coop City Neuchâtel",
+                                         "mode": "exact"}, headers=H)
+    assert not any(e["kind"] == "rule" for e in c.get("/api/corrections").get_json()["entries"])
+    c.post("/api/corrections", json=r.get_json()["undo"], headers=H)
+    assert any(e["kind"] == "rule" for e in c.get("/api/corrections").get_json()["entries"])
+
+    r = c.post("/api/corrections", json={"action": "merge", "prefix": "Coop", "canonical": "Coop"}, headers=H)
+    data = c.get("/api/corrections").get_json()
+    assert not any(h["canonical"] == "Coop" for h in data["merges"])
+    c.post("/api/corrections", json=r.get_json()["undo"], headers=H)
+    assert not any(e["kind"] == "alias" for e in c.get("/api/corrections").get_json()["entries"])
+    assert c.post("/api/corrections", json={"action": "edit", "kind": "rule", "match": "nobody",
+                                            "category": "Shopping"}, headers=H).status_code == 404

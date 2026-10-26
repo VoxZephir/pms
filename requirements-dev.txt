@@ -1,8 +1,0 @@
-# Dev tooling. Install with:  .venv\Scripts\pip install -r requirements-dev.txt
--r requirements.txt
-pytest==9.0.1
-# Run by tests/test_lint.py, so its rules hold without anyone remembering it.
-ruff==0.16.8
-# Drives the installed Edge or Chrome for tests/test_browser.py -- no
-# `playwright install`, no browser download.
-playwright==1.63.0

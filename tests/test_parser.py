@@ -133,11 +133,14 @@ def test_amounts_agree_with_the_stated_totals(real_statement):
 
 
 def test_chf_conversion_ties_out_to_the_closing_balance(real_statement):
-    """opening + income - spending must land exactly on the printed closing balance.
+    """opening + income - spending + moves must land exactly on the printed
+    closing balance.
 
     This is what makes the CHF conversion trustworthy rather than approximate:
     foreign purchases are scaled against the conversions that funded them, and
     the proof is that the reference account still adds up to the centime.
+    Money sent to one's own accounts (a Revolut top-up) is neither spent nor
+    earned, but it did leave this one.
     """
     classify_all(real_statement.transactions)
     analysis.annotate_chf(real_statement)
@@ -145,7 +148,9 @@ def test_chf_conversion_ties_out_to_the_closing_balance(real_statement):
     reference = real_statement.reference_currency
     account = next(a for a in real_statement.accounts if a.currency == reference)
     net = (sum(t.amount_chf for t in analysis.income(real_statement))
-           - sum(abs(t.amount_chf) for t in analysis.spending(real_statement)))
+           - sum(abs(t.amount_chf) for t in analysis.spending(real_statement))
+           + sum(t.amount_chf for t in real_statement.transactions
+                 if analysis.is_internal(t) and not analysis.is_fx_leg(t)))
 
     assert account.opening_balance + net == pytest.approx(
         account.closing_balance, abs=0.01)

@@ -1,341 +1,243 @@
-"""/previsions: the wealth curve -- tax views, the band, volatility, the
-log axis, the month table."""
+"""The forecast's net worth: the two sides of the wealth tax, the band and
+its volatility, the measured half joined to the projected one."""
 
 from __future__ import annotations
 
-import re
+import json
 
-from webhelpers import chart_data, plans_path, savings_snapshots, text
+import pytest
+from webhelpers import api, plans_path, savings_snapshots
 
 from pms import plans
 
 
-def test_the_wealth_panel_splits_on_the_wealth_tax(client):
-    """A pillar 3a sits outside taxable wealth until it is drawn, so the same
-    money has two honest readings. Buttons, not a hidden default -- and the
-    choice lives in the URL like every other view switch."""
-    ibkr_path, finp_path = savings_snapshots(client)
-    try:
-        body = text(client.get("/previsions"))
-        assert 'aria-label="Portée fiscale du patrimoine"' in body
-        for label in ("Tout", "Imposable", "Hors impôt"):
-            assert label in body
-
-        taxable = text(client.get("/previsions?wealth=taxable"))
-        # The active view is the marked one, and the default drops its key
-        # from the URL rather than spelling out `wealth=all`.
-        assert re.search(r'<a class="on" href="/previsions\?wealth=taxable"\s*'
-                         r'aria-current="page"', taxable)
-        assert 'href="/previsions"' in taxable
-        assert 'href="/previsions?wealth=sheltered"' in taxable
-        assert "l'impôt sur la fortune atteint" in taxable
-
-        sheltered = text(client.get("/previsions?wealth=sheltered"))
-        assert "hors fortune imposable" in sheltered
-        # The sheltered pocket holds no current account, so its curve must be
-        # the smaller of the two -- if the cash leaked in they would match.
-        assert taxable != sheltered
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
+@pytest.fixture
+def pockets(client):
+    paths = savings_snapshots(client)
+    plan = plans_path(client)
+    plan.unlink(missing_ok=True)
+    yield plan
+    plan.unlink(missing_ok=True)
+    for p in paths:
+        p.unlink(missing_ok=True)
 
 
-def test_an_unknown_wealth_view_falls_back_instead_of_failing(client):
-    assert client.get("/previsions?wealth=nonsense").status_code == 200
+def _wealth(client, query: str = "") -> dict:
+    return api(client, f"/api/previsions{'?' + query if query else ''}")
 
 
-def test_the_rate_field_exists_with_or_without_a_brokerage_snapshot(client):
-    """It renders inside the net-worth card when there is one and in the plan
-    section otherwise -- exactly once either way, or the id would be duplicated
-    and the label would point at the wrong field."""
-    body = text(client.get("/previsions"))
-    assert body.count('id="plan-rate"') == 1
-    assert "placements seuls" in body
-    assert 'id="plan-vol"' in body
-    assert body.count('id="scenario-select"') == 1
-    # The barème fold's summary is the heading, present exactly once either
-    # way -- and closed by default.
-    assert body.count("Rendement et volatilité supposés") == 1
-    assert '<details class="scenario-block mb-3" id="plan-rate">' in body
-    assert '<details class="scenario-block mb-3" id="plan-rate" open>' not in body
-
-    ibkr_path, finp_path = savings_snapshots(client)
-    try:
-        body = text(client.get("/previsions"))
-        assert body.count('id="plan-rate"') == 1
-        assert 'id="plan-vol"' in body
-        assert body.count('id="scenario-select"') == 1
-        assert body.count("Rendement et volatilité supposés") == 1
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
+def test_no_net_worth_without_the_pockets(client):
+    """Without them the curve would just be the cash line above it."""
+    assert _wealth(client)["wealth"] is None
 
 
-def test_the_wealth_axis_switches_to_log(client):
-    ibkr_path, finp_path = savings_snapshots(client)
-    try:
-        body = text(client.get("/previsions?yscale=log"))
-        assert 'href="/previsions?yscale=log"' in body
-        assert 'href="/previsions"' in body  # linear drops its key
-        # The chart's y axis is really log: its ticks sit on a 1-2-5 grid.
-        from pms.web import charts
-        chart = charts.wealth_chart(
-            [{"total": 1000.0, "label": "a"}, {"total": 10000.0, "label": "b"}],
-            {"rows": [{"total": 100000.0, "high": 120000.0, "low": 80000.0,
-                       "label": "c"}]},
-            yscale="log")
-        assert chart["yscale"] == "log"
-        assert 2 <= len(chart["ticks"]) <= 5
-        ys = [t["y"] for t in chart["ticks"]]
-        assert all(a > b for a, b in zip(ys, ys[1:]))  # top to bottom
-        for t in chart["ticks"]:
-            value = t["value"]
-            mantissa = value / 10 ** (__import__("math").floor(
-                __import__("math").log10(value)))
-            assert abs(mantissa - round(mantissa)) < 1e-9
-            assert round(mantissa) in (1, 2, 5), t["value"]
-        # A range narrower than a decade can fall between the grid values:
-        # the axis must still have references.
-        chart = charts.wealth_chart(
-            [{"total": 150000.0, "label": "a"},
-             {"total": 152000.0, "label": "b"}],
-            {"rows": [{"total": 160000.0, "high": 165000.0, "low": 155000.0,
-                       "label": "c"}]},
-            yscale="log")
-        assert len(chart["ticks"]) >= 2
-        # A non-positive value makes the mode fall back to linear, honestly.
-        chart = charts.wealth_chart(
-            [{"total": 1000.0, "label": "a"}, {"total": 0.0, "label": "b"}],
-            {"rows": [{"total": 100000.0, "high": 120000.0, "low": 80000.0,
-                       "label": "c"}]},
-            yscale="log")
-        assert chart["yscale"] == "linear"
-        assert client.get("/previsions?yscale=nonsense").status_code == 200
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
+def test_the_net_worth_splits_on_the_wealth_tax(client, pockets):
+    """A pillar 3a sits outside taxable wealth until it is drawn: the same
+    money has two honest readings, chosen in the URL."""
+    views = {v["id"]: v for v in _wealth(client)["wealth_views"]}
+    assert set(views) == {"all", "taxable", "sheltered"}
+    every = _wealth(client)["wealth"]
+    taxable = _wealth(client, "wealth=taxable")["wealth"]
+    sheltered = _wealth(client, "wealth=sheltered")["wealth"]
+    # The sheltered pocket holds no current account: if the cash leaked in,
+    # the two curves would match.
+    assert sheltered["observed"] != taxable["observed"]
+    assert sheltered["include_cash"] is False and taxable["include_cash"] is True
+    assert every["observed"][-1]["total"] > sheltered["observed"][-1]["total"]
+    assert _wealth(client, "wealth=nonsense")["wealth_view"] == "all"
 
 
-def test_the_wealth_tooltip_payload_carries_the_band(client):
-    """The tooltip prints the ±1σ edges, so the payload must carry them --
-    observed points have none, projected ones do, each within its own band."""
-    ibkr_path, finp_path = savings_snapshots(client)
+def test_the_measured_half_joins_the_projection(client, pockets):
+    """The last measured level is where the projection starts: one quantity,
+    measured then assumed."""
+    wealth = _wealth(client)["wealth"]
+    assert len(wealth["observed"]) >= 2
+    assert wealth["start"] == pytest.approx(wealth["observed"][-1]["total"], abs=1)
+    assert len(wealth["rows"]) == len(_wealth(client)["projection"]["rows"])
+
+
+def test_the_band_holds_each_projected_month(client, pockets):
+    _edit_vol(client, "12")
+    rows = _wealth(client)["wealth"]["rows"]
+    assert all(r["low"] <= r["total"] <= r["high"] for r in rows)
+    assert rows[-1]["high"] - rows[-1]["low"] > rows[0]["high"] - rows[0]["low"]  # widens in √t
+
+
+def test_a_declared_zero_volatility_draws_no_band(client, pockets):
+    _edit_vol(client, "0")
+    wealth = _wealth(client)["wealth"]
+    assert wealth["vol"] == 0.0 and wealth["vol_source"] == "declared"
+    assert all(r["low"] == r["high"] for r in wealth["rows"])
+
+
+def test_the_declared_volatility_replaces_the_measured_one(client, pockets):
+    _edit_vol(client, "12")
+    assert plans.Plan.load(pockets).vol == 0.12
+    wealth = _wealth(client)["wealth"]
+    assert (wealth["vol"], wealth["vol_source"]) == (0.12, "declared")
+    _edit_vol(client, "")
+    assert plans.Plan.load(pockets).vol is None
+    assert _wealth(client)["wealth"]["vol_source"] == "measured"
+
+
+def test_a_bad_volatility_is_refused(client):
     path = plans_path(client)
     path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "vol", "amount": "12"})
-        body = text(client.get("/previsions"))
-        pts = chart_data(body)["wealth"]["series"]["1"]["pts"]
-        # The field count is the payload's own discriminator: observed points
-        # have no band, projected ones do. A payload that lost the split must
-        # fail, not pass vacuously.
-        observed = [p for p in pts if len(p) == 3]
-        projected = [p for p in pts if len(p) == 5]
-        assert observed and projected
-        assert all(len(p) == 3 for p in observed)
-        assert all(len(p) == 5 for p in projected)
-        assert all(p[3] <= p[2] <= p[4] for p in projected)
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
-        path.unlink(missing_ok=True)
+    assert "en %" in _edit_vol(client, "beaucoup")["errors"]["plan-vol"]
+    assert _edit_vol(client, "-5")["errors"]["plan-vol"] == "La volatilité est entre 0 % et 100 %."
+    assert _edit_vol(client, "150")["errors"]["plan-vol"] == "La volatilité est entre 0 % et 100 %."
+    assert not path.exists()
 
 
-def test_a_declared_zero_volatility_payload_has_degenerate_bands(client):
-    ibkr_path, finp_path = savings_snapshots(client)
-    path = plans_path(client)
+def test_a_legacy_rate_file_still_compounds(client, pockets):
+    """A pre-schedule plans.json carrying only `rate` compounds at that rate:
+    the page must not say the pockets are frozen while the curve rises."""
+    pockets.write_text(json.dumps({"version": plans.VERSION, "rate": 0.05}), encoding="utf-8")
+    assert _wealth(client)["wealth"]["rate"] == pytest.approx(0.05)
+
+
+def test_the_log_axis_is_asked_for_in_the_url(client, pockets):
+    """The browser falls back to linear when a value is not positive; the
+    server only carries the choice, validated."""
+    assert _wealth(client, "yscale=log")["yscale"] == "log"
+    assert _wealth(client, "yscale=nonsense")["yscale"] == "linear"
+
+
+def _edit_vol(client, amount: str) -> dict:
+    return client.post("/api/previsions", json={"action": "vol", "amount": amount}).get_json()
+
+
+def _post(client, body: dict) -> None:
+    assert client.post("/api/previsions", json=body).status_code == 200
+
+
+@pytest.mark.parametrize("view", ["all", "taxable", "sheltered"])
+def test_the_pockets_add_up_to_the_curve(client, pockets, view):
+    """Split by pocket and by asset class, the projection is the same net
+    worth, month by month; the flows explain the change to the centime."""
+    _post(client, {"action": "rate", "months": ["12"], "rates": ["6"]})
+    _post(client, {"action": "contrib", "amount": "500", "every": "month",
+                   "months": "12", "pocket": "3a", "start": ""})
+    _post(client, {"action": "contrib", "amount": "300", "every": "month",
+                   "months": "12", "pocket": "taxable", "start": ""})
+    wealth = _wealth(client, "" if view == "all" else f"wealth={view}")["wealth"]
+    parts = wealth["parts"]
+    for row, by_pocket, by_class in zip(wealth["rows"], parts["pockets"]["projected"],
+                                        parts["classes"]["projected"]):
+        assert sum(by_pocket.values()) == pytest.approx(row["total"], abs=0.05)
+        assert sum(by_class.values()) == pytest.approx(row["total"], abs=0.05)
+    for seen, by_pocket in zip(wealth["observed"], parts["pockets"]["observed"]):
+        assert sum(by_pocket.values()) == pytest.approx(seen["total"], abs=0.05)
+    assert parts["start"] == pytest.approx(wealth["start"], abs=0.05)
+    assert parts["end"] == pytest.approx(wealth["final"]["total"], abs=0.05)
+    assert parts["start"] + sum(f["amount"] for f in parts["flows"]) == \
+        pytest.approx(parts["end"], abs=0.05)
+    table = {t["key"]: t for t in parts["table"]}
+    for t in table.values():
+        assert t["start"] + t["paid"] + t["growth"] == pytest.approx(t["end"], abs=0.05) \
+            or t["key"] == "swiss"
+    if view != "sheltered":
+        # The cash pays both series; only the one heading for a pocket of the
+        # view stays in it.
+        assert table["swiss"]["paid"] == pytest.approx(-9_600 if view == "all" else -3_600, abs=0.05)
+    if view == "taxable":
+        assert any(f["key"] == "left" and f["amount"] == pytest.approx(-6_000) for f in parts["flows"])
+    if view == "sheltered":
+        assert table["finp"]["paid"] == pytest.approx(6_000)
+
+
+# --- unlisted shares and a barème per pocket ------------------------------------------
+
+SHARE = {"holdings": [{"id": "s1", "name": "Port Exemple SA", "quantity": 1, "payer": "Club Nautique Exemple",
+                       "withholding": True, "since": 2025, "values": {"2025": 1000, "2026": 1250}}]}
+
+
+@pytest.fixture
+def share(client, pockets):
+    path = client.application.extensions["pms_store"].path.with_name("holdings.json")
+    path.write_text(json.dumps(SHARE), encoding="utf-8")
+    yield path
     path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={"action": "vol", "amount": "0"})
-        pts = chart_data(text(client.get("/previsions")))["wealth"]["series"]["1"]["pts"]
-        projected = [p for p in pts if len(p) == 5]
-        assert projected
-        assert all(p[3] == p[4] for p in projected)
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
-        path.unlink(missing_ok=True)
 
 
-def test_the_month_table_folds_by_year_and_decade(client):
-    """A long horizon must not mean endless scrolling: the first year opens,
-    the rest fold -- and beyond four years, decades wrap the years."""
-    body = text(client.get("/previsions"))
-    assert '<details class="month-group year" open>' in body
-    assert body.count('class="month-group year"') >= 2
-    # Four years stay plain years; five fold under decades.
-    body = text(client.get("/previsions?months=36"))
-    assert 'class="month-group decade"' not in body
-    assert body.count('class="month-group year"') >= 2
-    body = text(client.get("/previsions?months=48"))
-    assert body.count('class="month-group decade"') >= 1
-    body = text(client.get("/previsions?months=480"))
-    assert "Années 202" in body  # a decade wrapper exists
-    assert body.count('class="month-group decade"') >= 2
-    assert '<details class="month-group year" open>' in body
+def _edit(client, body: dict) -> dict:
+    return client.post("/api/previsions", json=body).get_json()
 
 
-def test_the_month_summary_counts_kinds_honestly(client):
-    """A programmed series is not a "ponctuel": the folded summary must use
-    the same vocabulary as the chips."""
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "contrib", "amount": "1000", "every": "month",
-            "months": "24", "pocket": "3a", "start": ""})
-        body = text(client.get("/previsions"))
-        # The monthly series fires seven times in 2026 (June..December) and
-        # five in 2027 -- the summary calls them versements, never ponctuels.
-        assert "7 versements programmés" in body
-        assert "5 versements programmés" in body
-        assert "versements programmés" in body and "ponctuel" not in \
-            body[body.index("7 versements"):body.index("5 versements")]
-    finally:
-        path.unlink(missing_ok=True)
+def _pocket_rates(wealth: dict, key: str) -> dict | None:
+    return next((p for p in wealth["pockets_rates"] if p["id"] == key), None)
 
 
-def test_the_folded_wealth_columns_pair_row_by_row(client):
-    """Each month row carries its wealth partner server-side: the pairing
-    must render, cell by cell, not just somewhere on the page."""
-    ibkr_path, finp_path = savings_snapshots(client)
-    try:
-        body = text(client.get("/previsions"))
-        assert '<th class="r">Placements</th>' in body
-        assert '<th class="r">Patrimoine</th>' in body
-        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', body, re.S)
-        wealth_cells = [re.search(r'<td class="r num">([^<]+)</td>\s*'
-                                  r'<td class="r num">([^<]+)</td>', r)
-                        for r in rows if 'Placements' not in r]
-        cells = [m for m in wealth_cells if m]
-        assert cells, "no month row carries the wealth columns"
-        # The first projected month's invested value must equal the pocket
-        # start plus the first step -- a shifted pairing would break this.
-        invested = float(cells[0].group(1).replace("’", "").replace(" ", ""))
-        assert invested > 0
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
+def test_an_unlisted_share_counts_in_the_net_worth_at_its_declared_value(client, share):
+    on, off = _wealth(client)["wealth"], _wealth(client, "titres=0")["wealth"]
+    assert on["observed"][-1]["total"] == pytest.approx(off["observed"][-1]["total"] + 1250, abs=0.01)
+    assert on["pockets_start"]["titres"] == 1250 and "titres" not in off["pockets_start"]
+    taxable = _wealth(client, "wealth=taxable")["wealth"]
+    assert taxable["pockets_start"]["titres"] == 1250
+    assert "titres" not in _wealth(client, "wealth=sheltered")["wealth"]["pockets_start"]
+    # Held at its value, even under a common return: nobody chose one for it.
+    _edit(client, {"action": "rate", "months": ["12"], "rates": ["10"]})
+    grown = _wealth(client)["wealth"]
+    titres = _pocket_rates(grown, "titres")
+    assert titres["own"] and titres["rate_segments"] == [] and titres["vol_effective"] == 0.0
+    assert grown["parts"]["table"][-1]["key"] == "titres"
+    row = next(t for t in grown["parts"]["table"] if t["key"] == "titres")
+    assert (row["start"], row["growth"], row["end"]) == (1250, 0.0, 1250)
 
 
-def test_the_tooltip_band_wiring_exists_in_the_static_assets(client):
-    """The band row is rendered by JS from the payload -- no JS test harness
-    exists, so the wiring is pinned by probing the static files, the same
-    way the keyboard-focus CSS rule is."""
-    js = client.get("/static/app.js").get_data(as_text=True)
-    assert "function crosshair(svgId, hitId, crossId, series, geom, title, fmt, bandFmt)" in js
-    assert "bandFmt(p[3], p[4])" in js
-    assert "p.length > 3 && p[4] > p[3]" in js
-    css = client.get("/static/app.css").get_data(as_text=True)
-    assert ".t-band" in css
+def test_a_pocket_can_follow_the_common_barème_or_its_own(client, share):
+    _edit(client, {"action": "rate", "months": ["12"], "rates": ["4"]})
+    assert _edit(client, {"action": "pocket-common", "rate_pocket": "titres"})["ok"]
+    assert not _pocket_rates(_wealth(client)["wealth"], "titres")["own"]
+    # The 3a on a barème of its own: the copy starts from the common one.
+    _edit(client, {"action": "pocket-own", "rate_pocket": "finp"})
+    finp = _pocket_rates(_wealth(client)["wealth"], "finp")
+    assert finp["own"] and finp["rate_segments"] == [[12, 0.04]]
+    _edit(client, {"action": "rate", "rate_pocket": "finp", "months": ["24"], "rates": ["-20"]})
+    _edit(client, {"action": "vol", "rate_pocket": "finp", "amount": "60"})
+    wealth = _wealth(client)["wealth"]
+    finp = _pocket_rates(wealth, "finp")
+    assert finp["rate_segments"] == [[24, -0.2]] and finp["vol_effective"] == 0.6
+    plan = plans.Plan.load(plans_path(client))
+    assert plan.rate_segments == [(12, 0.04)] and plan.vol is None   # the common one untouched
+    table = {t["key"]: t for t in wealth["parts"]["table"]}
+    assert table["finp"]["growth"] < 0 < table["ibkr"]["growth"]
+    # The curve is the pockets added up, to the centime.
+    final = wealth["rows"][-1]
+    pockets = sum(t["end"] for k, t in table.items() if k != "swiss")
+    assert final["invested"] == pytest.approx(pockets, abs=0.05)
+    # Back to the common barème.
+    _edit(client, {"action": "pocket-common", "rate_pocket": "finp"})
+    assert not _pocket_rates(_wealth(client)["wealth"], "finp")["own"]
 
 
-def test_a_legacy_rate_file_draws_its_curve_and_says_so(client):
-    """A pre-schedule plans.json carrying only `rate` must compound at that
-    rate -- and the note must not claim the pockets are frozen while the
-    curve rises next to it."""
-    import json
-
-    ibkr_path, finp_path = savings_snapshots(client)
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        path.write_text(json.dumps({
-            "version": plans.VERSION, "rate": 0.05}), encoding="utf-8")
-        body = text(client.get("/previsions"))
-        assert "selon votre barème" in body
-        assert "figés à leur dernière valeur" not in body
-    finally:
-        path.unlink(missing_ok=True)
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
+def test_a_market_scenario_and_the_years_apply_to_one_pocket(client, share):
+    _edit(client, {"action": "scenario-apply", "scenario": "builtin:bad-year", "rate_pocket": "ibkr"})
+    ibkr = _pocket_rates(_wealth(client)["wealth"], "ibkr")
+    assert ibkr["own"] and ibkr["rate_segments"] == [[12, -0.17], [48, 0.04]]
+    assert plans.Plan.load(plans_path(client)).rate_segments == []
+    years = ibkr["rate_years"]
+    status = client.post("/api/previsions", json={"action": "rate-years", "rate_pocket": "ibkr",
+                                                  "rates": ["7,5"] * len(years)}).status_code
+    assert status == 200
+    assert _pocket_rates(_wealth(client)["wealth"], "ibkr")["rate_segments"] == [[sum(y["months"] for y in years), 0.075]]
 
 
-def test_previsions_fragment_and_full_page_agree(client):
-    """The swap fetches ?fragment=1 and replaces <main> in place; the fragment
-    must be exactly the full page's main content, or the two paths drift."""
-    for url in ("/previsions", "/previsions?wealth=taxable&months=24"):
-        full = text(client.get(url))
-        sep = "?" if "?" not in url else "&"
-        fragment = text(client.get(url + sep + "fragment=1"))
-        assert fragment.strip() in full, url
-    # The fragment must ship the crosshair payload, the Sommaire rail and the
-    # horizon control, or the swap loses them.
-    fragment = text(client.get("/previsions?fragment=1"))
-    assert 'id="chartData"' in fragment
-    assert '<nav class="toc"' in fragment
-    assert 'id="horizon-select"' in fragment
+def test_an_unknown_pocket_is_refused(client, pockets):
+    response = client.post("/api/previsions", json={"action": "rate", "rate_pocket": "maison",
+                                                    "months": ["12"], "rates": ["4"]})
+    assert response.status_code == 400 and "rate_pocket" in response.get_json()["errors"]
 
 
-def test_the_wealth_tooltip_payload_series_is_keyed_by_the_dot_slot(client):
-    """The crosshair looks series up as series[dot.dataset.slot]; a series key
-    the dot cannot reach renders a tooltip without its value. The wealth chart
-    dot carries data-slot=1, so the payload must carry a series keyed 1."""
-    ibkr_path, finp_path = savings_snapshots(client)
-    try:
-        body = text(client.get("/previsions"))
-        assert 'data-slot="1"' in body
-        data = chart_data(body)
-        assert data["wealth"]["series"]  # the wealth chart rendered
-        # json.dumps turns the int key into a string; the JS lookup coerces
-        # the dot's data-slot with +, so obj[1] and obj["1"] are the same key.
-        assert "1" in data["wealth"]["series"]
-        assert data["wealth"]["series"]["1"]["slot"] == 1
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
-
-
-def test_the_declared_volatility_replaces_the_measured_band(client):
-    ibkr_path, finp_path = savings_snapshots(client)
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        response = client.post("/previsions", data={"action": "vol", "amount": "12"})
-        assert response.status_code == 302
-        assert plans.Plan.load(path).vol == 0.12
-        body = text(client.get("/previsions"))
-        assert "déclarés par vous" in body
-        assert "12.0 %" in body
-
-        client.post("/previsions", data={"action": "vol", "amount": ""})
-        assert plans.Plan.load(path).vol is None
-        assert "mesurés sur" in text(client.get("/previsions"))
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
-        path.unlink(missing_ok=True)
-
-
-def test_a_bad_volatility_rerenders_with_the_error(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        body = text(client.post("/previsions", data={"action": "vol", "amount": "3,5"}))
-        assert "Utilisez le point décimal" in body
-        body = text(client.post("/previsions", data={"action": "vol", "amount": "-5"}))
-        assert "La volatilité est entre 0 % et 100 %." in body
-        assert '<details class="scenario-block mb-3" id="plan-rate" open>' in body
-        body = text(client.post("/previsions", data={"action": "vol", "amount": "150"}))
-        assert "La volatilité est entre 0 % et 100 %." in body
-        assert not path.exists()
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_a_declared_zero_volatility_draws_no_band(client):
-    ibkr_path, finp_path = savings_snapshots(client)
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={"action": "vol", "amount": "0"})
-        body = text(client.get("/previsions"))
-        assert "Déclaré : 0" in body
-        # No band polygon and no band note: a flat band has nothing to say.
-        assert '<polygon' not in body
-        assert "La zone est ±1 écart-type" not in body
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
-        path.unlink(missing_ok=True)
+def test_baseline_claude_sets_every_pocket_from_the_common_barème(client, share):
+    assert _edit(client, {"action": "scenario-apply", "scenario": "builtin:baseline-claude"})["ok"]
+    plan = plans.Plan.load(plans_path(client))
+    assert (plan.rate_segments, plan.vol) == ([(12, 0.04)], 0.12)
+    assert plan.own_rates("ibkr") == {"rate_segments": [(12, 0.08)], "vol": 0.23}
+    assert plan.own_rates("titres")["rate_segments"] == [(12, 0.12)]
+    # On one pocket, only that pocket's line.
+    _edit(client, {"action": "pocket-common", "rate_pocket": "finp"})
+    _edit(client, {"action": "scenario-apply", "scenario": "builtin:baseline-claude", "rate_pocket": "finp"})
+    assert plans.Plan.load(plans_path(client)).own_rates("finp") == {"rate_segments": [(12, 0.045)], "vol": 0.14}
+    card = next(s for s in _wealth(client)["builtin_scenarios"] if s["key"] == "baseline-claude")
+    assert {p["id"] for p in card["pockets"]} == set(plans.POCKET_KEYS)

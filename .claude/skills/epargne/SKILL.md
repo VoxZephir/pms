@@ -1,6 +1,6 @@
 ---
 name: epargne
-description: Mettre à jour les snapshots d'épargne hors relevé — IBKR (data/ibkr.json) et le 3a finpension (data/finpension.json) — avec le connecteur IBKR. À utiliser quand l'utilisateur demande si l'épargne est à jour, de recapturer IBKR ou le 3a, ou quand le panneau Épargne affiche « Snapshot en retard ».
+description: Mettre à jour les snapshots d'épargne hors relevé — IBKR (data/ibkr.json) et le 3a finpension (data/finpension.json) avec le connecteur IBKR, la crypto (data/crypto.json) et les repères (data/benchmarks.json) aux cours publics. À utiliser quand l'utilisateur demande si l'épargne est à jour, de recapturer IBKR, le 3a, la crypto ou les repères, ou quand le panneau Épargne affiche « Données en retard ».
 ---
 
 # Recapturer l'épargne
@@ -16,14 +16,41 @@ ne pas éditer les JSON à la main.
 .venv/Scripts/python -m pms --status
 ```
 
-La section « épargne » donne la dernière date de `nav`, `nav_daily` et de
-chaque série de cours du 3a. On ne récupère que ce qui vient après.
+La section « épargne » donne la dernière date de `nav`, `nav_daily`, de
+chaque série de cours du 3a, de la crypto et des repères. On ne récupère que
+ce qui vient après.
 
-## 2. Le connecteur
+## 2. Sans connecteur d'abord : `--refresh`
+
+```bash
+.venv/Scripts/python -m pms --refresh
+```
+
+IBKR par son service Flex si `data/ibkr_flex.json` existe, les repères, les
+indices du 3a (Yahoo) et la crypto, chaque étape indépendante. Si IBKR passe
+par Flex, les étapes 3 et 4 ne servent plus que pour ce que Flex ne donne pas
+(rien en routine) ; ne jamais demander le jeton à l'utilisateur, il le pose
+lui-même dans le fichier (`docs/epargne.md`). Les étapes une à une :
+
+```bash
+.venv/Scripts/python -m pms --ibkr
+.venv/Scripts/python -m pms --benchmarks
+.venv/Scripts/python -m pms --crypto
+```
+
+`--benchmarks` relit tout le catalogue depuis 2023 (dividendes réinvestis) ;
+un indice qui échoue garde sa série précédente et la commande sort en 1 —
+le dire. `--crypto` revalorise le dernier relevé de `inbox/revolut/crypto/`
+jusqu'à aujourd'hui et garde le calage du staking déjà posé. Si
+l'utilisateur donne les quantités lues dans l'app Revolut :
+`--crypto --crypto-qty ETH=…,SOL=…`.
+
+## 3. Le connecteur
 
 Il doit être connecté dans la session (outils `get_account_summary`, etc.).
 S'il manque ou demande une authentification, le dire à l'utilisateur
-(`/mcp`) et s'arrêter — ne jamais lui demander de code ou de jeton.
+(`/mcp`), rendre compte de l'étape 2, et s'arrêter là — ne jamais lui
+demander de code ou de jeton.
 
 Appels, tous en lecture seule — ne jamais appeler un outil qui crée un
 ordre, une alerte ou une watchlist :
@@ -56,8 +83,8 @@ Pièges connus :
   `ytd_pct` = dernier `cps` de `YTD` × 100.
 - **Les `nav` se prennent dans la série de performance** (`1Y`, `dates` / `nav`
   parallèles) : c'est la NAV exacte du courtier, quotidienne. Depuis le
-  02.10.2026 le snapshot en est fait à partir du 01.10.2025 ; l'ancienne
-  reconstruction (prix × ancres mensuelles) s'en écartait de 5 %.
+  02.10.2026 le snapshot en est fait sur toute l'année que la série couvre ;
+  l'ancienne reconstruction (prix × ancres mensuelles) s'en écartait de 5 %.
 
 ### Les versements
 
@@ -101,7 +128,7 @@ Si l'utilisateur a déposé un nouvel export « Transaction History » dans
 ```
 
 Il remplace les versements et les frais par ceux de l'export (complets
-depuis 2023) — dans ce cas, ne pas déclarer de `flows` à la main. La valeur
+depuis l'ouverture du compte) — dans ce cas, ne pas déclarer de `flows` à la main. La valeur
 d'avant la NAV quotidienne du courtier est reconstruite à partir de ses
 positions et de cours **hebdomadaires** (`prices` dans la capture :
 `get_price_history` du titre et de USD.CHF, `ONE_WEEK`, `FIVE_YEARS` ; les
@@ -110,7 +137,7 @@ dates et clôtures ensemble : un extrait à la main se décale d'une semaine
 sans qu'on le voie. Vérifier ensuite que la valeur reconstruite rejoint la
 NAV du courtier au raccord (à 0.1 % près).
 
-## 3. Écrire la capture et la fusionner
+## 4. Écrire la capture et la fusionner
 
 Écrire un JSON dans le scratchpad (jamais dans le dépôt), avec seulement les
 points postérieurs aux dates de l'étape 1 :
@@ -119,7 +146,7 @@ points postérieurs aux dates de l'étape 1 :
 {
   "ibkr": {
     "captured_at": "AAAA-MM-JJTHH:MM:SS",
-    "fx_chf_per_usd": 0.8206,
+    "fx_chf_per_usd": 0.8,
     "account": {"net_liquidation": 0, "equity_with_loan": 0, "buying_power": 0,
                 "total_cash": 0, "available_funds": 0, "initial_margin": 0},
     "cash": [{"currency": "USD", "amount": 0}, {"currency": "CHF", "amount": 0}],
@@ -150,7 +177,7 @@ déclarés à la main (`asset_split`, `geography`, `exposure`) sont gardés.
 Relancer la même capture ne change rien (seuls les points plus récents
 entrent).
 
-## 4. La valeur réelle du 3a
+## 5. La valeur réelle du 3a
 
 Si l'utilisateur donne la valeur lue dans l'app finpension :
 
@@ -160,16 +187,18 @@ Si l'utilisateur donne la valeur lue dans l'app finpension :
 
 La lecture précédente passe dans les observations (`yearly`) — sans ça la
 courbe se ré-ancre sur une lecture plus ancienne et saute d'un jour à l'autre.
-Sans valeur lue, les cours prolongés à l'étape 3 suffisent : le 3a est estimé
+Sans valeur lue, les cours prolongés à l'étape 4 suffisent : le 3a est estimé
 depuis la dernière lecture.
 
-## 5. Vérifier et rendre compte
+## 6. Vérifier et rendre compte
 
 - `python -m pms --status` : les séries vont jusqu'à la date attendue.
-- Le panneau Épargne n'affiche plus « Snapshot en retard » sur le mois en
-  cours (le fichier est relu à chaque requête, pas besoin de redémarrer).
+- Le panneau Épargne n'affiche plus « Données en retard » sur le mois en
+  cours, repères compris (les fichiers sont relus à chaque requête, pas
+  besoin de redémarrer).
 - La performance IBKR du panneau sur le mois écoulé = le `cps` d'IBKR sur la
   même période (à 0.1 point) ; un écart veut dire un versement non déclaré.
 - Rendre compte : valeur IBKR avant → après **en séparant versement et
   performance**, 3a avant → après (en disant si c'est une estimation ou une
-  lecture), et rien à committer (`data/` est gitignoré).
+  lecture), crypto avant → après, jusqu'où vont les repères, et rien à
+  committer (`data/` est gitignoré).

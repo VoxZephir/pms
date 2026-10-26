@@ -3,28 +3,32 @@
 The rest of the suite runs on a made-up statement (tests/synthetic.py) so that
 it runs anywhere. This file is what the made-up data cannot replace: the edge
 cases nobody thought to invent -- a month with almost no income, a payee
-printed five ways, more categories than hues. Every page must render on them,
-and the invariants the synthetic tests check must hold here too. Skipped when
-inbox/ holds no statement.
+printed five ways, more categories than hues. Every view's data must come
+out on them, as JSON a browser can parse, and the invariants the synthetic
+tests check must hold here too. Skipped when inbox/ holds no statement.
 """
 
 from __future__ import annotations
 
-import re
-
 import pytest
+from webhelpers import api
 
 from pms.web import create_app
 
-PAGES = [
-    "/?preset=all", "/?preset=12m", "/?preset=all&stack=bucket",
-    "/?preset=all&shares=income&smooth=6", "/?preset=12m&shares=spending",
-    "/?from=2026-05-01&to=2026-05-31",  # a month with a review to show
-    "/?from=2025-05-01&to=2025-05-31", "/?from=2025-05-01&to=2025-05-31&grain=day",
-    "/transactions", "/transactions?dir=out&sort=chf", "/reclasser",
-    "/previsions", "/analyse", "/analyse?year=2025",
+VIEWS = [
+    "/api/dashboard?preset=all", "/api/dashboard?preset=12m",
+    "/api/dashboard?preset=all&stack=bucket",
+    "/api/dashboard?preset=all&shares=income&smooth=6", "/api/dashboard?preset=12m&shares=spending",
+    "/api/dashboard?from=2026-05-01&to=2026-05-31",  # a month with a review to show
+    "/api/dashboard?from=2025-05-01&to=2025-05-31",
+    "/api/dashboard?from=2025-05-01&to=2025-05-31&grain=day",
+    "/api/transactions", "/api/transactions?dir=out&sort=chf",
+    "/api/savings?preset=all", "/api/savings?preset=12m&scale=index&perf=mwr",
+    "/api/savings?preset=all&split=asset", "/api/savings?preset=all&focus=ibkr&split=currency",
+    "/api/corrections", "/api/triage", "/api/imports", "/api/ai", "/api/ai/merchants",
+    "/api/previsions", "/api/previsions?months=480&yscale=log", "/api/previsions?wealth=taxable",
+    "/api/analyse", "/api/analyse?year=2025",
 ]
-EMPTY_COORDINATE = re.compile(r'\b(x|y|cx|cy|x1|y1|x2|y2|width|height)=""')
 
 
 @pytest.fixture(scope="module")
@@ -35,24 +39,35 @@ def real_client(real_ledger_file):
         yield client
 
 
-@pytest.mark.parametrize("url", PAGES)
-def test_every_page_renders_on_real_data(real_client, url):
-    response = real_client.get(url)
-    assert response.status_code == 200
-    body = response.get_data(as_text=True)
-    assert not EMPTY_COORDINATE.search(body)
-    assert "var(--s)" not in body and "var(--h)" not in body
+@pytest.mark.parametrize("url", VIEWS)
+def test_every_view_answers_on_real_data(real_client, url):
+    api(real_client, url)
 
 
-@pytest.mark.parametrize("url", ["/?from=2025-05-01&to=2025-05-31",
-                                 "/previsions", "/analyse"])
-def test_fragment_and_full_page_agree_on_real_data(real_client, url):
-    joiner = "&" if "?" in url else "?"
-    full = real_client.get(url).get_data(as_text=True)
-    fragment = real_client.get(f"{url}{joiner}fragment=1").get_data(as_text=True)
-    assert fragment.strip() in full
+def test_no_category_takes_a_ninth_hue_on_real_data(real_client):
+    """More categories than validated hues: the tail folds into `Autres`."""
+    data = api(real_client, "/api/dashboard?preset=all")
+    assert {c["slot"] for c in data["categories"]} <= set(range(8))
+    assert len(data["legend"]) <= 8
 
 
 def test_the_real_ledger_has_no_balance_break(real_ledger_file):
     from pms.ledger import Ledger
     assert Ledger.load(real_ledger_file).gaps() == []
+
+
+def test_the_watcher_knows_every_real_export_and_only_them():
+    """What the Downloads watcher would make of each file in inbox/: every
+    statement recognised by its own bank, the crypto statement by none."""
+    from conftest import ROOT
+
+    from pms import banks
+    inbox = ROOT / "inbox"
+    statements = sorted(inbox.glob("*.pdf"))
+    if not statements:
+        pytest.skip("no real statement in inbox/")
+    assert [banks.recognise(p) for p in statements] == ["*.pdf"] * len(statements)
+    for path in sorted((inbox / "revolut").glob("*.csv")):
+        assert banks.recognise(path) == "revolut/*.csv", path.name
+    for path in sorted((inbox / "revolut" / "crypto").glob("*.csv")):
+        assert banks.recognise(path) is None, path.name

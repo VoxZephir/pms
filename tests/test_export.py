@@ -145,7 +145,7 @@ def test_xlsx_dates_and_amounts_are_values_not_text(rows):
 def test_xlsx_header_row_names_the_same_columns_as_the_csv(rows):
     archive = zipfile.ZipFile(io.BytesIO(export.to_xlsx(rows[:3])))
     cells = _cells(archive)
-    header = [cells[f"{letter}1"] for letter in "ABCDEFGHI"]
+    header = [cells[f"{letter}1"] for letter in "ABCDEFGHIJ"]
     assert header == export.HEADERS
 
 

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PMS</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/static/favicon.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="apple-mobile-web-app-title" content="PMS">
+<meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+<script>
+  /* Before first paint: a dark-theme reader never sees a light flash. */
+  try {
+    var t = localStorage.getItem("pms-theme");
+    if (t) {
+      document.documentElement.setAttribute("data-theme", t);
+      document.querySelectorAll('meta[name="theme-color"]').forEach(function (m) {
+        m.content = t === "dark" ? "#0d0d0d" : "#f9f9f7";
+      });
+    }
+  } catch (e) {}
+</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

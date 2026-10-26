@@ -18,8 +18,8 @@ import re
 from pathlib import Path
 
 # How the statement prints a transfer to (or from) the brokerage. The first
-# one, on 24.09.2026, ended "the cash never moved, MWR = TWR": a
-# NAV that jumps by a deposit is not a return.
+# one ended "the cash never moved, MWR = TWR": a NAV that jumps by a
+# deposit is not a return.
 LEDGER_PAYEE = re.compile(r"interactive\s+brokers", re.IGNORECASE)
 
 
@@ -50,9 +50,10 @@ def load(path: Path | str) -> dict | None:
     # Before the broker's daily NAV (`nav_exact_from`), the value is rebuilt
     # from the exported transaction history -- holdings and cash, week by
     # week, at the weekly closes captured in `prices` (ibkr_history.rebuild;
-    # 0.02 % off the broker's own figure where both exist). It replaces the
-    # few monthly points captured before, which were a day off and missed
-    # everything before August 2025 -- the April 2025 crash included.
+    # a few hundredths of a percent off the broker's own figure where both
+    # exist). It replaces the few monthly points captured before, which were
+    # a day off and missed everything older than the connector's one year --
+    # the April 2025 crash included.
     journal = raw.get("journal") or {}
     prices = raw.get("prices") or {}
     reconstructed_until = None
@@ -86,7 +87,7 @@ def load(path: Path | str) -> dict | None:
                 "asset_class": str(pos.get("asset_class") or "Autres"),
                 "asset_split": pos.get("asset_split"),
                 "geography": pos.get("geography"),
-                # Gross exposure multiple: a return-stacked fund (RSST) is
+                # Gross exposure multiple: a return-stacked fund is
                 # 100 % equities + 100 % managed futures on every franc --
                 # ~2x notional, the extra sleeve funded by collateral and
                 # futures. Displayed as a fact; the split still shows where
@@ -152,8 +153,8 @@ def load(path: Path | str) -> dict | None:
                         None)
             nav_daily.append((day, round(anchor_value * price / base, 2)
                               if base and base > 0 else anchor_value))
-        # Where the broker's own daily NAV exists (from 2025-10-01, captured
-        # on 02.10.2026), it is the figure: the price scaling only fills the
+        # Where the broker's own daily NAV exists (the connector's last year,
+        # captured on 02.10.2026), it is the figure: the price scaling only fills the
         # days it lacks. The scaled curve had drifted up to 5 % from it
         # between month-end anchors that were themselves a day off.
         merged = dict(nav_daily)
@@ -187,6 +188,18 @@ def load(path: Path | str) -> dict | None:
         costs_from = dt.date.fromisoformat(raw.get("costs_known_from") or "")
     except ValueError:
         costs_from = None
+
+    # What the brokerage paid, from the transaction history: dividends and
+    # interest, by the broker's date -- the year's income the tax return
+    # asks for (`fiscal.py`).
+    income = []
+    for entry in journal.get("income", []):
+        try:
+            income.append({"date": dt.date.fromisoformat(entry["date"]),
+                           "kind": str(entry.get("kind") or ""),
+                           "amount_chf": float(entry["amount_chf"])})
+        except (KeyError, TypeError, ValueError):
+            continue
 
     journal_flows = []
     for entry in journal.get("flows", []):
@@ -245,6 +258,7 @@ def load(path: Path | str) -> dict | None:
         "reconstructed_until": reconstructed_until,
         "costs": sorted(costs, key=lambda c: c["date"]),
         "costs_known_from": costs_from,
+        "income": sorted(income, key=lambda e: e["date"]),
         "base_currency": raw.get("base_currency") or "CHF",
         "equity": round(equity, 2),
         "cash": cash,
@@ -279,7 +293,7 @@ def flows(ibkr: dict, transactions) -> list[tuple[dt.date, float]]:
     """
     if ibkr.get("journal_flows"):
         # The broker's own record wins: every deposit and withdrawal since
-        # the opening, where the ledger only sees those after July 2024 --
+        # the opening, where the ledger only sees those after its own start --
         # and reading both would count each transfer twice.
         raw_flows = list(ibkr["journal_flows"])
     else:
@@ -293,9 +307,9 @@ def flows(ibkr: dict, transactions) -> list[tuple[dt.date, float]]:
 def _snap(ibkr: dict, flows_: list) -> list:
     """Date each flow on the NAV point that shows it.
 
-    The broker books the deposit of September 2026 on the 23rd, Swissquote
-    on the 24th, and the NAV only moves on the 24th; the withdrawal of
-    19.12.2024 shows in the weekly rebuild of the 20th. A flow dated a day
+    The broker can book a deposit the day before Swissquote debits it and
+    the NAV moves; a withdrawal shows in the weekly rebuild of the next
+    day. A flow dated a day
     before its NAV point reads as a one-day crash and a next-day jump -- a
     fake −20 % in the drawdown. Each flow goes to the first NAV point on or
     after its date, or the one after that if that is where the value moves
@@ -308,7 +322,7 @@ def _snap(ibkr: dict, flows_: list) -> list:
     for when, amount in flows_:
         if days and when < days[0]:
             # Before the first value point, a flow is already inside it: the
-            # 2023 deposits are part of what the account held in July 2024.
+            # early deposits are part of what the account held at that point.
             # Moved onto that point, they read as the whole account deposited then.
             continue
         i = bisect.bisect_left(days, when)
@@ -328,8 +342,8 @@ def twr(ibkr: dict, flows_: list, start: dt.date, end: dt.date) -> float | None:
 
     Chained point to point along the NAV series; a deposit dated in an
     interval joins the base at its start, `v1 / (v0 + flow)`. That is IBKR's
-    own convention: on 24.09.2026 it gives +0.90 % for the day, exactly the
-    broker's figure, where `(v1 - flow) / v0` gives +1.13 %. Without flows it
+    own convention: on a deposit day it gives exactly the broker's figure,
+    where `(v1 - flow) / v0` drifts from it. Without flows it
     reduces to `end / start`, which is what the app showed before there were
     any.
     """

@@ -1,4 +1,0 @@
--r requirements.txt
-
-# Web front-end
-Flask==3.1.2

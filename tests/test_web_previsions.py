@@ -1,539 +1,76 @@
-"""/previsions: the page, the plan forms, suggestions, the horizon,
-scenarios, contributions, in-place edits."""
+"""The forecast (`/api/previsions`): the projection, the plan's edits and
+their refusals, suggestions, the horizon, market and plan scenarios,
+scheduled transfers."""
 
 from __future__ import annotations
 
-import re
+import json
 
 import pytest
-from webhelpers import plans_path, savings_snapshots, text
+from webhelpers import api, plans_path, savings_snapshots
 
 from pms import plans
 
 
-def test_previsions_page_renders(client):
-    body = text(client.get("/previsions"))
-    for probe in ("Prévisions de trésorerie", "Mois par mois",
-                  "Cash aujourd'hui", "Solde le plus bas prévu",
-                  "Suggérés par l'historique", "Confirmer", "Ignorer",
-                  "traitillé"):
-        assert probe in body
-    # A twelve-month horizon holds every calendar month exactly once,
-    # whichever month the ledger happens to end on.
-    for name in plans.MONTH_NAMES:
-        assert name in body
-
-
-def test_previsions_page_has_no_empty_coordinates(client):
-    body = text(client.get("/previsions"))
-    assert not re.search(r'\b(x|y|cx|cy|x1|y1|x2|y2|width|height)=""', body)
-
-
-def test_the_monthly_analysis_section_renders_on_previsions(client):
-    """The baseline's arithmetic, shown month by month: a chart and a table
-    with the same numbers, and a sommaire entry that names the section."""
-    body = text(client.get("/previsions"))
-    assert 'id="p-analysis"' in body
-    assert '<a href="#p-analysis">Analyse mensuelle</a>' in body
-    for probe in ("Médiane brute", "Médiane hors saisonnier",
-                  "Pics saisonniers retirés", "Années observées"):
-        assert probe in body
-    # Le sommaire et le titre de section ne peuvent pas se contredire.
-    start = body.index('id="p-analysis"')
-    heading = re.search(r"<h3[^>]*>(.*?)</h3>", body[start:start + 200])
-    assert heading and heading.group(1).strip().startswith("Analyse mensuelle")
-
-
-def test_plan_add_and_delete_roundtrip(client):
-    path = plans_path(client)
-    if path.exists():
-        path.unlink()
-
-    response = client.post("/previsions", data={
-        "action": "add", "month": "2026-11", "label": "Facture inhabituelle",
-        "amount": "1234.56"})
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/previsions")
-
-    plan = plans.Plan.load(path)
-    assert len(plan.one_offs) == 1
-    assert plan.one_offs[0]["label"] == "Facture inhabituelle"
-    assert plan.one_offs[0]["amount"] == 1234.56
-    assert "Facture inhabituelle" in text(client.get("/previsions"))
-
-    client.post("/previsions", data={
-        "action": "delete", "month": "2026-11", "label": "Facture inhabituelle"})
-    assert plans.Plan.load(path).one_offs == []
-    path.unlink(missing_ok=True)
-
-
-def test_plan_income_declared_overrides_history(client):
-    path = plans_path(client)
-    if path.exists():
-        path.unlink()
-
-    client.post("/previsions", data={"action": "income", "amount": "8000"})
-    assert plans.Plan.load(path).income == 8000.0
-    body = text(client.get("/previsions"))
-    assert "déclaré dans le plan" in body
-
-    client.post("/previsions", data={"action": "income", "amount": ""})
-    assert plans.Plan.load(path).income is None
-    path.unlink(missing_ok=True)
-
-
-def test_plan_rate_error_rerenders_with_message(client):
-    """A comma in a rate cell is not silently dropped: the page comes back
-    with the error stated, the typed value kept, and nothing written. The
-    error is keyed to the row, so the summary link lands on that very row."""
+@pytest.fixture
+def plan_file(client):
+    """No plan before the test, none left after it."""
     path = plans_path(client)
     path.unlink(missing_ok=True)
-
-    response = client.post("/previsions", data={
-        "action": "rate", "months": ["12", "6"], "rates": ["3,5", "2"]})
-    body = text(response)
-    assert response.status_code == 200
-    assert "Vérifiez les champs suivants" in body
-    assert "Utilisez le point décimal" in body
-    assert "Corrigez les erreurs pour enregistrer." in body
-    assert 'href="#rate-row-0"' in body
-    # The barème fold reopens on the failed POST -- the error must not sit
-    # inside a closed details block.
-    assert '<details class="scenario-block mb-3" id="plan-rate" open>' in body
-    # The failing row keeps its typed value; the healthy row is untouched.
-    row = re.search(r'<tr id="rate-row-0">(.*?)</tr>', body, re.S).group(0)
-    assert 'value="3,5"' in row
-    assert 'aria-invalid="true"' in row
-    assert 'value="6"' in body and 'value="2"' in body
-    assert not path.exists()
-
-
-def test_plan_income_error_keeps_the_typed_value(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-
-    body = text(client.post("/previsions", data={"action": "income", "amount": "abc"}))
-    assert "Utilisez le point décimal" in body
-    field = re.search(r'<input[^>]*id="plan-income"[^>]*>', body).group(0)
-    assert 'aria-invalid="true"' in field
-    assert 'value="abc"' in field
-
-
-def test_plan_add_requires_a_label(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-
-    body = text(client.post("/previsions", data={
-        "action": "add", "month": "2026-11", "label": "", "amount": "150"}))
-    assert "Le libellé est requis." in body
-    field = re.search(r'<input[^>]*id="oneoff-label"[^>]*>', body).group(0)
-    assert 'aria-invalid="true"' in field
-    assert not path.exists()
-
-
-def test_plan_rate_valid_post_redirects(client):
-    ibkr_path, finp_path = savings_snapshots(client)
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        response = client.post("/previsions", data={
-            "action": "rate", "months": ["12", "6"], "rates": ["3.5", "2"]})
-        assert response.status_code == 302
-        assert response.headers["Location"].endswith("/previsions")
-        plan = plans.Plan.load(path)
-        assert plan.rate_segments == [(12, 0.035), (6, 0.02)]
-        assert plan.rate == 0.035  # the first segment, echoed for older readers
-        body = text(client.get("/previsions"))
-        assert "Vérifiez les champs suivants" not in body
-        assert 'value="3.5"' in body and 'value="2.0"' in body
-        assert "selon votre barème" in body
-    finally:
-        path.unlink(missing_ok=True)
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
-
-
-def test_plan_rate_remove_drops_that_segment(client):
-    """The per-row Retirer button (only the clicked one is transmitted) drops
-    its row before parsing -- the row above is untouched."""
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    client.post("/previsions", data={
-        "action": "rate", "months": ["12", "6", "6"], "rates": ["3.5", "2", "1"]})
-    client.post("/previsions", data={
-        "action": "rate", "months": ["12", "6", "6"], "rates": ["3.5", "2", "1"],
-        "remove": "1"})
-    assert plans.Plan.load(path).rate_segments == [(12, 0.035), (6, 0.01)]
+    yield path
     path.unlink(missing_ok=True)
 
 
-def test_plan_rate_all_blank_clears_the_schedule(client):
-    """Every row blank is undeclared, not an error -- the same clearing the
-    single rate field used to do."""
-    ibkr_path, finp_path = savings_snapshots(client)
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "rate", "months": ["12"], "rates": ["3.5"]})
-        response = client.post("/previsions", data={
-            "action": "rate", "months": [""], "rates": [""]})
-        assert response.status_code == 302
-        plan = plans.Plan.load(path)
-        assert plan.rate_segments == []
-        assert plan.rate is None
-        assert "figés à leur dernière valeur" in text(client.get("/previsions"))
-    finally:
-        path.unlink(missing_ok=True)
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
+def _edit(client, body: dict, months: int | None = None):
+    """One edit; returns (status, json)."""
+    url = "/api/previsions" + (f"?months={months}" if months else "")
+    response = client.post(url, json=body)
+    return response.status_code, response.get_json()
 
 
-def test_confirm_suggestion_writes_its_provenance(client):
-    """Confirming writes the declared entry tied to its suggestion, so the
-    renamed confirmation is not counted twice on the next render."""
-    path = plans_path(client)
-    if path.exists():
-        path.unlink()
-
-    body = text(client.get("/previsions"))
-    # Scoped to the one form that carries a `seasonal` field, then read field
-    # by field. A single regex over the whole page pinned the exact order of
-    # inputs and of the attributes inside them: adding a <label> before each
-    # field made it stop matching, and the test skipped itself rather than
-    # failing -- which is the worse outcome, since it then guards nothing.
-    fragments = [f for f in body.split("<form") if 'name="seasonal"' in f]
-    if not fragments:
-        pytest.skip("no seasonal suggestion on this ledger")
-    fragment = fragments[0]
-
-    def field(pattern: str) -> str:
-        found = re.search(pattern, fragment)
-        assert found, f"{pattern} missing from the suggestion form"
-        return found.group(1)
-
-    month = field(r'name="month" value="([^"]+)"')
-    seasonal = re.search(r'name="seasonal" value="([^"]+)\|(\d+)"', fragment)
-    assert seasonal, "the suggestion form lost its provenance field"
-    category, month_no = seasonal.groups()
-    field(r'name="label"[^>]*?value="([^"]+)"')  # present, but renamed below
-    amount = field(r'name="amount"[^>]*?value="([^"]+)"')
-
-    client.post("/previsions", data={
-        "action": "add", "month": month, "label": "Renommé",
-        "amount": amount, "seasonal": f"{category}|{month_no}"})
-    entry = plans.Plan.load(path).one_offs[0]
-    assert entry["label"] == "Renommé"
-    assert entry["seasonal"] == {"category": category, "month": int(month_no)}
-
-    # The renamed confirmation and its suggestion are the same line: the
-    # shadowed category is gone from the suggestions section (other
-    # suggestions stay -- the folded month table even names them).
-    body = text(client.get("/previsions"))
-    assert body.count("Renommé") >= 1
-    start = body.index("Suggérés par l'historique")
-    assert category not in body[start:]  # no double counting
-
-    client.post("/previsions", data={
-        "action": "delete", "month": month, "label": "Renommé"})
-    path.unlink(missing_ok=True)
+def _forecast(client, query: str = "") -> dict:
+    return api(client, f"/api/previsions{'?' + query if query else ''}")
 
 
-def test_ignore_and_restore_suggestion(client):
-    path = plans_path(client)
-    if path.exists():
-        path.unlink()
+# --- the projection ------------------------------------------------------------
 
-    body = text(client.get("/previsions"))
-    form = re.search(
-        r'<form method="post" action="/previsions"[^>]*>\s*'
-        r'<input type="hidden" name="action" value="ignore">\s*'
-        r'<input type="hidden" name="category" value="([^"]+)">\s*'
-        r'<input type="hidden" name="month_no" value="(\d+)">', body)
-    if not form:
-        pytest.skip("no seasonal suggestion on this ledger")
-    category, month_no = form.groups()
-
-    client.post("/previsions", data={
-        "action": "ignore", "category": category, "month_no": month_no})
-    assert (category, int(month_no)) in plans.Plan.load(path).ignored
-    assert "Suggestions ignorées" in text(client.get("/previsions"))
-
-    client.post("/previsions", data={
-        "action": "restore", "category": category, "month_no": month_no})
-    assert plans.Plan.load(path).ignored == []
-    path.unlink(missing_ok=True)
+def test_a_year_holds_every_calendar_month_once(client):
+    """Whichever month the ledger happens to end on."""
+    rows = _forecast(client)["projection"]["rows"]
+    months = [r["key"][5:] for r in rows if not r["partial"]]
+    assert sorted(months) == [f"{m:02d}" for m in range(1, 13)]
 
 
-def test_a_one_off_can_carry_a_precise_date(client):
-    """The bug this exists for: a transfer planned for the end of the current
-    month used to vanish, because the projection started the month after the
-    ledger. A date keeps it in view until the ledger passes it."""
-    import json
-
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        body = text(client.get("/previsions"))
-        assert 'id="oneoff-date"' in body and 'type="date"' in body
-        assert 'id="oneoff-destination"' in body
-
-        response = client.post("/previsions", data={
-            "action": "add", "date": "2026-08-28", "label": "Versement 3a",
-            "amount": "3000", "destination": "3a"})
-        assert response.status_code == 302
-
-        saved = json.loads(path.read_text(encoding="utf-8"))["one_offs"][0]
-        assert saved["date"] == "2026-08-28"
-        assert saved["month"] == "2026-08"
-        assert saved["transfer"] == "3a"
-
-        body = text(client.get("/previsions"))
-        assert "28.08" in body
-        assert "3a · hors impôt" in body
-    finally:
-        path.unlink(missing_ok=True)
+def test_the_month_under_way_is_its_remainder(client):
+    """The statement ends mid-month: the first row counts what is left."""
+    assert _forecast(client)["projection"]["rows"][0]["partial"] is True
 
 
-def test_a_bad_one_off_date_says_so_instead_of_swallowing_it(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    response = client.post("/previsions", data={
-        "action": "add", "date": "pas-une-date", "label": "X", "amount": "10"})
-    body = text(response)
-    assert response.status_code == 200
-    assert "La date est invalide." in body
-    assert not path.exists()
+def test_the_ordinary_month_is_shown_month_by_month(client):
+    profile = _forecast(client)["profile"]
+    assert len(profile) == 12
+    for month in profile:
+        assert month["stripped_median"] + month["seasonal_median"] >= month["stripped_median"]
 
 
-def test_editing_the_plan_keeps_the_view_you_were_in(client):
-    """The redirect after a POST carries the wealth view, or correcting a
-    figure would snap the reader back to a page they were not reading."""
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        response = client.post("/previsions?wealth=sheltered",
-                               data={"action": "rate",
-                                     "months": ["12"], "rates": ["4"]})
-        assert response.status_code == 302
-        assert "wealth=sheltered" in response.headers["Location"]
-        assert plans.Plan.load(path).rate_segments == [(12, 0.04)]
-    finally:
-        path.unlink(missing_ok=True)
-
-
-# --- previsions: horizon, declared volatility, inline amount edits -----------
-
-def test_the_horizon_select_controls_the_projection(client):
-    """?months=N is view state like the wealth view: the select is a real GET
-    form, and a hand-typed value shows as its own option rather than lying."""
-    body = text(client.get("/previsions?months=24"))
-    assert "2 ans à partir du solde" in body
-    assert '<option value="24" selected>2 ans</option>' in body
-    # The plan forms carry the horizon along -- editing must not snap back.
-    assert 'action="/previsions?months=24"' in body
-    # The horizon control itself is a GET form whose action carries no months
-    # key: the select's value is the only one that reaches the server.
-    assert ('<form method="get" action="/previsions" '
-            'class="row-form horizon-form">') in body
-
+# --- the horizon ----------------------------------------------------------------
 
 def test_the_horizon_is_clamped_not_echoed(client):
-    body = text(client.get("/previsions?months=abc"))
-    assert "1 an à partir du solde" in body
-    body = text(client.get("/previsions?months=0"))
-    assert "1 mois à partir du solde" in body
-    # Forty years is the ceiling, and it is a preset.
-    body = text(client.get("/previsions?months=9999"))
-    assert "40 ans à partir du solde" in body
-    assert '<option value="480" selected>40 ans</option>' in body
-    # A value outside the presets gets its own option, selected -- the select
-    # must not silently show the nearest preset.
-    body = text(client.get("/previsions?months=30"))
-    assert '<option value="30" selected>30 mois</option>' in body
-
-
-def test_the_partial_row_and_undated_entry_chips_render(client):
-    """The table says what the rows are: the remainder of the month under way,
-    and a declaration without a precise day."""
-    body = text(client.get("/previsions"))
-    assert "reste du mois" in body  # the statement ends mid-month
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "add", "month": "2026-08", "label": "Sans jour",
-            "amount": "100"})
-        assert "mois entier" in text(client.get("/previsions"))
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_a_scenario_apply_sets_the_live_barème(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        response = client.post("/previsions", data={
-            "action": "scenario-apply", "scenario": "builtin:lost-decade"})
-        assert response.status_code == 302
-        # The lost decade is measured on the real S&P 500 in CHF, and it
-        # carries its 15-year horizon: the redirect sets the view length.
-        plan = plans.Plan.load(path)
-        assert plan.rate_segments == [(102, -0.118), (69, 0.2027),
-                                      (300, 0.0389)]
-        assert plan.rate == -0.118
-        assert plan.vol is None
-        assert "months=180" in response.headers["Location"]
-        # A saved scenario, recalled by name.
-        plan.set_scenario("Ma copie", [(12, 0.05)], 0.12)
-        plan.save()
-        client.post("/previsions", data={
-            "action": "scenario-apply", "scenario": "saved:Ma copie"})
-        loaded = plans.Plan.load(path)
-        assert loaded.rate_segments == [(12, 0.05)]
-        assert loaded.vol == 0.12
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_a_scenario_save_and_delete_roundtrip(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "rate", "months": ["12"], "rates": ["4"]})
-        response = client.post("/previsions", data={
-            "action": "scenario-save", "name": "Croissance douce"})
-        assert response.status_code == 302
-        plan = plans.Plan.load(path)
-        assert plan.scenarios["Croissance douce"]["rate_segments"] == [(12, 0.04)]
-        body = text(client.get("/previsions"))
-        assert "Croissance douce" in body
-        assert "4 % pendant 12 mois" in body  # the summary line
-        client.post("/previsions", data={
-            "action": "scenario-delete", "name": "Croissance douce"})
-        assert plans.Plan.load(path).scenarios == {}
-        # Deleting a scenario never touches the live barème it set.
-        assert plans.Plan.load(path).rate_segments == [(12, 0.04)]
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_a_scenario_save_error_rerenders(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        # The block is folded by default; a failed POST reopens it, or the
-        # error would be invisible inside the closed details.
-        body = text(client.get("/previsions"))
-        assert '<details class="scenario-block mt-3">' in body
-        assert '<details class="scenario-block mt-3" open>' not in body
-        body = text(client.post("/previsions", data={
-            "action": "scenario-save", "name": " "}))
-        assert '<details class="scenario-block mt-3" open>' in body
-        assert "Le nom est requis." in body
-        body = text(client.post("/previsions", data={
-            "action": "scenario-save", "name": "a:b"}))
-        assert "ne peut pas contenir « : »" in body
-        body = text(client.post("/previsions", data={
-            "action": "scenario-save", "name": "x" * 61}))
-        assert "Le nom est limité à 60 caractères." in body
-        assert not path.exists()
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_an_unknown_scenario_is_refused(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        body = text(client.post("/previsions", data={
-            "action": "scenario-apply", "scenario": "saved:Inconnu"}))
-        assert "Scénario inconnu." in body
-        body = text(client.post("/previsions", data={
-            "action": "scenario-apply", "scenario": ""}))
-        assert "Choisissez un scénario." in body
-        assert not path.exists()
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_a_contribution_add_and_delete_roundtrip(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        response = client.post("/previsions", data={
-            "action": "contrib", "amount": "1000", "every": "quarter",
-            "months": "24", "pocket": "3a", "start": ""})
-        assert response.status_code == 302
-        entry = plans.Plan.load(path).contributions[0]
-        assert entry == {"pocket": "3a", "amount": 1000.0,
-                         "every": "quarter", "months": 24, "start": ""}
-        body = text(client.get("/previsions"))
-        assert "1’000 CHF" in body  # Swiss apostrophe
-        assert "chaque trimestre pendant 24 mois" in body
-        client.post("/previsions", data={
-            "action": "contrib-del", "pocket": "3a", "amount": "1000.0",
-            "every": "quarter", "months": "24", "start": ""})
-        assert plans.Plan.load(path).contributions == []
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_a_bad_contribution_rerenders_with_the_error(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        body = text(client.post("/previsions", data={
-            "action": "contrib", "amount": "abc", "every": "quarter",
-            "months": "24", "pocket": "3a"}))
-        assert "Utilisez le point décimal" in body
-        assert 'href="#contrib-amount"' in body
-        assert 'value="abc"' in body
-        body = text(client.post("/previsions", data={
-            "action": "contrib", "amount": "100", "every": "weekly",
-            "months": "24", "pocket": "3a"}))
-        assert "Choisissez une cadence." in body
-        body = text(client.post("/previsions", data={
-            "action": "contrib", "amount": "100", "every": "quarter",
-            "months": "0", "pocket": "", "start": "2026-13"}))
-        assert "Choisissez une poche." in body
-        assert "La durée est d'au moins 1 mois." in body
-        assert "Le mois de début est invalide." in body
-        assert not path.exists()
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_editing_the_rate_barème_keeps_the_declared_volatility(client):
-    """set_rates must not wipe the vol the user typed: editing the schedule
-    and the volatility are independent declarations."""
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={"action": "vol", "amount": "12"})
-        client.post("/previsions", data={
-            "action": "rate", "months": ["12"], "rates": ["4"]})
-        plan = plans.Plan.load(path)
-        assert plan.rate_segments == [(12, 0.04)]
-        assert plan.vol == 0.12
-    finally:
-        path.unlink(missing_ok=True)
+    assert _forecast(client, "months=24")["horizon_label"] == "2 ans"
+    assert _forecast(client, "months=abc")["months"] == 12
+    assert _forecast(client, "months=0")["horizon_label"] == "1 mois"
+    assert _forecast(client, "months=9999")["horizon_label"] == "40 ans"
+    assert _forecast(client, "months=30")["horizon_label"] == "30 mois"
 
 
 def test_a_short_horizon_skips_out_of_reach_suggestions(client):
-    """months=1 leaves every suggestion whose month is beyond the horizon
-    without a target -- they must be skipped, not crash the page, and the
-    suggestions section must be empty rather than listing a dead target."""
-    body = text(client.get("/previsions?months=1"))
-    assert "1 mois à partir du solde" in body
-    assert "Suggérés par l'historique" not in body
+    assert _forecast(client, "months=1")["suggestions"] == []
 
 
 def test_the_suggestion_target_skips_the_partial_row():
-    """A "chaque mai" suggestion must anchor to the *future* May, not the
-    nearly-over partial row -- confirming there would double-charge a bill
-    the ledger already carries and shadow next year's occurrence."""
+    """A "chaque mai" suggestion anchors to the future May, not the nearly-over
+    partial row: confirming there would double-charge a bill the ledger
+    already carries."""
     from pms.web.views.previsions import _suggestion_target
     rows = [{"key": "2026-05", "partial": True},
             {"key": "2026-06", "partial": False},
@@ -543,101 +80,352 @@ def test_the_suggestion_target_skips_the_partial_row():
     assert _suggestion_target(rows, 12) is None
 
 
-def test_the_horizon_rides_the_post_redirect(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
+# --- one-offs -----------------------------------------------------------------------
+
+def test_a_one_off_is_added_shown_and_deleted(client, plan_file):
+    status, _ = _edit(client, {"action": "add", "month": "2026-11",
+                               "label": "Facture inhabituelle", "amount": "1234.56"})
+    assert status == 200
+    (entry,) = plans.Plan.load(plan_file).one_offs
+    assert (entry["label"], entry["amount"]) == ("Facture inhabituelle", 1234.56)
+    assert "Facture inhabituelle" in [e["label"] for e in _forecast(client)["plan"]["declared"]]
+    _edit(client, {"action": "delete", "month": "2026-11", "label": "Facture inhabituelle"})
+    assert plans.Plan.load(plan_file).one_offs == []
+
+
+def test_a_one_off_can_carry_a_precise_date_and_a_destination(client, plan_file):
+    """A transfer planned for the end of the current month used to vanish:
+    a date keeps it in view until the ledger passes it."""
+    _edit(client, {"action": "add", "date": "2026-08-28", "label": "Versement 3a",
+                   "amount": "3000", "destination": "3a"})
+    saved = json.loads(plan_file.read_text(encoding="utf-8"))["one_offs"][0]
+    assert (saved["date"], saved["month"], saved["transfer"]) == ("2026-08-28", "2026-08", "3a")
+
+
+def test_a_refused_one_off_says_why_and_writes_nothing(client, plan_file):
+    status, body = _edit(client, {"action": "add", "date": "pas-une-date", "label": "X", "amount": "10"})
+    assert status == 400 and body["errors"]["oneoff-date"] == "La date est invalide."
+    status, body = _edit(client, {"action": "add", "month": "2026-11", "label": "", "amount": "150"})
+    assert body["errors"]["oneoff-label"] == "Le libellé est requis."
+    assert not plan_file.exists()
+
+
+def test_the_amount_edits_in_place_keeping_what_else_was_declared(client, plan_file):
+    """Not delete-and-re-add: that would drop the seasonal link, the precise
+    date and the destination."""
+    _edit(client, {"action": "add", "month": "2026-12", "label": "Assurance maladie",
+                   "amount": "3500", "seasonal": "Santé|12"})
+    _edit(client, {"action": "add", "date": "2026-08-28", "label": "Versement 3a",
+                   "amount": "3000", "destination": "3a"})
+    _edit(client, {"action": "amount", "month": "2026-12", "label": "Assurance maladie", "amount": "3800"})
+    _edit(client, {"action": "amount", "month": "2026-08", "label": "Versement 3a", "amount": "3500"})
+    entries = {e["label"]: e for e in plans.Plan.load(plan_file).one_offs}
+    assert entries["Assurance maladie"]["amount"] == 3800.0
+    assert entries["Assurance maladie"]["seasonal"] == {"category": "Santé", "month": 12}
+    assert (entries["Versement 3a"]["amount"], entries["Versement 3a"]["date"],
+            entries["Versement 3a"]["transfer"]) == (3500.0, "2026-08-28", "3a")
+
+
+def test_a_bad_amount_is_refused_on_its_own_row(client, plan_file):
+    _edit(client, {"action": "add", "month": "2026-11", "label": "Facture inhabituelle", "amount": "1234.56"})
+    status, body = _edit(client, {"action": "amount", "month": "2026-11",
+                                  "label": "Facture inhabituelle", "amount": "abc"})
+    assert status == 400 and "point décimal" in body["errors"]["amount-1"]
+    assert body["values"]["amount-1"] == "abc"
+    assert plans.Plan.load(plan_file).one_offs[0]["amount"] == 1234.56
+    _, body = _edit(client, {"action": "amount", "month": "2026-11",
+                             "label": "Facture inhabituelle", "amount": "0"})
+    assert body["errors"]["amount-1"] == "Montant invalide."
+
+
+# --- suggestions ----------------------------------------------------------------------
+
+def test_confirming_a_suggestion_keeps_its_provenance(client, plan_file):
+    """The renamed confirmation and its suggestion are one line: it is not
+    offered again, so it is never counted twice."""
+    suggestions = _forecast(client)["suggestions"]
+    if not suggestions:
+        pytest.skip("no seasonal suggestion on this ledger")
+    s = suggestions[0]
+    _edit(client, {"action": "add", "month": s["target"], "label": "Renommé",
+                   "amount": s["amount"], "seasonal": f"{s['category']}|{s['month']}"})
+    (entry,) = plans.Plan.load(plan_file).one_offs
+    assert entry["label"] == "Renommé"
+    assert entry["seasonal"] == {"category": s["category"], "month": s["month"]}
+    assert s["category"] not in [x["category"] for x in _forecast(client)["suggestions"]]
+
+
+def test_a_suggestion_is_ignored_and_restored(client, plan_file):
+    suggestions = _forecast(client)["suggestions"]
+    if not suggestions:
+        pytest.skip("no seasonal suggestion on this ledger")
+    s = suggestions[0]
+    _edit(client, {"action": "ignore", "category": s["category"], "month_no": s["month"]})
+    assert (s["category"], s["month"]) in plans.Plan.load(plan_file).ignored
+    assert _forecast(client)["plan"]["ignored"][0]["category"] == s["category"]
+    _edit(client, {"action": "restore", "category": s["category"], "month_no": s["month"]})
+    assert plans.Plan.load(plan_file).ignored == []
+
+
+# --- income and spending ----------------------------------------------------------------
+
+def test_a_declared_income_overrides_the_history(client, plan_file):
+    _edit(client, {"action": "income", "amount": "8000"})
+    data = _forecast(client)
+    assert data["plan"]["income"] == 8000.0 and data["projection"]["income_source"] == "declared"
+    _edit(client, {"action": "income", "amount": ""})
+    assert plans.Plan.load(plan_file).income is None
+
+
+def test_a_refused_income_keeps_the_typed_value(client, plan_file):
+    status, body = _edit(client, {"action": "income", "amount": "abc"})
+    assert status == 400 and "point décimal" in body["errors"]["plan-income"]
+    assert body["values"]["plan-income"] == "abc"
+
+
+# --- the assumed return -------------------------------------------------------------------
+
+def test_the_rate_schedule_is_parsed_row_by_row(client, plan_file):
+    status, _ = _edit(client, {"action": "rate", "months": ["12", "6", ""], "rates": ["3.5", "2", ""]})
+    assert status == 200
+    plan = plans.Plan.load(plan_file)
+    assert plan.rate_segments == [(12, 0.035), (6, 0.02)]
+    assert plan.rate == 0.035   # the first segment, echoed for older readers
+
+
+def test_a_refused_rate_is_keyed_to_its_row_and_writes_nothing(client, plan_file):
+    status, body = _edit(client, {"action": "rate", "months": ["12", "6"], "rates": ["3,5", "2"]})
+    assert status == 400 and "point décimal" in body["errors"]["rate-row-0"]
+    assert body["values"]["rate-rates"] == ["3,5", "2"]
+    assert not plan_file.exists()
+
+
+def test_every_row_blank_clears_the_schedule(client, plan_file):
+    _edit(client, {"action": "rate", "months": ["12"], "rates": ["3.5"]})
+    assert _edit(client, {"action": "rate", "months": [""], "rates": [""]})[0] == 200
+    plan = plans.Plan.load(plan_file)
+    assert plan.rate_segments == [] and plan.rate is None
+
+
+def test_editing_the_barème_keeps_the_declared_volatility(client, plan_file):
+    _edit(client, {"action": "vol", "amount": "12"})
+    _edit(client, {"action": "rate", "months": ["12"], "rates": ["4"]})
+    plan = plans.Plan.load(plan_file)
+    assert plan.rate_segments == [(12, 0.04)] and plan.vol == 0.12
+
+
+def test_the_years_cover_the_horizon_month_for_month(client, plan_file):
+    forecast = _forecast(client, "months=24")
+    years = forecast["plan"]["rate_years"]
+    assert sum(y["months"] for y in years) == len(forecast["projection"]["rows"])
+    assert [y["year"] for y in years] == list(range(years[0]["year"], years[-1]["year"] + 1))
+    assert all(y["rate"] is None and not y["mixed"] for y in years)   # nothing declared
+
+
+def test_a_rate_per_year_becomes_a_barème_with_equal_years_merged(client, plan_file):
+    years = _forecast(client, "months=36")["plan"]["rate_years"]
+    rates = ["5,25", "-12.5 %", "-12,5"] + ["4"] * (len(years) - 3)
+    status, _ = _edit(client, {"action": "rate-years", "rates": rates}, months=36)
+    assert status == 200
+    plan = plans.Plan.load(plan_file)
+    m = [y["months"] for y in years]
+    assert plan.rate_segments == [(m[0], 0.0525), (m[1] + m[2], -0.125), (sum(m[3:]), 0.04)]
+    shown = _forecast(client, "months=36")["plan"]["rate_years"]
+    assert [y["rate"] for y in shown] == [0.0525, -0.125, -0.125] + [0.04] * (len(years) - 3)
+
+
+def test_a_longer_horizon_carries_the_last_year_on(client, plan_file):
+    years = _forecast(client, "months=12")["plan"]["rate_years"]
+    _edit(client, {"action": "rate-years", "rates": ["3"] * (len(years) - 1) + ["7"]}, months=12)
+    longer = _forecast(client, "months=60")["plan"]["rate_years"]
+    assert longer[-1]["rate"] == 0.07 and len(longer) > len(years)
+
+
+def test_a_year_across_two_periods_reads_as_mixed(client, plan_file):
+    _edit(client, {"action": "rate", "months": ["1", "120"], "rates": ["2", "6"]})
+    years = _forecast(client, "months=24")["plan"]["rate_years"]
+    first = years[0]
+    assert (first["mixed"], first["rate"]) == ((True, None) if first["months"] > 1 else (False, 0.02))
+
+
+def test_a_refused_year_is_keyed_to_it_and_writes_nothing(client, plan_file):
+    years = _forecast(client, "months=24")["plan"]["rate_years"]
+    rates = ["4"] * len(years)
+    rates[1] = "beaucoup"
+    status, body = _edit(client, {"action": "rate-years", "rates": rates}, months=24)
+    assert status == 400 and "rate-year-1" in body["errors"]
+    assert not plan_file.exists()
+    status, body = _edit(client, {"action": "rate-years", "rates": ["4"]}, months=24)
+    assert status == 400 and "rechargez" in body["errors"]["rate-years"]
+
+
+def test_rates_are_read_as_people_type_them():
+    assert plans.parse_percent("5,25 %") == 5.25
+    assert plans.parse_percent("\u22123,1") == -3.1
+    assert plans.parse_percent("") is None and plans.parse_percent("x") is None
+
+
+def test_a_market_scenario_sets_the_barème_and_its_horizon(client, plan_file):
+    status, body = _edit(client, {"action": "scenario-apply", "scenario": "builtin:lost-decade"})
+    assert status == 200
+    plan = plans.Plan.load(plan_file)
+    assert plan.rate_segments == [(102, -0.118), (69, 0.2027), (300, 0.0389)]
+    assert plan.vol is None
+    # Fifteen years: the page switches its horizon to it.
+    assert body["months"] == 180
+    plan.set_scenario("Ma copie", [(12, 0.05)], 0.12)
+    plan.save()
+    _edit(client, {"action": "scenario-apply", "scenario": "saved:Ma copie"})
+    loaded = plans.Plan.load(plan_file)
+    assert loaded.rate_segments == [(12, 0.05)] and loaded.vol == 0.12
+
+
+def test_a_market_scenario_is_saved_summarised_and_deleted(client, plan_file):
+    _edit(client, {"action": "rate", "months": ["12"], "rates": ["4"]})
+    assert _edit(client, {"action": "scenario-save", "name": "Croissance douce"}, months=24)[0] == 200
+    plan = plans.Plan.load(plan_file)
+    assert plan.scenarios["Croissance douce"]["rate_segments"] == [(12, 0.04)]
+    assert plan.scenarios["Croissance douce"]["months"] == 24   # the horizon it was read on
+    (saved,) = _forecast(client)["plan"]["scenarios"]
+    assert saved["summary"].startswith("4 % pendant 12 mois")
+    _edit(client, {"action": "scenario-delete", "name": "Croissance douce"})
+    plan = plans.Plan.load(plan_file)
+    assert plan.scenarios == {} and plan.rate_segments == [(12, 0.04)]
+
+
+def test_a_market_scenario_name_is_checked(client, plan_file):
+    assert _edit(client, {"action": "scenario-save", "name": " "})[1]["errors"]["scenario-save"] == "Le nom est requis."
+    assert "« : »" in _edit(client, {"action": "scenario-save", "name": "a:b"})[1]["errors"]["scenario-save"]
+    assert "60 caractères" in _edit(client, {"action": "scenario-save", "name": "x" * 61})[1]["errors"]["scenario-save"]
+    assert _edit(client, {"action": "scenario-apply", "scenario": "saved:Inconnu"})[1]["errors"]["scenario-apply"] == "Scénario inconnu."
+    assert _edit(client, {"action": "scenario-apply", "scenario": ""})[1]["errors"]["scenario-apply"] == "Choisissez un scénario."
+    assert not plan_file.exists()
+
+
+# --- scheduled transfers ---------------------------------------------------------------------
+
+def test_a_series_is_added_and_removed(client, plan_file):
+    assert _edit(client, {"action": "contrib", "amount": "1000", "every": "quarter",
+                          "months": "24", "pocket": "3a", "start": ""})[0] == 200
+    (entry,) = plans.Plan.load(plan_file).contributions
+    assert entry == {"pocket": "3a", "amount": 1000.0, "every": "quarter", "months": 24, "start": ""}
+    (shown,) = _forecast(client)["plan"]["contributions"]
+    assert shown["every_label"] == "chaque trimestre"
+    _edit(client, {"action": "contrib-del", "pocket": "3a", "amount": 1000.0,
+                   "every": "quarter", "months": 24, "start": ""})
+    assert plans.Plan.load(plan_file).contributions == []
+
+
+def test_a_bad_series_is_refused_field_by_field(client, plan_file):
+    _, body = _edit(client, {"action": "contrib", "amount": "abc", "every": "quarter",
+                             "months": "24", "pocket": "3a"})
+    assert "en francs" in body["errors"]["contrib-amount"]
+    _, body = _edit(client, {"action": "contrib", "amount": "100", "every": "weekly",
+                             "months": "24", "pocket": "3a"})
+    assert body["errors"]["contrib-every"] == "Choisissez une cadence."
+    _, body = _edit(client, {"action": "contrib", "amount": "100", "every": "quarter",
+                             "months": "0", "pocket": "", "start": "2026-13"})
+    assert body["errors"]["contrib-pocket"] == "Choisissez une poche."
+    assert body["errors"]["contrib-months"] == "La durée est d'au moins 1 mois."
+    assert body["errors"]["contrib-start"] == "Le mois de début est invalide."
+    assert not plan_file.exists()
+
+
+# --- whole plans as scenarios ------------------------------------------------------------------
+
+def test_plans_are_saved_switched_compared_and_deleted(client, plan_file):
+    """The page edits the plan on screen, switching keeps its edits, the
+    comparison projects every plan on the same horizon."""
+    _edit(client, {"action": "income", "amount": "8000"})
+    assert _edit(client, {"action": "plan-save-as", "name": "Prudent"})[0] == 200
+    _edit(client, {"action": "plan-save-as", "name": "Loyer en hausse"})
+    # The copy is on screen: its edits do not touch the original.
+    _edit(client, {"action": "spend", "amount": "4500"})
+    plan = plans.Plan.load(plan_file)
+    assert plan.active == "Loyer en hausse" and plan.spend == 4500.0
+    assert plan.plan_scenarios["Prudent"]["spend"] is None
+
+    data = _forecast(client)
+    assert data["active"] == "Loyer en hausse"
+    assert [c["name"] for c in data["comparison"]] == ["Prudent", "Loyer en hausse"]
+    assert all(len(c["line"]) == len(data["projection"]["rows"]) for c in data["comparison"])
+    on = next(c for c in data["comparison"] if c["active"])
+    assert on["spend_source"] == "declared"
+
+    _edit(client, {"action": "plan-switch", "name": "Prudent"})
+    plan = plans.Plan.load(plan_file)
+    assert plan.active == "Prudent" and plan.spend is None and plan.income == 8000.0
+    assert plan.plan_scenarios["Loyer en hausse"]["spend"] == {"amount": 4500.0}
+
+    assert _edit(client, {"action": "plan-switch", "name": "Inconnu"})[1]["errors"]["plan-switch"] == "Scénario inconnu."
+    assert _edit(client, {"action": "plan-save-as", "name": " "})[1]["errors"]["plan-new"] == "Le nom est requis."
+
+    # Deleting the plan on screen keeps it, unnamed.
+    _edit(client, {"action": "plan-delete", "name": "Prudent"})
+    plan = plans.Plan.load(plan_file)
+    assert plan.active is None and plan.income == 8000.0
+    assert list(plan.plan_scenarios) == ["Loyer en hausse"]
+    assert None in [c["name"] for c in _forecast(client)["comparison"]]
+
+
+def test_a_plan_is_renamed_copied_from_another_and_its_deletion_undone(client, plan_file):
+    _edit(client, {"action": "income", "amount": "8000"})
+    # Naming the unnamed plan saves it.
+    assert _edit(client, {"action": "plan-rename", "old": "", "name": "Base"})[0] == 200
+    _edit(client, {"action": "plan-save-as", "name": "Prudent"})
+    _edit(client, {"action": "spend", "amount": "4500"})
+    # A name taken is refused, never overwritten.
+    status, body = _edit(client, {"action": "plan-save-as", "name": "Base"})
+    assert status == 400 and body["errors"]["plan-new"] == "Un scénario porte déjà ce nom."
+    assert plans.Plan.load(plan_file).plan_scenarios["Base"]["income"] == {"amount": 8000.0}
+
+    # A copy of another plan than the one shown: the shown one keeps its edits.
+    _edit(client, {"action": "plan-save-as", "name": "Variante", "from": "Base"})
+    plan = plans.Plan.load(plan_file)
+    assert plan.active == "Variante" and plan.spend is None
+    assert plan.plan_scenarios["Prudent"]["spend"] == {"amount": 4500.0}
+
+    _edit(client, {"action": "plan-rename", "old": "Variante", "name": "Sabbatique"})
+    assert _edit(client, {"action": "plan-rename", "old": "Sabbatique", "name": "Prudent"})[1]["errors"]["plan-rename"] \
+        == "Un scénario porte déjà ce nom."
+    plan = plans.Plan.load(plan_file)
+    assert plan.active == "Sabbatique" and list(plan.plan_scenarios) == ["Base", "Prudent", "Sabbatique"]
+
+    # Deleting one not on screen, then undoing: it comes back whole.
+    _edit(client, {"action": "plan-delete", "name": "Prudent"})
+    assert "Prudent" not in plans.Plan.load(plan_file).plan_scenarios
+    assert _edit(client, {"action": "plan-undelete"})[0] == 200
+    assert plans.Plan.load(plan_file).plan_scenarios["Prudent"]["spend"] == {"amount": 4500.0}
+    assert _edit(client, {"action": "plan-undelete"})[0] == 400
+
+
+def test_the_rate_reaches_the_net_worth(client, plan_file):
+    paths = savings_snapshots(client)
     try:
-        response = client.post("/previsions?months=24",
-                               data={"action": "income", "amount": "8000"})
-        assert response.status_code == 302
-        assert "months=24" in response.headers["Location"]
+        assert _forecast(client)["wealth"]["rate"] is None
+        _edit(client, {"action": "rate", "months": ["12"], "rates": ["5"]})
+        assert _forecast(client)["wealth"]["rate"] == pytest.approx(0.05)
     finally:
-        path.unlink(missing_ok=True)
+        for p in paths:
+            p.unlink(missing_ok=True)
 
 
-def test_the_horizon_select_and_wealth_seg_stay_coherent(client):
-    """Switching the wealth view on a long horizon keeps the horizon, and vice
-    versa -- the two controls share one URL builder."""
-    ibkr_path, finp_path = savings_snapshots(client)
-    try:
-        body = text(client.get("/previsions?months=24&wealth=taxable"))
-        # url_for's output is safe-marked, so the & stays literal; the query
-        # keeps the view key first, then the horizon.
-        assert 'href="/previsions?wealth=sheltered&months=24"' in body
-        assert 'href="/previsions?months=24"' in body  # Tout drops its key
-    finally:
-        ibkr_path.unlink(missing_ok=True)
-        finp_path.unlink(missing_ok=True)
-
-
-def test_the_amount_of_a_declared_one_off_edits_in_place(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "add", "month": "2026-11", "label": "Facture inhabituelle",
-            "amount": "1234.56"})
-        response = client.post("/previsions", data={
-            "action": "amount", "month": "2026-11",
-            "label": "Facture inhabituelle", "amount": "2345.67"})
-        assert response.status_code == 302
-        entry = plans.Plan.load(path).one_offs[0]
-        assert entry["amount"] == 2345.67
-        assert "2345.67" in text(client.get("/previsions"))
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_editing_the_amount_keeps_the_seasonal_provenance(client):
-    """The in-place edit must not go through delete-and-re-add: that would
-    drop the seasonal link (silently un-shadowing the suggestion), the
-    precise date and the transfer destination."""
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "add", "month": "2026-12", "label": "Assurance maladie",
-            "amount": "3500", "seasonal": "Santé|12"})
-        client.post("/previsions", data={
-            "action": "add", "date": "2026-08-28", "label": "Versement 3a",
-            "amount": "3000", "destination": "3a"})
-        client.post("/previsions", data={
-            "action": "amount", "month": "2026-12",
-            "label": "Assurance maladie", "amount": "3800"})
-        client.post("/previsions", data={
-            "action": "amount", "month": "2026-08",
-            "label": "Versement 3a", "amount": "3500"})
-        entries = {e["label"]: e for e in plans.Plan.load(path).one_offs}
-        assert entries["Assurance maladie"]["amount"] == 3800.0
-        assert entries["Assurance maladie"]["seasonal"] == {
-            "category": "Santé", "month": 12}
-        assert entries["Versement 3a"]["amount"] == 3500.0
-        assert entries["Versement 3a"]["date"] == "2026-08-28"
-        assert entries["Versement 3a"]["transfer"] == "3a"
-    finally:
-        path.unlink(missing_ok=True)
-
-
-def test_a_bad_amount_rerenders_onto_the_same_row(client):
-    path = plans_path(client)
-    path.unlink(missing_ok=True)
-    try:
-        client.post("/previsions", data={
-            "action": "add", "month": "2026-11", "label": "Facture inhabituelle",
-            "amount": "1234.56"})
-        body = text(client.post("/previsions", data={
-            "action": "amount", "month": "2026-11",
-            "label": "Facture inhabituelle", "amount": "abc"}))
-        assert "Vérifiez les champs suivants" in body
-        assert "Utilisez le point décimal" in body
-        assert 'href="#amount-1"' in body
-        field = re.search(r'<input[^>]*id="amount-1"[^>]*>', body).group(0)
-        assert 'aria-invalid="true"' in field
-        # Nothing written: the failed edit must not change the plan.
-        assert plans.Plan.load(path).one_offs[0]["amount"] == 1234.56
-        body = text(client.post("/previsions", data={
-            "action": "amount", "month": "2026-11",
-            "label": "Facture inhabituelle", "amount": "0"}))
-        assert "Montant invalide." in body
-    finally:
-        path.unlink(missing_ok=True)
+def test_a_series_is_edited_in_place(client, plan_file):
+    for amount in ("700", "7258"):
+        _edit(client, {"action": "contrib", "amount": amount, "every": "month", "months": "450",
+                       "pocket": "taxable", "start": ""})
+    status, _ = _edit(client, {"action": "contrib", "index": "0", "amount": "850", "every": "quarter",
+                               "months": "120", "pocket": "3a", "start": "2027-08"})
+    assert status == 200
+    series = plans.Plan.load(plan_file).contributions
+    assert series[0] == {"pocket": "3a", "amount": 850.0, "every": "quarter", "months": 120, "start": "2027-08"}
+    assert series[1]["amount"] == 7258.0 and len(series) == 2
+    # Typed the Swiss way.
+    _edit(client, {"action": "contrib", "index": "1", "amount": "1'000,50", "every": "year",
+                   "months": "12", "pocket": "3a", "start": ""})
+    assert plans.Plan.load(plan_file).contributions[1]["amount"] == 1000.5
+    # A series that is gone is said, nothing is added.
+    status, body = _edit(client, {"action": "contrib", "index": "5", "amount": "10", "every": "month",
+                                  "months": "1", "pocket": "3a", "start": ""})
+    assert status == 400 and "n'existe plus" in body["errors"]["contrib-amount"]
+    assert len(plans.Plan.load(plan_file).contributions) == 2

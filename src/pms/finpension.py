@@ -75,7 +75,7 @@ def parse_journal(path: Path | str) -> dict:
         "interests": round(interests, 2),
         "fees": round(fees, 2),
         # Dated, so the savings panel can say what a window cost -- the
-        # total alone answered "since 2024" whatever the period on screen.
+        # total alone answered "since the opening" whatever the period on screen.
         "fee_entries": [[day.isoformat(), amount] for day, amount in fee_entries],
         # Dated too: a deposit is money arriving in the 3a, not a return.
         "deposit_entries": deposit_entries,
@@ -196,8 +196,8 @@ def holdings(journal: dict) -> dict[str, dict]:
 
 def _deposits(raw: dict) -> list[tuple[dt.date, float]]:
     """Dated deposits; a snapshot older than the dated list only has yearly
-    totals, placed on the first known value of that year (the 2024 deposit
-    is the opening one, on 23.05.2024)."""
+    totals, placed on the first known value of that year (the first year's
+    deposit is the opening one)."""
     entries = _normalize_series(raw.get("deposit_entries"))
     if entries:
         return sorted(entries)
@@ -255,8 +255,8 @@ def observe(path: Path | str, value: float, day: dt.date) -> dict:
     it, and `value` / `value_as_of` hold only the newest one. So the reading
     being replaced must first join `yearly`: overwrite it and every day since
     the previous entry re-anchors on an older one -- done by hand the first
-    time, August re-anchored on July and the curve dropped 80 CHF overnight
-    between the 21st and the 22nd. A reading older than the current one is only an
+    time, a whole month re-anchored on the month before and the curve jumped
+    overnight. A reading older than the current one is only an
     observation; it never replaces the newest.
     """
     p = Path(path)

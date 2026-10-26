@@ -53,6 +53,21 @@ def test_refresh_never_exits_a_process_nobody_is_watching(client, tmp_path,
     assert payload["added"] == 0  # nothing ingested, ledger untouched
 
 
+def test_the_phone_finds_a_manifest_and_its_icons(client):
+    """"Add to home screen" reads the manifest; iOS reads only the 180 px
+    apple-touch-icon. Served as a manifest, or a phone ignores it."""
+    page = client.get("/").get_data(as_text=True)
+    assert 'rel="manifest"' in page and "icon-180.png" in page
+    response = client.get("/static/manifest.webmanifest")
+    assert response.mimetype == "application/manifest+json"
+    manifest = response.get_json(force=True)
+    # minimal-ui keeps a back button: the app leans on the browser's history.
+    assert manifest["start_url"] == "/" and manifest["display"] == "minimal-ui"
+    assert any(icon.get("purpose") == "maskable" for icon in manifest["icons"])
+    for icon in [*manifest["icons"], {"src": "/static/icon-180.png"}]:
+        assert client.get(icon["src"]).status_code == 200, icon["src"]
+
+
 def test_refresh_can_be_asked_not_to_restart(client, tmp_path, monkeypatch):
     import pms.web.views.system as system_views
     monkeypatch.setattr(system_views, "INBOX", tmp_path)

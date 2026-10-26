@@ -1,0 +1,165 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter/wght.css";
+
+/* ------------------------------------------------------------------ tokens
+   The eight categorical slots are the validated palette of the old app
+   (contrast and colour-vision checked in both themes): never a ninth -- past
+   eight, fold into "Autres". The surfaces are the same warm neutrals, so the
+   validation still holds. */
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f3f3f0;
+  --surface-3: #ebebe6;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e9e8e2;
+  --axis: #c3c2b7;
+  --unsorted: #8f8d84;
+  --hairline: rgba(11, 11, 11, 0.08);
+  --hairline-2: rgba(11, 11, 11, 0.14);
+  --good: #006300;
+  --critical: #d03b3b;
+  --warn: #9a6200;
+  --s0: #2a78d6; --s1: #eb6834; --s2: #1baf7a; --s3: #eda100;
+  --s4: #e87ba4; --s5: #008300; --s6: #4a3aa7; --s7: #e34948;
+  --h0: transparent; --h1: #cde2fb; --h2: #9ec5f4; --h3: #5598e7; --h4: #2a78d6; --h5: #184f95;
+  --shadow-sm: 0 1px 2px rgba(11, 11, 11, 0.04);
+  --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 8px 24px -12px rgba(11, 11, 11, 0.12);
+  --shadow-lg: 0 2px 6px rgba(11, 11, 11, 0.05), 0 24px 48px -16px rgba(11, 11, 11, 0.22);
+  --glass: color-mix(in srgb, var(--page) 78%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232322; --surface-3: #2c2c2a;
+    --ink: #f5f5f3; --ink-2: #c3c2b7; --muted: #8d8b84;
+    --grid: #262624; --axis: #3a3a37; --unsorted: #7a7973;
+    --hairline: rgba(255, 255, 255, 0.08); --hairline-2: rgba(255, 255, 255, 0.14);
+    --good: #2bb34a; --critical: #ef6a6a; --warn: #e0a133;
+    --s0: #3987e5; --s1: #d95926; --s2: #199e70; --s3: #c98500;
+    --s4: #d55181; --s5: #008300; --s6: #9085e9; --s7: #e66767;
+    --h0: transparent; --h1: #d5e6fc; --h2: #9cc6f4; --h3: #5c9be5; --h4: #3175cd; --h5: #1a4d96;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+    --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.5), 0 24px 48px -16px rgba(0, 0, 0, 0.9);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --surface-2: #232322; --surface-3: #2c2c2a;
+  --ink: #f5f5f3; --ink-2: #c3c2b7; --muted: #8d8b84;
+  --grid: #262624; --axis: #3a3a37; --unsorted: #7a7973;
+  --hairline: rgba(255, 255, 255, 0.08); --hairline-2: rgba(255, 255, 255, 0.14);
+  --good: #2bb34a; --critical: #ef6a6a; --warn: #e0a133;
+  --s0: #3987e5; --s1: #d95926; --s2: #199e70; --s3: #c98500;
+  --s4: #d55181; --s5: #008300; --s6: #9085e9; --s7: #e66767;
+  --h0: transparent; --h1: #d5e6fc; --h2: #9cc6f4; --h3: #5c9be5; --h4: #3175cd; --h5: #1a4d96;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 2px 6px rgba(0, 0, 0, 0.5), 0 24px 48px -16px rgba(0, 0, 0, 0.9);
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-grid: var(--grid);
+  --color-axis: var(--axis);
+  --color-unsorted: var(--unsorted);
+  --color-hairline: var(--hairline);
+  --color-hairline-2: var(--hairline-2);
+  --color-good: var(--good);
+  --color-critical: var(--critical);
+  --color-warn: var(--warn);
+  --color-accent: var(--s0);
+  --color-s0: var(--s0); --color-s1: var(--s1); --color-s2: var(--s2); --color-s3: var(--s3);
+  --color-s4: var(--s4); --color-s5: var(--s5); --color-s6: var(--s6); --color-s7: var(--s7);
+  --shadow-card: var(--shadow);
+  --shadow-pop: var(--shadow-lg);
+  --radius-card: 18px;
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+  @keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: translate(-50%, 6px) scale(0.98); }
+    to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+  }
+  @keyframes float-in {
+    from { opacity: 0; transform: translateY(4px) scale(0.98); }
+    to { opacity: 1; transform: none; }
+  }
+}
+
+/* -------------------------------------------------------------------- base */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    font-feature-settings: "cv11", "ss01";
+    scrollbar-gutter: stable;
+  }
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  /* A finger tap is not a hover: no grey flash, no 300 ms double-tap wait. */
+  :is(a, button, summary, label, select, input) {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  :focus-visible {
+    outline: 2px solid var(--s0);
+    outline-offset: 2px;
+  }
+  ::selection { background: color-mix(in srgb, var(--s0) 25%, transparent); }
+  input, select, textarea, button { font: inherit; color: inherit; }
+}
+
+@layer utilities {
+  .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum", "cv11", "ss01"; }
+  .eyebrow {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .safe-b { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-t { padding-top: env(safe-area-inset-top); }
+  .no-scrollbar { scrollbar-width: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface-2) 0, var(--surface-3) 50%, var(--surface-2) 100%);
+    background-size: 800px 100%;
+    animation: var(--animate-shimmer);
+    border-radius: 8px;
+  }
+  .hatch {
+    background-image: repeating-linear-gradient(135deg, currentColor 0 1px, transparent 1px 5px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

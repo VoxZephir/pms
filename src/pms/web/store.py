@@ -59,7 +59,7 @@ class Store:
         # Order matters. The static rules run first, manual corrections overlay
         # them, and only then is the Need/Want/Save mapping read -- otherwise a
         # reclassified transaction would keep the bucket of its old category.
-        classify_all(statement.transactions, rules)
+        classify_all(statement.transactions, rules, holder=statement.holder)
         self.overrides = Overrides.load(self.overrides_path)
         self.override_count = self.overrides.apply(statement.transactions)
         analysis.annotate_chf(statement)

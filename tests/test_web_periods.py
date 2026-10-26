@@ -92,3 +92,13 @@ def test_breadcrumb_omits_a_unit_the_window_straddles(bounds):
 def test_full_history_has_a_single_crumb(bounds):
     low, high = bounds
     assert len(periods.crumbs(low, high, low, high)) == 1
+
+
+def test_twelve_months_start_on_the_first():
+    """Twelve calendar months, the current one included: a mid-month start
+    opened every chart on a near-empty column."""
+    low, high = dt.date(2020, 1, 1), dt.date(2026, 7, 30)
+    p = next(x for x in periods.presets(low, high) if x["id"] == "12m")
+    assert p["start"] == dt.date(2025, 8, 1) and p["end"] == high
+    jan = next(x for x in periods.presets(low, dt.date(2026, 1, 15)) if x["id"] == "12m")
+    assert jan["start"] == dt.date(2025, 2, 1)

@@ -6,7 +6,7 @@ import copy
 import datetime as dt
 
 import pytest
-from webhelpers import text
+from webhelpers import api
 
 from pms import analysis, buckets, review
 from pms.categories import classify_all
@@ -185,37 +185,21 @@ def test_an_annual_bill_is_compared_with_last_year_not_the_ordinary_month():
 
 # --- the panel ---------------------------------------------------------------------
 
-def _review_section(body: str) -> str:
-    start = body.index('id="p-review"')
-    return body[start:body.index("</section>", start)]
-
-
 def test_the_review_appears_on_a_one_month_window_only(client):
-    assert 'id="p-review"' in text(client.get("/?from=2025-10-01&to=2025-10-31"))
-    assert 'id="p-review"' not in text(client.get("/?from=2025-10-01&to=2025-11-30"))
-    assert 'id="p-review"' not in text(client.get("/?preset=all"))
+    assert api(client, "/api/dashboard?from=2025-10-01&to=2025-10-31")["review"]
+    assert api(client, "/api/dashboard?from=2025-10-01&to=2025-11-30")["review"] is None
+    assert api(client, "/api/dashboard?preset=all")["review"] is None
 
 
-def test_the_review_names_what_it_found_and_links_to_it(client):
-    section = _review_section(text(client.get("/?from=2025-10-01&to=2025-10-31")))
-    assert "Revue du mois — Octobre 2025" in section
-    assert "Ticketcorner AG" in section and "Garage du Lac SA" in section
-    assert 'href="/transactions?' in section
-    assert "q=Garage" in section
-
-
-def test_an_empty_list_says_so_in_words(client):
-    """"Nothing unusual" is an answer; a blank would read as a failure."""
-    section = _review_section(text(client.get("/?from=2025-10-01&to=2025-10-31")))
-    assert "Aucun : les engagements à prix fixe ont gardé leur prix." in section
+def test_the_review_names_what_it_found(client):
+    found = api(client, "/api/dashboard?from=2025-10-01&to=2025-10-31")["review"]
+    assert found["label"] == "Octobre 2025"
+    assert "Garage du Lac SA" in [p["label"] for p in found["new_payees"]]
+    assert [d["label"] for d in found["duplicates"]] == ["Ticketcorner AG"]
+    # An empty list is an answer, which the page says in words.
+    assert found["prices"] == []
 
 
 def test_the_review_covers_the_month_in_progress(client):
-    section = _review_section(text(client.get("/?from=2026-07-01&to=2026-07-30")))
-    assert "mois en cours, au 30.07.2026" in section
-
-
-def test_the_review_leads_the_table_of_contents(client):
-    body = text(client.get("/?from=2025-10-01&to=2025-10-31"))
-    toc = body[body.index('<nav class="toc"'):]
-    assert toc.index("#p-review") < toc.index("#p-balance")
+    found = api(client, "/api/dashboard?from=2026-07-01&to=2026-07-30")["review"]
+    assert found["partial"] is True and found["last"] == "2026-07-30"

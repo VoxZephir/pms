@@ -1,24 +1,24 @@
-"""Cash-flow and wealth projection: `/previsions`, its view switches and
-its forms.
+"""Cash-flow and wealth projection: the view switches of the forecast, the
+net-worth curve's measured half, the scenario comparison, and the one
+function every edit to the plan goes through (`apply_plan_action`).
+`/api/previsions` serves them.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import json
 import re
-from collections import Counter
-from itertools import zip_longest
 
-from flask import redirect, render_template, request, url_for
+from flask import request
 
 from ... import analysis
+from ... import crypto as crypto_module
 from ... import finpension as finpension_module
+from ... import holdings as holdings_module
 from ... import ibkr as ibkr_module
 from ... import plans as plans_module
-from ...analysis import chf
-from .. import charts
-from .common import DEFAULT_SCALE, bp, scale_mode, store
+from ..palette import MAX_SLOTS
+from .common import store, titres_mode
 from .savings import _evolution_row
 
 # Which side of the wealth tax the net-worth curve shows. A pillar 3a is out
@@ -117,24 +117,29 @@ def _plan() -> plans_module.Plan:
 WEALTH_LOOKBACK_MONTHS = 12
 
 
-def _wealth(data, plan: plans_module.Plan, projection: dict) -> tuple[dict, dict]:
+def _wealth(data, plan: plans_module.Plan, projection: dict) -> tuple[dict, int]:
     """The net-worth curve: a measured year, then an assumed one.
 
     The observed half is built by `_evolution_row`, the same function behind
-    the dashboard's savings curve, so the two panels can never disagree about
-    what the portfolio was worth at a given month end. The volatility handed
-    to the projection is measured on the pockets' own monthly history -- the
-    band is the account's real past dispersion, not a parameter someone chose.
+    the savings page's curve -- unlisted shares included unless `?titres=0`,
+    like there -- so the two can never disagree about what the portfolio was
+    worth at a given month end. The projected half grows each pocket at its
+    own barème when it has one (`Plan.own_rates`), the common one otherwise
+    (`plans.project_pockets`). The volatility is measured on the pockets'
+    own monthly history unless declared: the band is the account's real past
+    dispersion, not a parameter someone chose.
 
-    Returns `({}, {}, 0)` when there is no brokerage snapshot: without the
-    pockets the curve would just be the cash line already above it. The third
-    element is the number of observed points, which the page reads back into
-    the chart's aria-label.
+    Returns `({}, 0)` when there is no brokerage snapshot: without the
+    pockets the curve would just be the cash line already above it. The
+    second element is the number of observed points.
     """
     ibkr = ibkr_module.load(data.path.with_name("ibkr.json"))
     if not ibkr:
-        return {}, {}, 0
+        return {}, 0
     finpension = finpension_module.load(data.path.with_name("finpension.json"))
+    crypto = crypto_module.load(data.path.with_name("crypto.json"))
+    securities = (holdings_module.load(data.path.with_name("holdings.json"))
+                  if titres_mode(request.args) else [])
 
     end = data.statement.period_end
     low = data.bounds[0]
@@ -145,85 +150,241 @@ def _wealth(data, plan: plans_module.Plan, projection: dict) -> tuple[dict, dict
     while day <= end:
         month_end = analysis.bucket_bounds(day, "month")[1]
         point = min(month_end, end)
-        rows.append(_evolution_row(data.statement, ibkr, finpension, point))
+        rows.append(_evolution_row(data.statement, ibkr, finpension, point, crypto, securities))
         day = month_end + dt.timedelta(days=1)
 
     # Which parts of the picture the chosen view counts. The measured half and
     # the projected half must slice the same way, or the curve would step at
     # the join for no reason other than the filter.
     view = wealth_mode(request.args)
+    include_cash = view != "sheltered"
 
     def seen(row: dict) -> float:
-        if view == "taxable":
-            return round(row["swiss"] + (row["ibkr"] or 0.0), 2)
-        if view == "sheltered":
-            return round(row["finp"] or 0.0, 2)
-        return row["total"]
+        return round(sum(row.get(k) or 0.0 for k in VIEW_POCKETS[view]), 2)
 
-    observed = [{"total": seen(r),
-                 "label": charts.month_label(r["date"].strftime("%Y-%m"))}
-                for r in rows]
+    observed = [{"total": seen(r), "label": _short_month(r["date"])} for r in rows]
 
     # The band describes the *invested* pockets only, so the volatility is
     # measured on them alone. Including the Swissquote balance would read a
     # salary landing as portfolio risk.
-    invested_levels = [r["ibkr"] + r["finp"] for r in rows
-                       if r["ibkr"] is not None and r["finp"] is not None]
     years = max((end - start).days / 365.25, 1 / 12)
-    stats = analysis.risk_stats(invested_levels, years) \
-        if len(invested_levels) >= 3 else {}
+    invested_levels = [r["ibkr"] + r["finp"] + (r["crypto"] or 0.0) + (r["titres"] or 0.0)
+                       for r in rows if r["ibkr"] is not None and r["finp"] is not None]
+    stats = analysis.risk_stats(invested_levels, years) if len(invested_levels) >= 3 else {}
+    # A declared value moves by a step once a year: its "volatility" would
+    # measure the declaration, not a market.
+    measured = {k: _measured_vol([r[k] for r in rows if r.get(k) is not None], years)
+                for k in plans_module.POCKET_KEYS if k not in plans_module.FIXED_BY_DEFAULT}
 
     last = rows[-1]
-    if view == "taxable":
-        invested = last["ibkr"] or 0.0
-        pocket, include_cash = plans_module.TAXABLE, True
-    elif view == "sheltered":
-        invested = last["finp"] or 0.0
-        pocket, include_cash = plans_module.SHELTERED, False
-    else:
-        invested = (last["ibkr"] or 0.0) + (last["finp"] or 0.0)
-        pocket, include_cash = None, True
-
+    keys, invested, routes = _view_pockets(last, view, include_cash)
     # A declared volatility replaces the measured one; the page says which of
     # the two is drawing the band. Same effective number in all three views:
     # the measured value stays the combined-pockets one -- the same money
     # viewed two ways must not draw two different bands.
     vol = plan.vol if plan.vol is not None else stats.get("vol", 0.0)
-    wealth = plans_module.project_wealth(
-        projection, invested, plan.rate, vol,
-        pocket=pocket, include_cash=include_cash,
-        rate_schedule=plan.rate_segments)
+    vols = {}
+    for k in invested:
+        own = plan.own_rates(k)
+        vols[k] = (vol if own is None
+                   else own["vol"] if own["vol"] is not None
+                   else measured.get(k) or 0.0)
+    split = plans_module.project_pockets(
+        projection, invested, routes, plan.rate, plan.rate_segments,
+        include_cash=include_cash, schedules=plan.schedules(), vols=vols)
+    wealth = plans_module.wealth_from_pockets(projection, split, include_cash)
+    wealth["rate"] = plan.rate
+    wealth["rated"] = _rated(plan)
+    wealth["vol"] = vol
     wealth["vol_source"] = "declared" if plan.vol is not None else "measured"
-    return wealth, charts.wealth_chart(
-        observed, wealth, scale_mode(request.args),
-        yscale_mode(request.args)), len(observed)
+    # What the pockets measure, said beside a declared one too: the reader
+    # deciding to override it sees what they override.
+    wealth["vol_measured"] = stats.get("vol")
+    wealth["observed"] = observed
+    wealth["parts"] = _parts(rows, keys, invested, projection, plan, include_cash, split)
+    # Each pocket's barème and band as the rate panel shows them.
+    wealth["pockets_rates"] = [_pocket_rates(plan, k, last.get(k) or 0.0, vols.get(k), measured.get(k),
+                                             projection)
+                               for k in plans_module.POCKET_KEYS if last.get(k) is not None]
+    # What the scenario comparison needs to project another plan the same way.
+    wealth["pockets_start"], wealth["routes"] = invested, routes
+    wealth["include_cash"] = include_cash
+    wealth["pocket"] = {"taxable": plans_module.TAXABLE, "sheltered": plans_module.SHELTERED}.get(view)
+    return wealth, len(observed)
 
 
-def _previsions_url(**overrides) -> str:
-    """The previsions page keeping the view options that are on screen.
+def _measured_vol(levels: list[float], years: float) -> float | None:
+    return analysis.risk_stats(levels, years).get("vol") if len(levels) >= 3 else None
 
-    The forms post to this URL and the redirect comes back to it, so editing
-    the plan leaves the reader where they were instead of snapping back to the
-    default view. Only the display keys ride along -- the same rule as
-    `dash_url`, for the same reason. An override wins over what is on screen,
-    which is what makes the view buttons themselves: they are this URL with
-    one key changed, and the default key is dropped rather than spelled out.
+
+def _rated(plan: plans_module.Plan) -> bool:
+    """Whether any growth on the curve is declared: the common barème, or a
+    pocket's own non-empty one."""
+    return (plan.rate is not None or bool(plan.rate_segments)
+            or any(s for s in plan.schedules().values()))
+
+
+def _pocket_rates(plan: plans_module.Plan, key: str, value: float, vol: float | None,
+                  measured: float | None, projection: dict) -> dict:
+    """One pocket in the rate panel: its value today, whether it follows the
+    common barème, the barème it grows by, per year over the horizon."""
+    own = plan.own_rates(key)
+    segments = own["rate_segments"] if own is not None else plan.rate_segments
+    return {
+        "id": key, "label": plans_module.POCKET_LABELS[key], "slot": POCKETS[key][1],
+        "value": round(value, 2), "own": own is not None,
+        "fixed_by_default": key in plans_module.FIXED_BY_DEFAULT,
+        "rate_segments": [[m, r] for m, r in segments],
+        "rate_years": plans_module.rate_years(segments, [r["key"] for r in projection["rows"]]),
+        "vol": own["vol"] if own is not None else plan.vol,
+        "vol_effective": vol, "vol_measured": measured,
+        "growth": plans_module.growth_path(segments, projection.get("months") or len(projection["rows"]) or 1),
+        "summary": plans_module.scenario_summary(segments, own["vol"] if own is not None else plan.vol),
+    }
+
+
+# The pockets of the net worth, in the slots the savings page gives them --
+# a pocket keeps its hue from one page to the other.
+POCKETS = {"swiss": ("Comptes", 0), "ibkr": ("IBKR", 2), "finp": ("3a", 3),
+           "crypto": ("Crypto", 5), "titres": ("Titres non cotés", 4)}
+CLASSES = {"cash": ("Cash", 0), "actions": ("Actions", 2),
+           "mf": ("Trend-Following", 3), "crypto": ("Crypto", 5),
+           "other": ("Non réparti", None)}
+# Which classes each pocket holds, read off the savings page's own split
+# (`_evolution_row`): the brokerage's keys, the 3a's, the rest whole.
+POCKET_CLASSES = {"ibkr": {"actions": "ibkr_actions", "mf": "ibkr_mf"},
+                  "finp": {"cash": "finp_cash", "actions": "finp_actions"}}
+VIEW_POCKETS = {"all": ("swiss", "ibkr", "finp", "crypto", "titres"),
+                "taxable": ("swiss", "ibkr", "crypto", "titres"), "sheltered": ("finp",)}
+
+
+def _view_pockets(last: dict, view: str, include_cash: bool):
+    """The pockets a view counts (the cash account aside when it holds
+    none), the invested ones at today's value, and where a declared transfer
+    lands among them."""
+    # A pocket not held (no coins yet, no share declared) is left out,
+    # unless a declared transfer may land in it.
+    keys = [k for k in VIEW_POCKETS[view]
+            if (k != "swiss" or include_cash)
+            and (k in ("swiss", "ibkr", "finp") or last.get(k) is not None)]
+    invested = {k: last.get(k) or 0.0 for k in keys if k != "swiss"}
+    routes = {}
+    if "ibkr" in keys:
+        routes[plans_module.TAXABLE] = "ibkr"
+    if "finp" in keys:
+        routes[plans_module.SHELTERED] = "finp"
+    return keys, invested, routes
+
+
+def _mix(last: dict, pocket: str) -> dict[str, float]:
+    """The share of each asset class in a pocket today."""
+    if pocket == "swiss":
+        return {"cash": 1.0}
+    if pocket == "crypto":
+        return {"crypto": 1.0}
+    if pocket == "titres":
+        return {"actions": 1.0}  # a Swiss company's equity, as on the savings page
+    keys = POCKET_CLASSES[pocket]
+    amounts = {c: last.get(k) or 0.0 for c, k in keys.items()}
+    total = sum(amounts.values())
+    if total <= 0:
+        return {"other": 1.0}
+    return {c: v / total for c, v in amounts.items() if v}
+
+
+def _parts(rows: list[dict], keys: list[str], invested: dict[str, float], projection: dict,
+           plan: plans_module.Plan, include_cash: bool, split: dict) -> dict:
+    """The net worth by pocket and by asset class, measured then projected,
+    and what each piece brings to the horizon.
+
+    The projection is `split` (`plans.project_pockets`), the curve's own
+    arithmetic split by pocket. The classes are the pockets at **today's mix**: the
+    plan declares no rebalancing and no return per class, so the brokerage
+    keeps its split and new money into it follows that split -- the page
+    says it. A pocket worth nothing today that receives a transfer has no
+    mix to follow: its money is "Non réparti", not guessed.
     """
-    params = {}
-    view = overrides.pop("wealth", wealth_mode(request.args))
-    if view and view != DEFAULT_WEALTH_VIEW:
-        params["wealth"] = view
-    scale = overrides.pop("scale", scale_mode(request.args))
-    if scale and scale != DEFAULT_SCALE:
-        params["scale"] = scale
-    months = overrides.pop("months", months_ahead(request.args))
-    if months and months != DEFAULT_MONTHS:
-        params["months"] = months
-    yscale = overrides.pop("yscale", yscale_mode(request.args))
-    if yscale and yscale != DEFAULT_YSCALE:
-        params["yscale"] = yscale
-    params.update(overrides)
-    return url_for("dashboard.previsions", **params)
+    last = rows[-1]
+    mixes = {k: _mix(last, k) for k in keys}
+
+    def by_pocket(values: dict[str, float], cash: float | None) -> dict[str, float]:
+        out = {k: round(values.get(k, 0.0), 2) for k in keys if k != "swiss"}
+        if "swiss" in keys:
+            out["swiss"] = round(cash or 0.0, 2)
+        return out
+
+    def by_class(pockets: dict[str, float]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for pocket, value in pockets.items():
+            for cls, share in mixes[pocket].items():
+                out[cls] = out.get(cls, 0.0) + value * share
+        return {k: round(v, 2) for k, v in out.items()}
+
+    def observed_pockets(r: dict) -> dict[str, float]:
+        return {k: round(r.get(k) or 0.0, 2) for k in keys}
+
+    def observed_classes(r: dict) -> dict[str, float]:
+        # Measured, not mixed: each month's own split.
+        out: dict[str, float] = {}
+        for pocket in keys:
+            if pocket == "swiss":
+                out["cash"] = out.get("cash", 0.0) + (r.get("swiss") or 0.0)
+            elif pocket == "crypto":
+                out["crypto"] = out.get("crypto", 0.0) + (r.get("crypto") or 0.0)
+            elif pocket == "titres":
+                out["actions"] = out.get("actions", 0.0) + (r.get("titres") or 0.0)
+            else:
+                for cls, key in POCKET_CLASSES[pocket].items():
+                    out[cls] = out.get(cls, 0.0) + (r.get(key) or 0.0)
+        return {k: round(v, 2) for k, v in out.items()}
+
+    projected_pockets = [by_pocket(r["pockets"], r["cash"]) for r in split["rows"]]
+    projected_classes = [by_class(p) for p in projected_pockets]
+    seen_pockets = [observed_pockets(r) for r in rows]
+    seen_classes = [observed_classes(r) for r in rows]
+
+    def series(names: dict, present: list[dict]) -> list[dict]:
+        used = {k for point in present for k, v in point.items() if abs(v) >= 0.5}
+        return [{"key": k, "name": name, "slot": slot}
+                for k, (name, slot) in names.items() if k in used]
+
+    end_cash = projection["rows"][-1]["end"] if projection["rows"] else projection["cash"]
+    table = []
+    for k in keys:
+        name, slot = POCKETS[k]
+        if k == "swiss":
+            table.append({"key": k, "name": name, "slot": slot,
+                          "start": round(projection["cash"], 2),
+                          "paid": round(-split["moved"], 2), "growth": 0.0,
+                          "end": round(end_cash, 2)})
+        elif invested[k] or split["end"].get(k):
+            table.append({"key": k, "name": name, "slot": slot,
+                          "start": round(invested[k], 2),
+                          "paid": split["paid"].get(k, 0.0),
+                          "growth": split["growth"].get(k, 0.0),
+                          "end": split["end"].get(k, 0.0)})
+    flows = [{**f, "label": (f"{f['label']} {POCKETS[f['pocket']][0]}"
+                             if f.get("pocket") else f["label"]),
+              "slot": POCKETS[f["pocket"]][1] if f.get("pocket") else None}
+             for f in split["flows"]]
+    return {
+        "pockets": {"series": series({k: POCKETS[k] for k in keys}, seen_pockets + projected_pockets),
+                    "observed": seen_pockets, "projected": projected_pockets},
+        "classes": {"series": series(CLASSES, seen_classes + projected_classes),
+                    "observed": seen_classes, "projected": projected_classes},
+        "table": table,
+        "flows": flows,
+        "start": round(sum(t["start"] for t in table), 2),
+        "end": round(sum(t["end"] for t in table), 2),
+        "moved": split["moved"],
+        "rated": _rated(plan),
+        "own": sorted(k for k in invested if plan.own_rates(k) is not None),
+    }
+
+
+def _short_month(day: dt.date) -> str:
+    """"oct. 25": the measured half's axis labels."""
+    return f"{analysis.MONTH_SHORT[day.month - 1]} {day.year % 100:02d}"
 
 
 def _suggestion_target(rows: list[dict], month: int) -> str | None:
@@ -248,85 +409,80 @@ def _declared_one_offs(plan: plans_module.Plan) -> list[dict]:
                                  e["label"]))
 
 
-def _month_groups(rows: list[dict], wealth_rows: list[dict]) -> list[dict]:
-    """The "Mois par mois" table folded by year, and by decade when the
-    horizon spans many years -- a 40-year projection would otherwise mean
-    endless scrolling. Each month row carries its wealth partner attached,
-    so the pairing is by construction, never by index. Years beyond the
-    first start collapsed; the near term stays in view.
+def _compare(data, plan: plans_module.Plan, horizon: int, wealth: dict) -> list[dict]:
+    """Every saved plan, projected over the same horizon and summed up the
+    same way: the questions a scenario is for -- how low does the cash go,
+    where does it end, how much went to the pockets, what is it all worth.
+
+    The pockets start where they are today and grow at each scenario's own
+    barème, in the wealth view on screen. The live plan joins the table
+    when it carries no name, so the comparison never hides what is drawn.
     """
-    # zip_longest: without a brokerage snapshot the wealth partner is None
-    # and the month rows still render.
-    months = [dict(r, wealth=w) for r, w in zip_longest(rows, wealth_rows)]
-    years: list[dict] = []
-    for m in months:
-        year = m["key"][:4]
-        if not years or years[-1]["year"] != year:
-            years.append({"year": year, "label": year, "rows": [],
-                          "open": not years})
-        years[-1]["rows"].append(m)
-    for y in years:
-        y["income"] = round(sum(r["income"] for r in y["rows"]), 2)
-        y["spend"] = round(sum(r["spend"] for r in y["rows"]), 2)
-        y["start"] = y["rows"][0]["start"]
-        y["end"] = y["rows"][-1]["end"]
-        # Per kind, so the summary never calls a programmed series a
-        # "ponctuel": the chip vocabulary is the summary's vocabulary.
-        y["kinds"] = Counter(o["source"] for r in y["rows"]
-                             for o in r["one_offs"])
-    if len(years) <= 4:
-        return years
-    decades: list[dict] = []
-    for y in years:
-        decade = y["year"][:3] + "0"
-        if not decades or decades[-1]["decade"] != decade:
-            decades.append({"decade": decade, "label": f"Années {decade}",
-                            "years": [], "open": not decades})
-        decades[-1]["years"].append(y)
-    for d in decades:
-        d["income"] = round(sum(y["income"] for y in d["years"]), 2)
-        d["spend"] = round(sum(y["spend"] for y in d["years"]), 2)
-        d["start"] = d["years"][0]["start"]
-        d["end"] = d["years"][-1]["end"]
-        d["kinds"] = sum((y["kinds"] for y in d["years"]), Counter())
-    return decades
-
-
-def _rate_rows(plan: plans_module.Plan, form_values) -> list[dict]:
-    """The rate schedule table's rows, with one trailing blank "add" row.
-
-    A failed POST carries its typed arrays here -- the re-render must show
-    what was typed, not what the plan holds. Otherwise the plan's own
-    segments, in percent for the form.
-    """
-    if form_values and form_values.get("rate-months"):
-        months = list(form_values["rate-months"])
-        rates = list(form_values["rate-rates"])
-        # The form always posts its trailing blank "add" row; a failed POST
-        # must not grow the table by one row per attempt.
-        while (months and rates
-               and not (months[-1] or "").strip()
-               and not (rates[-1] or "").strip()):
-            months.pop()
-            rates.pop()
-    else:
-        months = [str(m) for m, _ in plan.rate_segments]
-        rates = [str(round(r * 100, 1)) for _, r in plan.rate_segments]
-    rows = [{"months": m, "percent": r, "index": i}
-            for i, (m, r) in enumerate(zip(months, rates))]
-    rows.append({"months": "", "percent": "", "index": len(rows)})
+    # Creation order, not the alphabet: a scenario's colour must not change
+    # because another one was named before it.
+    entries = [(name, plan.scenario_plan(name)) for name in plan.plan_scenarios]
+    if plan.active is None and not plan.empty:
+        entries.append((None, plan))
+    rows = []
+    for index, (name, scenario) in enumerate(entries):
+        projection = plans_module.project(data.statement, scenario, months_ahead=horizon)
+        rows_ = projection["rows"]
+        final = None
+        if wealth:
+            split = plans_module.project_pockets(
+                projection, wealth["pockets_start"], wealth["routes"], scenario.rate,
+                scenario.rate_segments, include_cash=wealth["include_cash"],
+                schedules=scenario.schedules())
+            final = plans_module.wealth_from_pockets(projection, split, wealth["include_cash"])["final"]
+        rows.append({
+            "name": name,
+            # The plan on screen: the active scenario, or the unnamed live plan.
+            "active": name == plan.active,
+            "slot": index if index < MAX_SLOTS else None,
+            "income": projection["income"],
+            "spend": projection["baseline"],
+            "spend_source": projection["baseline_source"],
+            "low": projection["low"],
+            "end": rows_[-1]["end"] if rows_ else projection["cash"],
+            "moved": round(sum(o["amount"] for r in rows_ for o in r["one_offs"]
+                               if o.get("transfer")), 2),
+            "wealth": final["total"] if final else None,
+            "rows": rows_,
+        })
+    # Each card says how it differs from the plan on screen: the comparison
+    # is read against what is being edited, not in the abstract.
+    shown = next((r for r in rows if r["active"]), None)
+    for r in rows:
+        if shown is None or r is shown:
+            r["delta_low"] = r["delta_wealth"] = None
+            continue
+        r["delta_low"] = round(r["low"]["amount"] - shown["low"]["amount"], 2)
+        r["delta_wealth"] = (round(r["wealth"] - shown["wealth"], 2)
+                             if r["wealth"] is not None and shown["wealth"] is not None
+                             else None)
     return rows
 
 
-def _plans_page(form_errors=None, form_values=None):
-    data = store()
-    plan = _plan()
-    horizon = months_ahead(request.args)
-    projection = plans_module.project(data.statement, plan,
-                                      months_ahead=horizon)
+def _scenario_name(form, errors: dict, values: dict, key: str) -> str | None:
+    """A plan scenario's name from the form, or None with the error set."""
+    name = (form.get("name") or "").strip()
+    values[key] = name
+    if not name:
+        errors[key] = "Le nom est requis."
+    elif len(name) > 60:
+        errors[key] = "Le nom est limité à 60 caractères."
+    else:
+        return name
+    return None
 
+
+def _suggestions(data, plan: plans_module.Plan, projection: dict) -> list[dict]:
+    """The seasonal one-offs the history suggests and the plan has not
+    decided on yet, each with the projected month it would land in."""
     all_suggestions = plans_module.seasonal_one_offs(data.statement)
-    confirmed_shadows = {(e["seasonal"]["category"], e["seasonal"]["month"])
+    # Per target month, like the projection: last December's confirmation
+    # does not confirm this December's bill.
+    confirmed_shadows = {(e["seasonal"]["category"], e["seasonal"]["month"], e["month"])
                          for e in plan.one_offs if e.get("seasonal")}
     suggestions = []
     for s in all_suggestions:
@@ -341,7 +497,7 @@ def _plans_page(form_errors=None, form_values=None):
         # twice would declare the same bill twice. The same shadowing rules
         # as the projection -- by provenance, or by label in the target
         # month (the renamed confirmation).
-        shadowed = ((s["category"], s["month"]) in confirmed_shadows
+        shadowed = ((s["category"], s["month"], target) in confirmed_shadows
                     or s["category"] in {e["label"] for e in plan.one_offs
                                          if e["month"] == target})
         if shadowed:
@@ -349,163 +505,39 @@ def _plans_page(form_errors=None, form_values=None):
         s["target"] = target
         s["month_label"] = plans_module.MONTH_NAMES[s["month"] - 1].capitalize()
         suggestions.append(s)
-
-    ignored = [{"category": c, "month": m,
-                "label": plans_module.MONTH_NAMES[m - 1].capitalize()}
-               for c, m in plan.ignored]
-
-    chart = charts.projection_chart(projection)
-    wealth, wealth_chart, wealth_observed = _wealth(data, plan, projection)
-
-    # The baseline's own arithmetic, month by calendar month: how the KPI's
-    # "dépense mensuelle de base" is made up. Two observed calendar months
-    # are the least it can say anything about, like the monthly panel.
-    m_profile = plans_module.monthly_profile(data.statement)
-    monthly_analysis = (charts.monthly_season_chart(
-        m_profile, projection["baseline"]) if len(m_profile) >= 2 else {})
-
-    crosshair_payload = {}
-    if chart.get("series"):
-        crosshair_payload["projection"] = {"series": chart["series"],
-                                           "geom": chart["geom"],
-                                           "labels": chart["labels"]}
-    if wealth_chart.get("series"):
-        crosshair_payload["wealth"] = {"series": wealth_chart["series"],
-                                       "geom": wealth_chart["geom"],
-                                       "labels": wealth_chart["labels"]}
-    if monthly_analysis.get("series"):
-        crosshair_payload["monthly"] = {"series": monthly_analysis["series"],
-                                        "geom": monthly_analysis["geom"],
-                                        "labels": monthly_analysis["labels"]}
-
-    context = dict(
-        chart_data_json=json.dumps(crosshair_payload, separators=(",", ":")),
-        projection=projection,
-        chart=chart,
-        monthly_analysis=monthly_analysis,
-        monthly_profile=m_profile if monthly_analysis else [],
-        wealth=wealth,
-        wealth_chart=wealth_chart,
-        wealth_view=wealth_mode(request.args),
-        wealth_observed=wealth_observed,
-        plan_action=_previsions_url(),
-        wealth_views=[{"id": key, "label": spec["label"], "aria": spec["aria"],
-                       "note": spec["note"],
-                       # Built here rather than in the template: the link has to
-                       # drop the key when it is the default and keep the scale
-                       # and the horizon, and Jinja cannot spread two mappings
-                       # into one call.
-                       "url": _previsions_url(wealth=key),
-                       "active": key == wealth_mode(request.args)}
-                      for key, spec in WEALTH_VIEWS.items()],
-        scale=scale_mode(request.args),
-        months=horizon,
-        horizon_presets=HORIZON_PRESETS,
-        months_label=months_label,
-        # The horizon GET form must not carry a months key of its own -- the
-        # select's value is the only one that should reach the server.
-        horizon_action=_previsions_url(months=None),
-        yscale=yscale_mode(request.args),
-        yscale_options=[{"id": key, "label": label,
-                         "url": _previsions_url(yscale=key),
-                         "active": key == yscale_mode(request.args)}
-                        for key, label in YSCALES.items()],
-        # The month table, folded by year (and decade on long horizons), each
-        # month row carrying its wealth partner.
-        month_groups=_month_groups(projection["rows"],
-                                   wealth.get("rows", []) if wealth else []),
-        builtin_scenarios=[{"key": key, "label": spec["label"]}
-                           for key, spec in
-                           plans_module.BUILTIN_SCENARIOS.items()],
-        saved_scenarios=[{"name": name,
-                          "summary": plans_module.scenario_summary(
-                              s["rate_segments"], s["vol"], s.get("months", 0))}
-                         for name, s in sorted(plan.scenarios.items(),
-                                               key=lambda kv: kv[0].casefold())],
-        contributions=[{
-            "amount": c["amount"], "every": c["every"],
-            "every_label": plans_module.CONTRIBUTION_LABELS[c["every"]],
-            "months": c["months"],
-            "start": c["start"],
-            "start_label": (plans_module.month_label(c["start"])
-                            if c["start"] else "le mois prochain"),
-            "pocket": c["pocket"],
-            "pocket_label": ("le 3a" if c["pocket"] == plans_module.SHELTERED
-                             else "le placement"),
-        } for c in plan.contributions],
-        pockets=[{"id": plans_module.SHELTERED, "label": "le 3a"},
-                 {"id": plans_module.TAXABLE, "label": "le placement"}],
-        every_options=[{"id": key, "label": label}
-                       for key, label in
-                       plans_module.CONTRIBUTION_LABELS.items()],
-        every_labels=plans_module.CONTRIBUTION_LABELS,
-        # The page's own sections, for the left rail. The wealth card is
-        # absent without a brokerage snapshot, and so is its entry -- a
-        # sommaire link to nothing is worse than no link.
-        toc=[{"id": "p-projection", "label": "Solde projeté"}]
-        + ([{"id": "p-wealth", "label": "Patrimoine"}] if wealth_chart else [])
-        + [{"id": "p-forecast", "label": "Mois par mois"}]
-        + ([{"id": "p-analysis", "label": "Analyse mensuelle"}]
-           if monthly_analysis else [])
-        + [{"id": "p-plan", "label": "Le plan"}],
-        rate_rows=_rate_rows(plan, form_values),
-        # The barème fold reopens when a rate or vol POST failed -- the error
-        # must not sit inside a closed details block.
-        rate_form_open=any(k.startswith("rate-row-") or k == "plan-vol"
-                           for k in (form_errors or {})),
-        vol_declared=plan.vol,
-        destinations=[{"id": key, "label": plans_module.DESTINATION_LABELS[key]}
-                      for key in plans_module.DESTINATIONS],
-        declared=_declared_one_offs(plan),
-        suggestions=suggestions,
-        ignored=ignored,
-        income_declared=plan.income,
-        as_of=data.statement.period_end,
-        form_errors=form_errors or {},
-        form_values=form_values or {},
-        kpis=[
-            {"label": "Cash aujourd'hui", "value": chf(projection["cash"], 0),
-             "note": f"solde CHF au {data.statement.period_end.strftime('%d.%m.%Y')}"},
-            {"label": "Revenu mensuel", "value": chf(projection["income"], 0),
-             "note": ("déclaré dans le plan" if plan.income is not None
-                      else "médiane de l'historique")},
-            {"label": "Dépense mensuelle de base", "value": chf(projection["baseline"], 0),
-             "note": "hors ponctuels — médiane des mois, pics saisonniers retirés"},
-            {"label": "Solde le plus bas prévu", "value": chf(projection["low"]["amount"], 0),
-             "note": (f"en {projection['low']['label']}"
-                      if projection["low"]["key"] else
-                      "aujourd'hui — le solde ne descend jamais sous ce niveau"),
-             "positive": projection["low"]["amount"] >= 0},
-        ],
-    )
-    # The fragment is <main>'s content alone -- the swap replaces <main>'s
-    # innerHTML in place, exactly like the dashboard's. Same context dict,
-    # so the two renders cannot drift: the parity test locks it.
-    template = ("partials/previsions_main.html.j2"
-                if request.args.get("fragment") else "previsions.html.j2")
-    return render_template(template, **context)
+    return suggestions
 
 
-def _plans_post():
-    """The no-JavaScript path: the page's forms submit here, then redirect.
-
-    Every action is a small edit to data/plans.json. A value that refuses to
-    parse used to be skipped -- the page simply did not change, and the user
-    typed the same thing again. Now the POST re-renders the page with the
-    error stated and the typed value kept, so the field says what it wanted
-    instead of swallowing the keystrokes. The app keeps no session, so the
-    error state is carried in the re-render, never in a flash.
-    """
-    plan = _plan()
-    action = request.form.get("action") or ""
-    month = (request.form.get("month") or "").strip()
-    label = (request.form.get("label") or "").strip()
-    amount_text = (request.form.get("amount") or "").strip()
+def apply_plan_action(plan: plans_module.Plan, form, horizon: int
+                      ) -> tuple[dict[str, str], dict, int | None]:
+    """One edit to the plan, from a form (or the JSON the new front end
+    posts): `(errors, values, applied_months)`. Nothing is saved here -- the
+    caller saves when `errors` is empty, and re-renders with the typed
+    values otherwise. `/api/previsions` posts every edit through here."""
+    action = form.get("action") or ""
+    month = (form.get("month") or "").strip()
+    label = (form.get("label") or "").strip()
+    amount_text = (form.get("amount") or "").strip()
     # A precise day is optional: an entry may still be declared for a month
     # ("the December bill") when the day is not known yet.
-    date_text = (request.form.get("date") or "").strip()
+    date_text = (form.get("date") or "").strip()
 
     errors: dict[str, str] = {}
+    # The rate edits (`rate`, `rate-years`, `vol`, `scenario-apply`,
+    # `scenario-save`) act on one pocket's own barème when `rate_pocket`
+    # names one, on the common barème otherwise.
+    target = (form.get("rate_pocket") or "").strip()
+    if target and target not in plans_module.POCKET_KEYS:
+        return {"rate_pocket": "Poche inconnue."}, {}, None
+    own = plan.own_rates(target) if target else None
+    current_segments = own["rate_segments"] if own is not None else plan.rate_segments
+    current_vol = own["vol"] if own is not None else plan.vol
+
+    def put_rates(segments, vol) -> None:
+        if target:
+            plan.set_pocket_rates(target, segments, vol)
+        else:
+            plan.set_rates(segments, vol)
     values: dict[str, str] = {}
     # Set by scenario-apply when the scenario carries a horizon: the redirect
     # then sets the view length, or a 15-year scenario would render on a
@@ -516,7 +548,7 @@ def _plans_post():
         plan.remove_one_off(month, label)
     elif action == "destination":
         plan.set_destination(month, label,
-                             (request.form.get("destination") or "").strip())
+                             (form.get("destination") or "").strip())
     elif action == "amount":
         # The row is addressed by (month, label), the same upsert key as the
         # other edits; the error state is keyed to the row's place in the
@@ -536,9 +568,9 @@ def _plans_post():
                 else:
                     plan.set_amount(month, label, amount)
     elif action == "ignore" or action == "restore":
-        category = (request.form.get("category") or "").strip()
+        category = (form.get("category") or "").strip()
         try:
-            month_no = int(request.form.get("month_no") or 0)
+            month_no = int(form.get("month_no") or 0)
         except ValueError:
             month_no = 0
         if category and 1 <= month_no <= 12:
@@ -555,14 +587,62 @@ def _plans_post():
                 plan.income = float(amount_text)
             except ValueError:
                 errors["plan-income"] = "Utilisez le point décimal, pas la virgule."
+    elif action == "spend":
+        values["plan-spend"] = amount_text
+        if not amount_text:
+            plan.spend = None
+        else:
+            try:
+                spend = float(amount_text)
+            except ValueError:
+                errors["plan-spend"] = "Utilisez le point décimal, pas la virgule."
+            else:
+                if spend <= 0:
+                    errors["plan-spend"] = "Montant invalide."
+                else:
+                    plan.spend = spend
+    elif action == "plan-save-as":
+        # A copy of the plan shown, or of another one (`from`): that one is
+        # loaded first, the shown one keeping its edits, then copied.
+        name = _scenario_name(form, errors, values, "plan-new")
+        base = (form.get("from") or "").strip()
+        if name and name in plan.plan_scenarios:
+            errors["plan-new"] = "Un scénario porte déjà ce nom."
+        elif name and base and base != plan.active and base not in plan.plan_scenarios:
+            errors["plan-new"] = "Le scénario de départ n'existe plus."
+        elif name:
+            if base and base != plan.active:
+                plan.switch_scenario(base)
+            plan.save_scenario_as(name)
+    elif action == "plan-switch":
+        name = (form.get("name") or "").strip()
+        if not plan.switch_scenario(name):
+            errors["plan-switch"] = "Scénario inconnu."
+    elif action == "plan-rename":
+        # The unnamed plan has nothing to rename: naming it is saving it.
+        old = (form.get("old") or "").strip()
+        name = _scenario_name(form, errors, values, "plan-rename")
+        if name and name == old:
+            pass
+        elif name and name in plan.plan_scenarios:
+            errors["plan-rename"] = "Un scénario porte déjà ce nom."
+        elif name and not old:
+            plan.save_scenario_as(name)
+        elif name and not plan.rename_scenario(old, name):
+            errors["plan-rename"] = "Scénario inconnu."
+    elif action == "plan-delete":
+        plan.remove_plan_scenario((form.get("name") or "").strip())
+    elif action == "plan-undelete":
+        if plan.undelete_scenario() is None:
+            errors["plan-undelete"] = "Plus rien à rétablir : un scénario porte déjà ce nom."
     elif action == "rate":
         # One form, two parallel lists: each row posts its duration and its
         # rate, matched by position. The `remove` submit button (only the
         # clicked one is transmitted) drops that row before parsing; a row
         # with both fields blank is the trailing "add" row.
-        months_list = request.form.getlist("months")
-        rates_list = request.form.getlist("rates")
-        remove = (request.form.get("remove") or "").strip()
+        months_list = form.getlist("months")
+        rates_list = form.getlist("rates")
+        remove = (form.get("remove") or "").strip()
         if remove:
             try:
                 removed = int(remove)
@@ -578,11 +658,35 @@ def _plans_post():
         values["rate-months"] = months_list
         values["rate-rates"] = rates_list
         if not errors:
-            # set_rates keeps the declared volatility: editing the barème
-            # must not silently clear the vol the user typed.
-            plan.set_rates(segments, plan.vol)
+            # The declared volatility is kept: editing the barème must not
+            # silently clear the vol the user typed.
+            put_rates(segments, current_vol)
+    elif action == "rate-years":
+        # One rate per calendar year of the horizon shown, in order; the
+        # years are recomputed here from the same statement and horizon, so
+        # a page left open across a new statement is refused, not misread.
+        rates_list = form.getlist("rates")
+        keys = plans_module.projection_keys(store().statement.period_end, horizon)
+        years = plans_module.rate_years(current_segments, keys)
+        segments, year_errors = plans_module.segments_from_years(years, rates_list)
+        for i, message in year_errors.items():
+            errors["rate-years" if i < 0 else f"rate-year-{i}"] = message
+        values["rate-years"] = rates_list
+        if not errors:
+            put_rates(segments, current_vol)
+    elif action == "pocket-own":
+        # A pocket leaves the common barème with a copy of it, to edit.
+        if not target:
+            errors["rate_pocket"] = "Choisissez une poche."
+        else:
+            plan.set_pocket_rates(target, plan.rate_segments, plan.vol)
+    elif action == "pocket-common":
+        if not target:
+            errors["rate_pocket"] = "Choisissez une poche."
+        else:
+            plan.follow_common(target)
     elif action == "scenario-apply":
-        choice = (request.form.get("scenario") or "").strip()
+        choice = (form.get("scenario") or "").strip()
         applied_months = None
         if not choice:
             errors["scenario-apply"] = "Choisissez un scénario."
@@ -590,15 +694,30 @@ def _plans_post():
             kind, _, name = choice.partition(":")
             if kind == "builtin" and name in plans_module.BUILTIN_SCENARIOS:
                 spec = plans_module.BUILTIN_SCENARIOS[name]
-                plan.set_rates(spec["rate_segments"], spec["vol"])
+                per_pocket = spec.get("pockets") or {}
+                if target and target in per_pocket:
+                    put_rates(*per_pocket[target])
+                else:
+                    put_rates(spec["rate_segments"], spec["vol"])
+                    # On the common barème, a scenario per pocket sets every
+                    # pocket it names.
+                    if not target:
+                        for pocket, (segments, pocket_vol) in per_pocket.items():
+                            plan.set_pocket_rates(pocket, segments, pocket_vol)
                 months = spec.get("months") or 0
                 applied_months = months if months >= 1 else None
             elif kind == "saved" and name in plan.scenarios:
-                applied_months = plan.apply_scenario(name)
+                if target:
+                    spec = plan.scenarios[name]
+                    put_rates(spec["rate_segments"], spec["vol"])
+                    months = spec.get("months") or 0
+                    applied_months = months if months >= 1 else None
+                else:
+                    applied_months = plan.apply_scenario(name)
             else:
                 errors["scenario-apply"] = "Scénario inconnu."
     elif action == "scenario-save":
-        name = (request.form.get("name") or "").strip()
+        name = (form.get("name") or "").strip()
         values["scenario-name"] = name
         if not name:
             errors["scenario-save"] = "Le nom est requis."
@@ -609,17 +728,16 @@ def _plans_post():
         else:
             # The snapshot is the *current live* barème -- and the horizon it
             # was read on: tweak, then save under a new name, works naturally.
-            plan.set_scenario(name, plan.rate_segments, plan.vol,
-                              months_ahead(request.args))
+            plan.set_scenario(name, current_segments, current_vol, horizon)
     elif action == "scenario-delete":
-        plan.remove_scenario((request.form.get("name") or "").strip())
+        plan.remove_scenario((form.get("name") or "").strip())
     elif action == "contrib":
-        pocket = (request.form.get("pocket") or "").strip()
-        every = (request.form.get("every") or "").strip()
-        start = (request.form.get("start") or "").strip()
+        pocket = (form.get("pocket") or "").strip()
+        every = (form.get("every") or "").strip()
+        start = (form.get("start") or "").strip()
         values["contrib-amount"] = amount_text
         values["contrib-every"] = every
-        values["contrib-months"] = (request.form.get("months") or "").strip()
+        values["contrib-months"] = (form.get("months") or "").strip()
         values["contrib-start"] = start
         values["contrib-pocket"] = pocket
         if pocket not in (plans_module.SHELTERED, plans_module.TAXABLE):
@@ -627,7 +745,7 @@ def _plans_post():
         if every not in plans_module.CONTRIBUTION_EVERY:
             errors["contrib-every"] = "Choisissez une cadence."
         try:
-            months = int(request.form.get("months") or 0)
+            months = int(form.get("months") or 0)
         except ValueError:
             months = 0
         if months < 1:
@@ -635,41 +753,56 @@ def _plans_post():
         if start and not _PLAN_MONTH.match(start):
             errors["contrib-start"] = "Le mois de début est invalide."
         try:
-            amount = float(amount_text) if amount_text else 0.0
+            amount = float(amount_text.replace("'", "").replace(",", ".")) if amount_text else 0.0
         except ValueError:
-            errors["contrib-amount"] = "Utilisez le point décimal, pas la virgule."
+            errors["contrib-amount"] = "Un montant en francs, par exemple 500."
         else:
             if amount <= 0:
                 errors["contrib-amount"] = "Montant invalide."
+        # `index` edits that series in place; without it, a new one is added.
+        index_text = (form.get("index") or "").strip()
         if not errors:
-            plan.add_contribution(pocket, amount, every, months, start)
+            if index_text:
+                try:
+                    index = int(index_text)
+                except ValueError:
+                    index = -1
+                if not plan.replace_contribution(index, pocket, amount, every, months, start):
+                    errors["contrib-amount"] = "Cette série n'existe plus : rechargez la page."
+            else:
+                plan.add_contribution(pocket, amount, every, months, start)
     elif action == "contrib-del":
         try:
-            amount = float(request.form.get("amount") or 0.0)
+            amount = float(form.get("amount") or 0.0)
         except ValueError:
             amount = -1.0
         try:
-            months = int(request.form.get("months") or 0)
+            months = int(form.get("months") or 0)
         except ValueError:
             months = -1
         plan.remove_contribution(
-            (request.form.get("pocket") or "").strip(), amount,
-            (request.form.get("every") or "").strip(), months,
-            (request.form.get("start") or "").strip())
+            (form.get("pocket") or "").strip(), amount,
+            (form.get("every") or "").strip(), months,
+            (form.get("start") or "").strip())
     elif action == "vol":
         # Typed as a percentage, stored as a fraction. Blank falls back to the
         # volatility measured on the pockets -- declared 0.0 is a flat band.
         values["plan-vol"] = amount_text
         if not amount_text:
-            plan.vol = None
-        else:
-            try:
-                vol = float(amount_text) / 100
-            except ValueError:
-                errors["plan-vol"] = "Utilisez le point décimal, pas la virgule."
+            if target:
+                put_rates(current_segments, None)
             else:
+                plan.vol = None
+        else:
+            percent = plans_module.parse_percent(amount_text)
+            if percent is None:
+                errors["plan-vol"] = "Une volatilité en %, par exemple 15."
+            else:
+                vol = percent / 100
                 if not 0 <= vol <= 1.0:
                     errors["plan-vol"] = "La volatilité est entre 0 % et 100 %."
+                elif target:
+                    put_rates(current_segments, vol)
                 else:
                     plan.vol = vol
     elif action == "add":
@@ -697,7 +830,7 @@ def _plans_post():
             if amount <= 0:
                 errors["oneoff-amount"] = "Montant invalide."
         if not errors:
-            seasonal = request.form.get("seasonal") or ""
+            seasonal = form.get("seasonal") or ""
             pair = None
             if "|" in seasonal:
                 category, month_no = seasonal.split("|", 1)
@@ -706,26 +839,8 @@ def _plans_post():
                 except ValueError:
                     pair = None
             plan.add_one_off(month, label, amount, seasonal=pair,
-                             transfer=(request.form.get("destination") or ""),
+                             transfer=(form.get("destination") or ""),
                              date=day.isoformat() if day else "")
 
-    if errors:
-        return _plans_page(form_errors=errors, form_values=values)
-    plan.save()
-    if applied_months:
-        return redirect(_previsions_url(months=applied_months))
-    return redirect(_previsions_url())
+    return errors, values, applied_months
 
-
-@bp.route("/previsions", methods=["GET", "POST"])
-def previsions():
-    """Is there enough cash at time t? Month by month, 12 months ahead.
-
-    The GET renders the forecast: starting cash (the CHF closing balance),
-    monthly income, the usual month, and the one-offs -- declared in
-    data/plans.json, or suggested by the history's own seasonal patterns.
-    The POST is the no-JavaScript path for editing that plan.
-    """
-    if request.method == "POST":
-        return _plans_post()
-    return _plans_page()

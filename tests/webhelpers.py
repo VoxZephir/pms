@@ -3,34 +3,24 @@
 from __future__ import annotations
 
 import json
-import re
 
 
-def text(response) -> str:
-    return response.get_data(as_text=True)
+def api(client, url: str) -> dict:
+    """GET an endpoint of the JSON API; it must answer, and in JSON a browser
+    can parse -- no NaN, no Infinity: the browser refuses the whole payload
+    over one."""
+    response = client.get(url)
+    assert response.status_code == 200, (url, response.status_code, response.get_data()[:300])
+    assert response.mimetype == "application/json", (url, response.mimetype)
 
+    def refuse(constant):
+        raise ValueError(f"{url}: {constant} is not JSON")
 
-def row_count(body: str) -> int:
-    """The "N lignes" count the transactions table announces."""
-    match = re.search(r"([\d’]+) lignes?", body)
-    return int(match.group(1).replace("’", "")) if match else 0
-
-
-def chart_data(body: str) -> dict:
-    """The JSON payload the charts' hover and brush read."""
-    payload = re.search(r'<script id="chartData"[^>]*>(.*?)</script>', body, re.S)
-    return json.loads(payload.group(1))
+    return json.loads(response.get_data(), parse_constant=refuse)
 
 
 def plans_path(client):
     return client.application.extensions["pms_store"].path.with_name("plans.json")
-
-
-def nav_block(body: str) -> str:
-    """The top navigation bar only, so a page's own aria-current marks (the
-    breadcrumb step, the pager counter) cannot leak into the count."""
-    start = body.index('<nav class="top-nav"')
-    return body[start:body.index("</nav>", start)]
 
 
 def savings_snapshots(client):
@@ -42,23 +32,23 @@ def savings_snapshots(client):
     finp_path = store_.path.with_name("finpension.json")
     ibkr_path.write_text(json.dumps({
         "captured_at": "2026-08-02T21:10:00", "base_currency": "CHF",
-        "fx_chf_per_usd": 0.8078,
-        "account": {"net_liquidation": 8957.04, "total_cash": 95.53},
+        "fx_chf_per_usd": 0.8,
+        "account": {"net_liquidation": 9000.0, "total_cash": 95.0},
         "cash": [{"currency": "CHF", "amount": 0.11}],
         "positions": [{"name": "TEST", "currency": "USD",
-                       "market_value": 1000.0, "market_value_chf": 807.8,
+                       "market_value": 1000.0, "market_value_chf": 800.0,
                        "asset_class": "Actions",
-                       "unrealized_pnl": 200.0, "unrealized_pnl_chf": 161.6,
+                       "unrealized_pnl": 200.0, "unrealized_pnl_chf": 160.0,
                        "unrealized_pnl_pct": 25.0}],
         "performance": {"measure": "TWR", "ytd_pct": 8.0, "one_year_pct": 12.0},
         # Three levels, so the measured volatility exists when nothing is
         # declared -- the band note then has something honest to say.
-        "nav": [["2025-08-04", 6307.59], ["2026-01-02", 7620.11],
-                ["2026-08-02", 8957.04]],
+        "nav": [["2025-08-04", 6300.0], ["2026-01-02", 7600.0],
+                ["2026-08-02", 9000.0]],
     }), encoding="utf-8")
     finp_path.write_text(json.dumps({
         "value": 8300.0, "value_as_of": "2025-12-31", "deposits": 7000.0,
-        "dividends": 91.02, "fees": 42.04, "cash": 100.0,
+        "dividends": 90.0, "fees": 40.0, "cash": 100.0,
         "yearly": [["2025-12-31", 8300.0]],
         "holdings": {"CH123": {"shares": 3.0, "price": 100.0,
                                "name": "Fonds Equity", "class": "Actions"}},
@@ -70,7 +60,7 @@ def savings_snapshots(client):
 
 def corrected_ledger(tmp_path_factory, ledger_file, pins: int = 12):
     """A private ledger copy with `pins` pinned movements, two merchant rules
-    and one merge -- a /reclasser with something in every group."""
+    and one merge -- corrections with something in every group."""
     from pms.overrides import Overrides
     from pms.web import create_app
 

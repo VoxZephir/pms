@@ -5,8 +5,8 @@
 
 Le tableau de bord répond bien quand on le questionne, mais il ne dit jamais ce qui a
 *changé*. `review.month_review` compare un mois à tout ce que le ledger tient avant lui
-et garde quatre listes courtes ; `partials/review_panel.html.j2` les affiche juste sous
-les indicateurs.
+et garde quatre listes courtes ; `Review` (`frontend/src/pages/dashboard/Panels.tsx`) les
+affiche juste sous les indicateurs.
 
 **Seulement sur une fenêtre d'un mois calendaire**, le mois en cours compris (du 1er au
 dernier jour du ledger) : ailleurs, « ce mois-ci » n'a pas de sens. Sur le mois en
@@ -26,7 +26,7 @@ une médiane de deux signalements par mois.
   pour une hausse de prix ; sans la première, chaque facture d'énergie. La comparaison
   se fait **dans la devise du débit** : un abonnement de 20 USD coûte chaque mois un
   autre montant en francs, et c'est le taux de change, pas le fournisseur. Trouvé sur le
-  ledger réel : une hausse d'opérateur mobile de 27.90 à 28.90 CHF.
+  ledger réel : la hausse d'un franc d'un abonnement mobile.
 - **Un nouveau bénéficiaire** : jamais payé avant ce mois. Un virement nouveau compte
   dès 50 CHF (une nouvelle régie, un nouvel office des impôts) ; un nouveau commerçant
   par carte seulement dès 250 CHF. Mesuré sur le ledger réel, la plupart des mois

@@ -31,6 +31,7 @@ import threading
 from pathlib import Path
 from typing import Iterable
 
+from . import categories
 from .models import Transaction
 
 VERSION = 1
@@ -155,6 +156,76 @@ class Overrides:
             self.rules = [r for r in self.rules
                           if not (r["match"] == match and r.get("mode", EXACT) == mode)]
             return len(self.rules) < before
+
+    def yield_to_rule(self, key: str, *, category: str = "", bucket: str = "") -> None:
+        """A row reclassified by its merchant drops what its own pin said on
+        the same point.
+
+        A pin outranks its merchant's rule -- that is what lets one odd
+        payment differ. But when the user acts on *this* row and asks for a
+        rule, the row must move: on 15.10 a payment pinned to "Non
+        catégorisé" was dragged onto Restaurants, the rule was written, the
+        toast said so, and the row stayed where it was. Only the conflicting
+        part goes: a bucket decided on the pin outlives a rule that names a
+        category (the Twint lesson, docs/corrections.md).
+        """
+        with self._lock:
+            pin = self.pins.get(key)
+            if not pin:
+                return
+            rest = dict(pin)
+            if category:
+                rest["category"], rest["subcategory"] = "", ""
+            if bucket:
+                rest["bucket"] = ""
+            if rest.get("category") or rest.get("bucket"):
+                self.pins[key] = rest
+            else:
+                del self.pins[key]
+
+    # --- undoing ---------------------------------------------------------
+    # An undo puts back what was there, not "nothing": a rule restated over an
+    # older one for the same merchant, or a pin written over a bucket-only
+    # pin, used to be undone into no rule and no pin at all.
+
+    def snapshot(self, keys: Iterable[str] = (), matches: Iterable[str] = (),
+                 mode: str = EXACT) -> dict:
+        """These pins and rules as they are now -- None where there is none."""
+        def found(match):
+            # Its place too: when two rules catch one row, the later one wins.
+            return next(((i, r) for i, r in enumerate(self.rules) if r["match"] == match
+                         and r.get("mode", EXACT) == mode), (None, None))
+        with self._lock:
+            return {
+                "pins": {key: self.pins.get(key) for key in keys},
+                "rules": [{"match": match, "mode": mode, "index": found(match)[0],
+                           "entry": found(match)[1]}
+                          for match in dict.fromkeys(matches)],
+            }
+
+    def restore(self, snapshot: dict) -> int:
+        """Put pins and rules back as `snapshot` saw them. Returns how many
+        entries were set back."""
+        count = 0
+        with self._lock:
+            for key, entry in (snapshot.get("pins") or {}).items():
+                if isinstance(entry, dict):
+                    self.pins[key] = entry
+                else:
+                    self.pins.pop(key, None)
+                count += 1
+            for item in snapshot.get("rules") or []:
+                match, mode = item.get("match"), item.get("mode", EXACT)
+                if not isinstance(match, str):
+                    continue
+                self.rules = [r for r in self.rules
+                              if not (r["match"] == match and r.get("mode", EXACT) == mode)]
+                if isinstance(item.get("entry"), dict):
+                    index = item.get("index")
+                    at = index if isinstance(index, int) else len(self.rules)
+                    self.rules.insert(min(max(at, 0), len(self.rules)), item["entry"])
+                count += 1
+        return count
 
     # --- bulk editing ----------------------------------------------------
     # One `save()` for the whole batch: reclassifying 443 movements one at a
@@ -285,8 +356,8 @@ class Overrides:
                 if not self._matches(rule, txn):
                     continue
                 if rule.get("category"):
-                    txn.category = rule["category"]
-                    txn.subcategory = rule.get("subcategory", "")
+                    txn.category, txn.subcategory = categories.current(
+                        rule["category"], rule.get("subcategory", ""))
                 if rule.get("bucket"):
                     txn.bucket_override = rule["bucket"]
                 applied = True
@@ -294,8 +365,8 @@ class Overrides:
             pin = self.pins.get(key_of(txn))
             if pin:
                 if pin.get("category"):
-                    txn.category = pin["category"]
-                    txn.subcategory = pin.get("subcategory", "")
+                    txn.category, txn.subcategory = categories.current(
+                        pin["category"], pin.get("subcategory", ""))
                 if pin.get("bucket"):
                     txn.bucket_override = pin["bucket"]
                 applied = True

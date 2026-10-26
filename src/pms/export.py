@@ -45,6 +45,7 @@ COLUMNS: list[tuple[str, object, str]] = [
     ("Devise", lambda t: t.currency, "text"),
     ("Montant CHF", lambda t: t.amount_chf, "amount"),
     ("Corrigé", lambda t: "oui" if t.overridden else "non", "text"),
+    ("Compte", lambda t: t.account.capitalize() if t.account else "Principal", "text"),
 ]
 
 HEADERS = [name for name, _, _ in COLUMNS]
@@ -503,7 +504,7 @@ def to_analysis_csv(profile: list[dict], categories: list[dict]) -> bytes:
     then the per-category stats, separated by a blank line. Same conventions
     as `to_csv` -- BOM, CRLF, dot decimals, no Swiss apostrophes.
 
-    The dicts are the view-facing shape produced by `views.analyse._analysis_context`:
+    The dicts are the shape `web.api.analyse.analysis_data` returns:
     profile entries carry `label`, `raw_median`, `seasonal` (a list of
     {category, amount, years}), `stripped_median`, `years`, `iqr`; category
     entries carry `category`, `median`, `peak_month_label`, `peak`,
@@ -522,8 +523,8 @@ def to_analysis_xlsx(profile: list[dict], categories: list[dict]) -> bytes:
     as the CSV: « Profil mensuel » then « Par catégorie ». Amounts are real
     numbers, so a column sums without being cleaned up first.
 
-    Same dict shape as `to_analysis_csv` -- the view-facing form produced by
-    `views.analyse._analysis_context`, month labels already spelled out.
+    Same dict shape as `to_analysis_csv` -- the one `web.api.analyse.
+    analysis_data` returns, month labels already spelled out.
     """
     return to_xlsx_sheets([
         ("Profil mensuel", ANALYSIS_PROFILE_HEADERS,
@@ -531,6 +532,93 @@ def to_analysis_xlsx(profile: list[dict], categories: list[dict]) -> bytes:
         ("Par catégorie", ANALYSIS_CATEGORY_HEADERS,
          _CATEGORY_KINDS, _CATEGORY_WIDTHS, _category_rows(categories)),
     ])
+
+
+# --- the tax return ---------------------------------------------------------
+
+TAX_HEADERS = ["Poste", "Montant (CHF)", "Détail"]
+
+
+def to_tax_xlsx(years: list[dict]) -> bytes:
+    """The savings panel's « Pour la déclaration d'impôts », one sheet per
+    31 December, newest first: each account, then the year's brokerage
+    income and the 3a. The year-end dicts are `fiscal.year_end`'s.
+
+    The figures are the app's (broker NAV, market closes, the statement's
+    exchange rates), not the tax authority's year-end rates -- the detail
+    column says so where it matters.
+    """
+    sheets = []
+    for year in sorted(years, key=lambda y: -y["year"]):
+        # The year still running: its figures at the statement's last day,
+        # an estimate of the next return, said on the sheet and in its rows.
+        at = year["day"].strftime("%d.%m.%Y")
+        rows = [[r["name"], r["value"], r["detail"]] for r in year["rows"]]
+        rows += [
+            ["Fortune imposable, ces comptes", year["taxable"],
+             f"estimation au {at} : le 31.12 n'est pas encore passé" if year.get("partial")
+             else "valeurs de l'app, proches des cours de fin d'année de l'AFC, pas identiques"],
+            ["Dividendes IBKR", year["dividends"], ""],
+            ["Intérêts IBKR", year["interest"], ""],
+            ["Impôt à la source US retenu", year["withheld"],
+             "récupérable via la déclaration (formulaire DA-1)"],
+            ["3a : versé dans l'année", year["pillar3a_paid"],
+             "déductible du revenu ; l'attestation de la fondation fait foi"],
+            [f"3a : valeur au {at[:5]}", year["pillar3a_value"], "hors fortune imposable"],
+        ]
+        sheets.append((f"Estimation {at}" if year.get("partial") else at, TAX_HEADERS,
+                       ["text", "amount", "text"], [36, 16, 70], rows))
+    return to_xlsx_sheets(sheets, title="Déclaration d'impôts")
+
+
+RETURN_HEADERS = ["Rubrique", "Relevé (CHF)", "Déductible estimé (CHF)", "Où dans la déclaration", "Règle"]
+LINES_HEADERS = ["Date", "Rubrique", "Libellé", "Montant (CHF)"]
+
+
+def to_return_xlsx(data: dict) -> bytes:
+    """The `/impots` page for one year (`taxes.return_items`): a summary
+    sheet, rubric by rubric with its rule, then every line behind each
+    rubric -- the figures the return is filled from, beside the
+    certificates that remain the authority."""
+    year = data["year"]
+    net = data["net"]
+    canton = data.get("canton")
+    summary = [[f"Salaire versé : {p['label']}", p["amount"], None, "Revenus · activité salariée",
+                "net versé ; le certificat de salaire donne le brut à déclarer"] for p in data["salaries"]]
+    summary.append(["Revenu net retenu pour les seuils", net["value"], None, "",
+                    "estimé : salaire versé moins le 3a" if net["estimated"] else "déclaré sur la page"])
+    for item in data["items"]:
+        summary.append([item["title"], item["amount"], item["deductible"], item["form"], item["rule"]])
+        if canton and item.get("canton"):
+            summary.append([f"   {canton['name']} (ICC)", None, item["canton"]["deductible"], item["form"],
+                            item["canton"]["rule"]])
+    summary += [
+        ["Déductions repérées, impôt fédéral", None, data["deducted"], "", "estimation"],
+        *([[f"Déductions repérées, {canton['name']}", None, data["deducted_canton"], "", "estimation"]] if canton else []),
+        ["Intérêts bancaires", data["interest"]["bank"], None, "Revenus · intérêts", ""],
+        ["Dividendes IBKR", data["interest"]["dividends"], None, "État des titres", ""],
+        ["Intérêts IBKR", data["interest"]["broker"], None, "État des titres", ""],
+        ["Impôt à la source US retenu", data["interest"]["withheld"], None, "Formulaire DA-1", "récupérable"],
+        *[[f"Dividende brut : {s['name']}", s["dividends"]["gross"], None, "État des titres",
+           f"net reçu {s['dividends']['net']:.2f}, impôt anticipé {s['dividends']['withheld']:.2f} récupérable"
+           if s["withholding"] else "sans impôt anticipé"] for s in data.get("securities", []) if s["dividends"]["net"]],
+        ["Fortune au 31.12, ces comptes", data["wealth"]["taxable"], None, "Fortune",
+         "valeurs de l'app, proches des cours de fin d'année de l'AFC"],
+        [f"Impôts {year} payés en {data['paid']['year']}" if data["paid"]["later"] else "Impôts payés dans l'année",
+         data["paid"]["out"], None, "", "acomptes et décomptes"],
+        ["Impôts remboursés", data["paid"]["back"], None, "", ""],
+    ]
+    lines = []
+    for item in data["items"]:
+        for row in item["rows"]:
+            lines.append([row["date"], item["title"], row["label"], row["amount"]])
+    for row in data["paid"]["rows"]:
+        lines.append([row["date"], "Impôts payés", row["label"], row["amount"]])
+    return to_xlsx_sheets([
+        (f"Déclaration {year}", RETURN_HEADERS, ["text", "amount", "amount", "text", "text"],
+         [34, 14, 18, 44, 80], summary),
+        ("Lignes", LINES_HEADERS, ["date", "text", "text", "amount"], [12, 26, 44, 14], lines),
+    ], title=f"Déclaration d'impôts {year}")
 
 
 # --- writing to disk --------------------------------------------------------

@@ -18,17 +18,17 @@ def _snapshot(**overrides) -> dict:
     base = {
         "captured_at": "2026-08-02T21:10:00",
         "base_currency": "CHF",
-        "fx_chf_per_usd": 0.8078,
-        "account": {"net_liquidation": 8957.04, "total_cash": 95.53},
+        "fx_chf_per_usd": 0.8,
+        "account": {"net_liquidation": 9000.0, "total_cash": 95.0},
         "cash": [{"currency": "USD", "amount": 118.12},
                  {"currency": "CHF", "amount": 0.11}],
         "positions": [{"name": "TEST", "currency": "USD", "market_value": 1000.0,
-                       "market_value_chf": 807.8,
-                       "unrealized_pnl": 200.0, "unrealized_pnl_chf": 161.6,
+                       "market_value_chf": 800.0,
+                       "unrealized_pnl": 200.0, "unrealized_pnl_chf": 160.0,
                        "unrealized_pnl_pct": 25.0}],
         "performance": {"measure": "TWR", "ytd_pct": 16.4, "one_year_pct": 46.8},
         "other_accounts": [{"name": "3a (exemple)", "value": 10000.0}],
-        "nav": [["2025-08-04", 6307.59], ["2026-08-02", 8957.04]],
+        "nav": [["2025-08-04", 6300.0], ["2026-08-02", 9000.0]],
     }
     base.update(overrides)
     return base
@@ -56,20 +56,20 @@ def test_empty_nav_is_none(tmp_path):
 
 def test_normalizes(tmp_path):
     data = ibkr.load(_write(tmp_path, _snapshot()))
-    assert data["equity"] == 8957.04
+    assert data["equity"] == 9000.0
     assert data["cash"] == [{"currency": "USD", "amount": 118.12},
                             {"currency": "CHF", "amount": 0.11}]
-    assert data["fx_rate"] == 0.8078
+    assert data["fx_rate"] == 0.8
     pos = data["positions"][0]
     assert pos["name"] == "TEST"
-    assert pos["value"] == 807.8          # the CHF figure wins
+    assert pos["value"] == 800.0          # the CHF figure wins
     assert pos["value_currency"] == 1000.0
-    assert pos["pnl"] == 161.6
+    assert pos["pnl"] == 160.0
     assert pos["pnl_pct"] == 25.0
     assert data["other_accounts"] == [{"name": "3a (exemple)", "value": 10000.0}]
     assert data["performance"]["one_year_pct"] == 46.8
-    assert data["nav"][0] == (dt.date(2025, 8, 4), 6307.59)
-    assert data["nav"][-1] == (dt.date(2026, 8, 2), 8957.04)
+    assert data["nav"][0] == (dt.date(2025, 8, 4), 6300.0)
+    assert data["nav"][-1] == (dt.date(2026, 8, 2), 9000.0)
 
 
 def test_position_falls_back_to_own_currency(tmp_path):
@@ -92,120 +92,38 @@ def test_nav_daily_scales_onto_the_monthly_anchors(tmp_path):
     day is the monthly anchor's value scaled by the price move since the
     anchor, so the series agrees with the bank's figure at every anchor."""
     payload = _snapshot(
-        nav=[["2025-08-04", 6307.59], ["2025-09-01", 6577.73]],
+        nav=[["2025-08-04", 6300.0], ["2025-09-01", 6570.0]],
         nav_daily=[["2025-08-04", 23.0], ["2025-08-20", 24.0],
                    ["2025-09-01", 24.5]])
     data = ibkr.load(_write(tmp_path, payload))
     daily = dict(data["nav_daily"])
-    assert daily[dt.date(2025, 8, 4)] == 6307.59              # the anchor
-    assert daily[dt.date(2025, 8, 20)] == 6581.83             # 6307.59*24/23
-    assert daily[dt.date(2025, 9, 1)] == 6577.73              # next anchor
+    assert daily[dt.date(2025, 8, 4)] == 6300.0              # the anchor
+    assert daily[dt.date(2025, 8, 20)] == 6573.91             # 6300*24/23
+    assert daily[dt.date(2025, 9, 1)] == 6570.0              # next anchor
     assert len(data["nav_daily"]) == 3
 
 
 def test_nav_at_prefers_the_daily_series(tmp_path):
     payload = _snapshot(
-        nav=[["2025-08-04", 6307.59], ["2025-09-01", 6577.73]],
+        nav=[["2025-08-04", 6300.0], ["2025-09-01", 6570.0]],
         nav_daily=[["2025-08-04", 23.0], ["2025-08-20", 24.0],
                    ["2025-09-01", 24.5]])
     data = ibkr.load(_write(tmp_path, payload))
-    assert ibkr.nav_at(data, dt.date(2025, 8, 20)) == 6581.83
-    assert ibkr.nav_at(data, dt.date(2025, 8, 25)) == 6581.83  # last <= day
-    assert ibkr.nav_at(data, dt.date(2025, 9, 1)) == 6577.73
+    assert ibkr.nav_at(data, dt.date(2025, 8, 20)) == 6573.91
+    assert ibkr.nav_at(data, dt.date(2025, 8, 25)) == 6573.91  # last <= day
+    assert ibkr.nav_at(data, dt.date(2025, 9, 1)) == 6570.0
     # Without a daily capture, the monthly staircase still rules.
-    assert ibkr.nav_at({"nav": [(dt.date(2025, 8, 4), 6307.59)]},
-                       dt.date(2025, 8, 20)) == 6307.59
+    assert ibkr.nav_at({"nav": [(dt.date(2025, 8, 4), 6300.0)]},
+                       dt.date(2025, 8, 20)) == 6300.0
 
 
 def test_nav_at():
-    snapshot = {"nav": [(dt.date(2025, 8, 4), 6307.59),
-                        (dt.date(2025, 9, 1), 6577.73)]}
-    assert ibkr.nav_at(snapshot, dt.date(2025, 8, 20)) == 6307.59
-    assert ibkr.nav_at(snapshot, dt.date(2025, 9, 1)) == 6577.73
-    assert ibkr.nav_at(snapshot, dt.date(2025, 7, 1)) == 6307.59  # before the series
-    assert ibkr.nav_at(snapshot, dt.date(2026, 1, 1)) == 6577.73  # past the end
-
-
-def test_evolution_chart_geometry():
-    from pms.web import charts
-    rows = [
-        {"date": dt.date(2025, 9, 30), "swiss": 30000.0, "ibkr": 6000.0,
-         "finp": None, "total": 36000.0},
-        {"date": dt.date(2025, 10, 31), "swiss": 31000.0, "ibkr": 7000.0,
-         "finp": 8000.0, "total": 46000.0},
-        {"date": dt.date(2025, 11, 30), "swiss": 32000.0, "ibkr": 8000.0,
-         "finp": 8000.0, "total": 48000.0},
-    ]
-    chart = charts.evolution_chart(rows)
-    assert any(d["slot"] == 1 for d in chart["draw"])   # the total line
-    assert chart["series"][0]["name"] == "Swissquote"
-    assert chart["series"][1]["name"] == "Épargne totale"
-    assert chart["series"][2]["name"] == "IBKR"
-    assert chart["series"][3]["name"] == "3a finpension"
-    assert chart["series"][3]["pts"][0] is None          # the gap is a gap
-    assert chart["series"][3]["pts"][-1][2] == 8000.0
-    assert chart["series"][1]["pts"][-1][2] == 48000.0
-    assert charts.evolution_chart([rows[0]]) == {}
-
-
-def test_evolution_chart_focus_shows_only_the_pocket():
-    from pms.web import charts
-    rows = [
-        {"date": dt.date(2025, 9, 30), "swiss": 30000.0, "ibkr": 6000.0,
-         "finp": None, "total": 36000.0},
-        {"date": dt.date(2025, 10, 31), "swiss": 31000.0, "ibkr": 7000.0,
-         "finp": 8000.0, "total": 46000.0},
-    ]
-    chart = charts.evolution_chart(rows, focus="finpension")
-    assert list(chart["series"]) == [3]          # only the 3a, in its own slot
-    assert chart["series"][3]["pts"][-1][2] == 8000.0
-    assert len(chart["draw"]) == 1               # one line, not a dimmed crowd
-
-    chart = charts.evolution_chart(rows, focus="swissquote")
-    assert list(chart["series"]) == [0]
-    assert chart["ticks"][0]["value"] == 0.0     # zero-anchored even solo
-
-
-def test_evolution_chart_an_explicit_spec_wins_over_the_focus():
-    """A caller-built spec names every line to draw; the focus filter only
-    applies to the default spec. That is what lets a focused pocket draw
-    its own breakdown (clicking IBKR then "Monnaie" decomposes the pocket)
-    instead of an empty chart."""
-    from pms.web import charts
-    rows = [
-        {"date": dt.date(2025, 9, 30), "ibkr": 6000.0, "total": 36000.0,
-         "ibkr_usd": 5999.9, "ibkr_chf": 0.1},
-        {"date": dt.date(2025, 10, 31), "ibkr": 7000.0, "total": 46000.0,
-         "ibkr_usd": 6999.9, "ibkr_chf": 0.1},
-        {"date": dt.date(2025, 11, 30), "ibkr": 8000.0, "total": 48000.0,
-         "ibkr_usd": 7999.9, "ibkr_chf": 0.1},
-    ]
-    spec = [{"key": "ibkr_usd", "name": "USD", "slot": 2},
-            {"key": "ibkr_chf", "name": "CHF", "slot": 0},
-            {"key": "total", "name": "Épargne totale", "slot": 1}]
-    chart = charts.evolution_chart(rows, focus="ibkr", spec=spec)
-    assert list(chart["series"]) == [2, 0, 1]
-    assert chart["series"][2]["pts"][-1][2] == 7999.9
-
-
-def test_evolution_chart_scale():
-    from pms.web import charts
-    rows = [
-        {"date": dt.date(2025, 9, 30), "swiss": 30000.0, "ibkr": 6000.0,
-         "finp": None, "total": 36000.0},
-        {"date": dt.date(2025, 10, 31), "swiss": 31000.0, "ibkr": 7000.0,
-         "finp": 8000.0, "total": 46000.0},
-    ]
-    # Zero-anchored by default: the bottom tick is 0, the top a clean bound.
-    chart = charts.evolution_chart(rows)
-    assert chart["ticks"][0]["value"] == 0.0
-    assert chart["ticks"][2]["value"] == 50000.0
-    # "auto" fits the lowest value instead -- and hugs the top too: the
-    # data peaks at 46'000, which the 50'000 ceiling would pad into a band
-    # of empty plot above the line.
-    chart = charts.evolution_chart(rows, scale="auto")
-    assert chart["ticks"][0]["value"] == 6000.0
-    assert chart["ticks"][2]["value"] == 46000.0
+    snapshot = {"nav": [(dt.date(2025, 8, 4), 6300.0),
+                        (dt.date(2025, 9, 1), 6570.0)]}
+    assert ibkr.nav_at(snapshot, dt.date(2025, 8, 20)) == 6300.0
+    assert ibkr.nav_at(snapshot, dt.date(2025, 9, 1)) == 6570.0
+    assert ibkr.nav_at(snapshot, dt.date(2025, 7, 1)) == 6300.0  # before the series
+    assert ibkr.nav_at(snapshot, dt.date(2026, 1, 1)) == 6570.0  # past the end
 
 
 def _with_flows(tmp_path):

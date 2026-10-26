@@ -9,7 +9,7 @@ from typing import Any
 
 @dataclass
 class Transaction:
-    """A single line of the Swissquote transaction statement.
+    """A single line of a bank statement (Swissquote's vocabulary).
 
     `amount` is signed the way the bank prints it: negative is money leaving
     the account. `balance` is the running account balance *after* the move.
@@ -65,6 +65,12 @@ class Transaction:
     # ledger.merge). What makes `--forget` able to undo a bad import.
     source: str = ""
 
+    # Which account the row belongs to: "" for the primary bank (the one the
+    # ledger's IBAN names), a short name for any other ("revolut"). Each
+    # account keeps its own balance chain -- a Revolut balance of 30 CHF
+    # following a Swissquote one of 10'000 is not a 9'970 CHF break.
+    account: str = ""
+
     @property
     def is_debit(self) -> bool:
         return self.amount < 0
@@ -99,6 +105,7 @@ class AccountSummary:
     closing_balance: float
     credit_total: float
     debit_total: float
+    account: str = ""  # see Transaction.account
 
 
 @dataclass
@@ -113,6 +120,16 @@ class Statement:
     transactions: list[Transaction]
     client_number: str = ""
     reference_currency_label: str = ""
+    # The bank, when the format does not say it by its file alone (two PDF
+    # banks feed the primary account): written in the import log.
+    bank: str = ""
 
     def by_currency(self, currency: str) -> list[Transaction]:
         return [t for t in self.transactions if t.currency == currency]
+
+    def chains(self) -> dict[tuple[str, str], list[Transaction]]:
+        """Rows per (account, currency): each pair is one running balance."""
+        out: dict[tuple[str, str], list[Transaction]] = {}
+        for t in self.transactions:
+            out.setdefault((t.account, t.currency), []).append(t)
+        return out

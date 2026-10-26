@@ -10,8 +10,7 @@ They do, because the bank gives us an exact identity for every movement. The
 `Référence` column is a unique, monotonically increasing operation id. It is not
 quite a primary key on its own -- a currency conversion prints the *same*
 reference on both its legs (the CHF debit and the EUR credit) -- so the key is
-**(reference, currency)**. On the current statement that yields 2166 distinct
-keys for 2166 rows.
+**(reference, currency)**: one distinct key per row.
 
 So ingestion is a set union keyed on (reference, currency):
 
@@ -35,6 +34,7 @@ import datetime as dt
 import hashlib
 import json
 from dataclasses import fields
+from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
 
@@ -43,9 +43,74 @@ from .models import AccountSummary, Statement, Transaction
 LEDGER_VERSION = 1
 
 
+class ForeignAccount(ValueError):
+    """A statement of another account than the ledger's -- somebody else's,
+    dropped here by mistake. Refused whole: nothing of it is merged."""
+
+    def __init__(self, theirs: str, ours: str):
+        def end(iban):
+            return "…" + iban.replace(" ", "")[-4:]
+        super().__init__(
+            f"ce relevé est celui d'un autre compte (IBAN {end(theirs)}) que celui "
+            f"de ce ledger ({end(ours)}) : rien n'en a été importé. Un autre "
+            f"titulaire a sa propre copie de l'app (docs/releves.md).")
+
+
+def content_of(txn: Transaction) -> tuple | None:
+    """A movement by what it is rather than by its reference: account,
+    currency, day, amount and the balance after it. Two exports of one bank
+    in two regional formats print the same row with differently written
+    fields ("0" and "0.00" for a Revolut fee): a reference hashed from that
+    text differs, this does not. None without a balance -- the amount and
+    the day alone do not tell two coffees apart."""
+    if txn.balance is None:
+        return None
+    return (txn.account, txn.currency, txn.date, round(txn.amount, 2), round(txn.balance, 2))
+
+
 def key_of(txn: Transaction) -> str:
-    """The identity of a movement: reference + currency (conversions share a ref)."""
+    """The identity of a movement: reference + currency (conversions share a ref).
+
+    A row of another account is prefixed with it; the primary account keeps
+    the bare form, so the keys of a ledger written before accounts existed
+    are unchanged.
+    """
+    if txn.account:
+        return f"{txn.account}:{txn.reference}:{txn.currency}"
     return f"{txn.reference}:{txn.currency}"
+
+
+def _accounts(rows: list[Transaction]) -> list[AccountSummary]:
+    """Opening and closing per (account, currency), read off the rows."""
+    out = []
+    chains: dict[tuple[str, str], list[Transaction]] = {}
+    for t in rows:
+        chains.setdefault((t.account, t.currency), []).append(t)
+    for (account, currency), series in sorted(chains.items()):
+        with_balance = [t for t in series if t.balance is not None]
+        opening = ((with_balance[0].balance - with_balance[0].amount)
+                   if with_balance else 0.0)
+        out.append(AccountSummary(
+            currency=currency,
+            opening_balance=round(opening, 2),
+            closing_balance=with_balance[-1].balance if with_balance else 0.0,
+            credit_total=round(sum(t.amount for t in series if t.amount > 0), 2),
+            debit_total=round(-sum(t.amount for t in series if t.amount < 0), 2),
+            account=account,
+        ))
+    return out
+
+
+def primary_start(rows: Iterable[Transaction]) -> dt.date | None:
+    """First day the primary account is covered, if it is in the ledger.
+
+    Rows of another account dated before it stay in the ledger but out of
+    the analysis: a year of Revolut alone, with the main account missing,
+    reads as a year of spending nearly nothing -- every average, baseline
+    and "par jour" over "Tout" would drop. Importing an older statement of
+    the primary account brings them in on its own.
+    """
+    return min((t.date for t in rows if not t.account), default=None)
 
 
 def _to_date(value):
@@ -70,6 +135,8 @@ class Ledger:
         self.account: dict = {}
         self.sources: list[dict] = []
         self.transactions: dict[str, Transaction] = {}
+        # Rows `dedupe` dropped on this load (`ingest`), for the console.
+        self.deduped = 0
 
     # --- persistence -----------------------------------------------------
 
@@ -105,7 +172,8 @@ class Ledger:
         """Statement order, reproduced.
 
         Sorting by reference would be wrong: the bank does not order a day's
-        rows by reference (17.08.2024 prints 635995325 before 635995310), and
+        rows by reference (a day can print a higher reference before a lower
+        one), and
         getting this wrong turns every such day into a phantom balance break.
         `seq` is the row's position within its own date, so (date, seq) restores
         the printed order exactly.
@@ -118,6 +186,53 @@ class Ledger:
 
     # --- merging ---------------------------------------------------------
 
+    def _reorder(self, statement: Statement, aliases: dict[str, str] | None = None) -> None:
+        """A day the statement holds whole is ordered as it prints it.
+
+        `seq` is a row's position within its date *in the export it came
+        from*. An export downloaded during the day holds part of that day,
+        numbered within that part; the next export holds the whole day,
+        numbered differently. Kept as each numbered them, the day's rows
+        interleave and the balance breaks inside the day. So when the
+        incoming export holds every row the ledger has for a (date, account,
+        currency), its numbering wins for all of them; when it holds fewer
+        (an older, partial export imported again), the ledger's order stays.
+        """
+        incoming: dict[tuple, list[Transaction]] = defaultdict(list)
+        for txn in statement.transactions:
+            incoming[(txn.date, txn.account, txn.currency)].append(txn)
+        held: dict[tuple, set] = defaultdict(set)
+        for key, txn in self.transactions.items():
+            group = (txn.date, txn.account, txn.currency)
+            if group in incoming:
+                held[group].add(key)
+        aliases = aliases or {}
+        for group, rows in incoming.items():
+            keys = {aliases.get(key_of(t), key_of(t)) for t in rows}
+            if held[group] <= keys:
+                for t in rows:
+                    self.transactions[aliases.get(key_of(t), key_of(t))].seq = t.seq
+
+    def dedupe(self) -> int:
+        """Drop a row another import already brought under another reference
+        (`content_of`): what a ledger merged before that match existed may
+        hold. Only across two imports -- two equal rows of one export are two
+        movements. The first import's row stays. Returns how many went."""
+        first: dict[tuple, str] = {}
+        dropped = []
+        for key, txn in self.transactions.items():
+            content = content_of(txn)
+            if content is None:
+                continue
+            kept = first.get(content)
+            if kept is None:
+                first[content] = key
+            elif self.transactions[kept].source != txn.source and txn.source and self.transactions[kept].source:
+                dropped.append(key)
+        for key in dropped:
+            del self.transactions[key]
+        return len(dropped)
+
     def merge(self, statement: Statement, source: Path | None = None) -> dict:
         """Union a freshly parsed statement into the ledger.
 
@@ -126,11 +241,10 @@ class Ledger:
         """
         if self.account and statement.iban and \
                 self.account.get("iban") not in ("", statement.iban):
-            raise ValueError(
-                f"statement IBAN {statement.iban} does not match ledger "
-                f"{self.account.get('iban')} -- use a separate ledger file"
-            )
-        if not self.account:
+            raise ForeignAccount(statement.iban, self.account["iban"])
+        # The ledger's account is the primary bank's; a statement without an
+        # IBAN (a CSV export) never claims it from one that has one.
+        if not self.account or (statement.iban and not self.account.get("iban")):
             self.account = {
                 "iban": statement.iban,
                 "holder": statement.holder,
@@ -141,10 +255,25 @@ class Ledger:
         digest = _digest(source) if source else ""
 
         added, seen, conflicts = 0, 0, []
+        # What the ledger held before this export, by content: matched only
+        # against those, so two equal rows of this one export stay two.
+        by_content: dict[tuple, str] = {}
+        for held_key, held in self.transactions.items():
+            content = content_of(held)
+            if content is not None:
+                by_content.setdefault(content, held_key)
+        aliases: dict[str, str] = {}
         for txn in statement.transactions:
             key = key_of(txn)
             existing = self.transactions.get(key)
             if existing is None:
+                same = by_content.get(content_of(txn)) if content_of(txn) else None
+                if same is not None:
+                    # Known under another reference: the same row, written
+                    # by another export format.
+                    aliases[key] = same
+                    seen += 1
+                    continue
                 # Tag the row with the import that brought it, so a bad
                 # import can be undone (Ledger.forget). Rows that were
                 # already known keep their first import's tag.
@@ -165,6 +294,8 @@ class Ledger:
                                 f"{txn.currency} bal {txn.balance}",
                 })
 
+        self._reorder(statement, aliases)
+
         entry = {
             "file": source.name if source else "?",
             "sha256": digest,
@@ -173,6 +304,8 @@ class Ledger:
             "generated_on": statement.generated_on.isoformat() if statement.generated_on else None,
             "ingested_at": dt.datetime.now().isoformat(timespec="seconds"),
             "rows": len(statement.transactions),
+            "account": next((t.account for t in statement.transactions), ""),
+            "bank": getattr(statement, "bank", ""),
             "added": added,
             "already_known": seen,
             "conflicts": len(conflicts),
@@ -222,13 +355,16 @@ class Ledger:
         the break is exactly the money unaccounted for.
         """
         breaks = []
-        for currency in sorted({t.currency for t in self.transactions.values()}):
-            rows = [t for t in self.ordered()
-                    if t.currency == currency and t.balance is not None]
+        chains: dict[tuple[str, str], list[Transaction]] = {}
+        for t in self.ordered():
+            if t.balance is not None:
+                chains.setdefault((t.account, t.currency), []).append(t)
+        for (account, currency), rows in sorted(chains.items()):
             for previous, current in zip(rows, rows[1:]):
                 expected = previous.balance + current.amount
                 if abs(expected - current.balance) > tolerance:
                     breaks.append({
+                        "account": account,
                         "currency": currency,
                         "after": previous.date,
                         "before": current.date,
@@ -249,27 +385,22 @@ class Ledger:
         opening balance is read off its own first row.
         """
         rows = self.ordered()
+        first = primary_start(rows)
+        if first:
+            rows = [t for t in rows if not t.account or t.date >= first]
         if start:
             rows = [t for t in rows if t.date >= start]
         if end:
             rows = [t for t in rows if t.date <= end]
-        accounts = []
-        for currency in sorted({t.currency for t in rows}):
-            series = [t for t in rows if t.currency == currency]
-            with_balance = [t for t in series if t.balance is not None]
-            opening = ((with_balance[0].balance - with_balance[0].amount)
-                       if with_balance else 0.0)
-            accounts.append(AccountSummary(
-                currency=currency,
-                opening_balance=round(opening, 2),
-                closing_balance=with_balance[-1].balance if with_balance else 0.0,
-                credit_total=round(sum(t.amount for t in series if t.amount > 0), 2),
-                debit_total=round(-sum(t.amount for t in series if t.amount < 0), 2),
-            ))
+        accounts = _accounts(rows)
 
         periods = [s for s in self.sources if s.get("period_start")]
+        if first:
+            periods = [s for s in periods if not s.get("account")] or periods
         covered_start = (min(_to_date(s["period_start"]) for s in periods)
                          if periods else (rows[0].date if rows else None))
+        if first and covered_start:
+            covered_start = max(covered_start, first)
         covered_end = (max(_to_date(s["period_end"]) for s in periods)
                        if periods else (rows[-1].date if rows else None))
         return Statement(
@@ -292,9 +423,12 @@ def _digest(path: Path) -> str:
     return digest[:16]
 
 
-def ingest(paths: Iterable[Path], ledger_path: Path, parse,
-           reparse: bool = False) -> tuple[Ledger, list[dict]]:
-    """Parse each PDF and merge it in, newest export last.
+def ingest(paths: Iterable[Path], ledger_path: Path, parse=None,
+           reparse: bool = False, strict: bool = True) -> tuple[Ledger, list[dict]]:
+    """Parse each export and merge it in, newest export last.
+
+    `parse` reads every file; without it each one goes to the parser of its
+    bank (`banks.parser_for`).
 
     A file whose digest is already in the import log is not parsed again:
     merging it could only find rows the ledger already holds, and parsing is
@@ -303,8 +437,15 @@ def ingest(paths: Iterable[Path], ledger_path: Path, parse,
     which is how a parser change gets checked against the rows it wrote
     before: a row that comes back different is reported as a conflict, never
     overwritten.
+
+    `strict=False` reports a statement of another account (`ForeignAccount`)
+    as `refused` and goes on with the next file -- what a launch wants: one
+    stray file in inbox/ must not stop the app from starting.
     """
     ledger = Ledger.load(ledger_path)
+    # A twin left by an older merge goes first: the rows read next match
+    # the one that stays.
+    ledger.deduped = ledger.dedupe()
     known = {s["sha256"] for s in ledger.sources if s.get("sha256")}
     reports = []
     for path in paths:
@@ -313,6 +454,17 @@ def ingest(paths: Iterable[Path], ledger_path: Path, parse,
                             "added": 0, "already_known": 0, "conflicts": 0,
                             "conflict_detail": []})
             continue
-        statement = parse(path)
-        reports.append(ledger.merge(statement, source=path))
+        if parse is None:
+            from .banks import parser_for
+            statement = parser_for(path)(path)
+        else:
+            statement = parse(path)
+        try:
+            reports.append(ledger.merge(statement, source=path))
+        except ForeignAccount as refused:
+            if strict:
+                raise
+            reports.append({"file": path.name, "refused": str(refused), "rows": 0,
+                            "added": 0, "already_known": 0, "conflicts": 0,
+                            "conflict_detail": []})
     return ledger, reports

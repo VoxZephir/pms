@@ -30,6 +30,12 @@ def parse_date(value: str | None) -> dt.date | None:
         return None
 
 
+def _months_back(day: dt.date, n: int) -> dt.date:
+    """The 1st of the month `n` months before `day`'s."""
+    index = day.year * 12 + day.month - 1 - n
+    return dt.date(index // 12, index % 12 + 1, 1)
+
+
 def presets(low: dt.date, high: dt.date) -> list[dict]:
     """Ready-made windows, all anchored on the last day we hold data for.
 
@@ -59,8 +65,11 @@ def presets(low: dt.date, high: dt.date) -> list[dict]:
          "start": clamp(high - dt.timedelta(days=89)), "end": high},
         {"id": "180d", "group": "Glissant", "label": "6 mois",
          "start": clamp(high - dt.timedelta(days=179)), "end": high},
+        # Twelve calendar months, the current one included, from the 1st:
+        # a start in mid-month opened every chart on a column of a day or
+        # two that read as "spent nothing".
         {"id": "12m", "group": "Glissant", "label": "12 mois",
-         "start": clamp(high - dt.timedelta(days=364)), "end": high},
+         "start": clamp(_months_back(high, 11)), "end": high},
 
         {"id": "prev_year", "group": "Complet", "label": f"{high.year - 1}",
          "start": clamp(dt.date(high.year - 1, 1, 1)),
@@ -73,9 +82,6 @@ def presets(low: dt.date, high: dt.date) -> list[dict]:
 def preset_groups(low: dt.date, high: dt.date, start: dt.date,
                   end: dt.date) -> list[dict]:
     """Presets bundled into their button groups, with the active one marked."""
-    # The key is "buttons", not "items": in Jinja, `group.items` resolves to the
-    # dict's own .items() method rather than the key, and iterating it silently
-    # blows up at render time.
     groups: list[dict] = []
     for preset in presets(low, high):
         active = (preset["start"], preset["end"]) == (start, end)
