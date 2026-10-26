@@ -166,6 +166,17 @@ que le relevé a déjà enregistré. Un départ explicite au mois courant est co
 La note « virements déclarés » compte ponctuels et séries confondus, une seule fois par
 échéance.
 
+**Une série peut se limiter à certains mois de l'année** (`in_months`, 1-12, absent =
+toute l'année). « Chaque mois, de mai à décembre » : pas de virement de placement en début
+d'année, quand les impôts tombent, puis tous les mois. Le filtre s'ajoute à la cadence (une
+échéance qui tombe sur un mois exclu est sautée, pas décalée) et la durée reste en mois du
+calendrier. Les douze mois cochés valent « toute l'année » et sont stockés sans le champ,
+la forme d'avant ; aucun mois coché est refusé plutôt que lu comme « toute l'année ». Le
+formulaire : « toute l'année / certains mois seulement », puis douze pastilles à cliquer
+(Maj+clic pour une plage) et quelques raccourcis (sans janv.–avril, un semestre,
+décembre seul). La phrase de la ligne (« de mai à décembre », « d'avril à décembre »,
+« en mars, juin et septembre ») vient du serveur (`plans.months_phrase`).
+
 **La courbe de patrimoine a une échelle log** (`?yscale=log|linear`, défaut linéaire).
 C'est le mode d'un horizon à plusieurs décennies. Le log ne s'applique que si toute
 valeur dessinée (totaux **et** bords de bande) est strictement positive — le total d'une
@@ -301,8 +312,13 @@ ordinaire : revenu, dépense de base, et ce qui reste (`projection.margin`, calc
 le serveur), chacun avec sa source (« déclaré » ou « historique ») ; un clic sur le
 montant le modifie, « Revenir à l'historique » efface la déclaration. Les ponctuels sont
 un calendrier, groupés par mois avec leur total, chacun avec la teinte de sa nature
-(dépense, vers le 3a, vers le placement) ; son montant et sa nature se modifient sur
-place, et l'ajout s'ouvre à la demande, la nature en pastilles. Un versement programmé
+(dépense, vers le 3a, vers le placement) ; un clic (ou le crayon) l'ouvre en entier dans
+le formulaire de l'ajout — libellé, montant, date, nature — et l'enregistre à sa place
+(`Plan.replace_one_off`, adressé par son ancien couple mois/libellé `was_month`/`was_label`) :
+la provenance d'une suggestion confirmée reste, sinon la renommer la ferait reproposer.
+Une ligne déclarée pour un mois sans jour garde son mois tant que la date reste vide.
+Modifier et supprimer s'annulent depuis le toast. L'ajout s'ouvre à la demande, la nature
+en pastilles. Un versement programmé
 se déclare comme la phrase qu'il est (« Verser 500 CHF chaque mois pendant 24 mois vers
 le 3a, à partir de… »). Les suggestions sont des cartes à confirmer ou ignorer ; les
 ignorées se restaurent d'un clic.

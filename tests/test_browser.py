@@ -478,3 +478,20 @@ def test_the_horizon_and_the_plan_are_chosen_beside_the_title(page):
     page.get_by_role("button", name=re.compile(r"^Scénario affiché : ")).click()
     page.locator("[data-radix-popper-content-wrapper] button", has_text="Nouveau scénario").click()
     expect(page.get_by_role("dialog", name="Nouveau scénario")).to_be_visible()
+
+
+def test_a_series_is_limited_to_some_months_by_clicking_them(page):
+    page.goto("/previsions")
+    _ready(page)
+    series = page.locator("section").filter(has=page.get_by_role("heading", name="Versements programmés")).last
+    series.get_by_role("button", name="Ajouter").click()
+    page.get_by_label("Montant de chaque versement").fill("800")
+    page.get_by_role("radio", name="certains mois seulement").click()
+    months = page.get_by_role("group", name="Mois où le versement a lieu")
+    # Opens on May to December; one click adds April back.
+    expect(months.get_by_role("button", name="avr", exact=True)).to_have_attribute("aria-pressed", "false")
+    months.get_by_role("button", name="avr", exact=True).click()
+    if os.environ.get("PMS_SHOTS"):
+        page.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "series-form.png"), full_page=True)
+    page.get_by_role("button", name="Ajouter la série").click()
+    expect(page.get_by_text("d'avril à décembre")).to_be_visible()

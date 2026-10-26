@@ -8,7 +8,7 @@ import { toast } from "sonner";
 
 import { Field, Input, Select } from "@/components/Form";
 import { Button, Card, Chip, cx } from "@/components/ui";
-import { MONTHS, chf, frDate, plural } from "@/lib/format";
+import { MONTHS, MONTHS_SHORT, chf, frDate, plural } from "@/lib/format";
 import { planAction, type FieldErrors, type Previsions } from "@/lib/previsions";
 import { useView } from "@/lib/url";
 
@@ -175,53 +175,88 @@ function AmountCell({ d, action, field, title, value, declared, history, tone, s
 
 /* --------------------------------------------------------------- one-offs */
 
+type OneOffFields = { date: string; label: string; amount: string; destination: string };
+type Entry = Previsions["plan"]["declared"][number];
+
+/** One one-off: what, how much, when, where the money goes -- to add one,
+ * or to edit one whole. An entry declared for a month without its day keeps
+ * that month while the day stays blank. */
+function OneOffForm({ d, initial, errors, busy, submit, cancel, editing }: {
+  d: Previsions; initial: OneOffFields; errors: FieldErrors; busy: boolean;
+  submit: (f: OneOffFields) => void; cancel: () => void; editing?: boolean;
+}) {
+  const [form, setForm] = useState(initial);
+  return (
+    <form onSubmit={(e: FormEvent) => { e.preventDefault(); submit(form); }}
+          className={cx("space-y-3 rounded-2xl border border-hairline-2 bg-surface-2/40 p-3.5", !editing && "mb-4")}>
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem]">
+        <Field label="Quoi" error={errors["oneoff-label"]}>
+          {(id) => <Input id={id} autoFocus required placeholder="Ex. Impôts 2027" value={form.label}
+                          onChange={(e) => setForm({ ...form, label: e.target.value })} invalid={!!errors["oneoff-label"]} />}
+        </Field>
+        <Field label="Montant, CHF" error={errors["oneoff-amount"]}>
+          {(id) => <Input id={id} type="number" inputMode="decimal" step="0.01" min="0.01" required value={form.amount}
+                          className="text-right" onChange={(e) => setForm({ ...form, amount: e.target.value })} invalid={!!errors["oneoff-amount"]} />}
+        </Field>
+      </div>
+      <Field label="Quand" error={errors["oneoff-date"]}>
+        {(id) => <div className="sm:w-48"><Input id={id} type="date" required={!editing} value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })}
+                        invalid={!!errors["oneoff-date"]} /></div>}
+      </Field>
+      <div>
+        <div className="mb-1.5 text-[12.5px] font-medium text-ink-2">Nature</div>
+        <Pills label="Nature" value={form.destination} onChange={(id) => setForm({ ...form, destination: id })}
+               options={d.destinations.map((x) => ({ id: x.id, label: NATURES[x.id]?.short ?? x.label, color: NATURES[x.id]?.color }))} />
+        <p className="mt-1.5 text-[12px] text-muted">{NATURES[form.destination]?.note}</p>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="ghost" onClick={cancel}>Annuler</Button>
+        <Button type="submit" variant="primary" disabled={busy}>{editing ? "Enregistrer" : <><Plus size={15} />Ajouter</>}</Button>
+      </div>
+    </form>
+  );
+}
+
+const fieldsOfEntry = (e: Entry): OneOffFields =>
+  ({ date: e.date ?? "", label: e.label, amount: String(e.amount), destination: e.transfer || "" });
+
 function OneOffs({ d }: { d: Previsions }) {
   const { errors, busy, run } = useAction(d);
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ date: "", label: "", amount: "", destination: "" });
-  const add = async (e: FormEvent) => {
-    e.preventDefault();
-    if (await run({ action: "add", ...form }, `« ${form.label} » ajouté`)) {
-      setForm({ date: "", label: "", amount: "", destination: form.destination });
+  const [editing, setEditing] = useState<string | null>(null);
+  const [lastNature, setLastNature] = useState("");
+  const add = async (f: OneOffFields) => {
+    if (await run({ action: "add", ...f }, `« ${f.label} » ajouté`)) {
+      setLastNature(f.destination);
       setAdding(false);
     }
   };
+  // Addressed by what it was: (month, label) is the plan's key for an entry.
+  const save = async (e: Entry, f: OneOffFields) => {
+    if (await run({ action: "add", month: e.month, was_month: e.month, was_label: e.label, ...f })) {
+      setEditing(null);
+      const now = f.date ? f.date.slice(0, 7) : e.month;
+      toast.success(`« ${f.label} » modifié`, {
+        action: { label: "Annuler", onClick: async () => {
+          await planAction(d.months, { action: "add", month: e.month, was_month: now, was_label: f.label, ...fieldsOfEntry(e) });
+          toast("Ponctuel d'avant rétabli");
+        } },
+      });
+    }
+  };
   // By month, in order: the plan reads as a calendar.
-  const byMonth = new Map<string, Previsions["plan"]["declared"]>();
+  const byMonth = new Map<string, Entry[]>();
   [...d.plan.declared].sort((a, b) => (a.date || `${a.month}-99`).localeCompare(b.date || `${b.month}-99`))
     .forEach((e) => byMonth.set(e.month, [...(byMonth.get(e.month) ?? []), e]));
-  const indexOf = (e: Previsions["plan"]["declared"][number]) => d.plan.declared.indexOf(e) + 1;
+  const indexOf = (e: Entry) => d.plan.declared.indexOf(e) + 1;
+  const keyOf = (e: Entry) => `${e.month}|${e.label}`;
   return (
     <Block icon={<CalendarClock size={16} />} title="Ponctuels"
            hint={d.plan.declared.length ? plural(d.plan.declared.length, "ponctuel déclaré", "ponctuels déclarés") : "impôts, assurance, un voyage, un virement au 3a"}
-           actions={!adding && <Button size="sm" onClick={() => setAdding(true)}><Plus size={14} />Ajouter</Button>}>
+           actions={!adding && editing === null && <Button size="sm" onClick={() => setAdding(true)}><Plus size={14} />Ajouter</Button>}>
       {adding && (
-        <form onSubmit={add} className="mb-4 space-y-3 rounded-2xl border border-hairline-2 bg-surface-2/40 p-3.5">
-          <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_9rem]">
-            <Field label="Quoi" error={errors["oneoff-label"]}>
-              {(id) => <Input id={id} autoFocus required placeholder="Ex. Impôts 2027" value={form.label}
-                              onChange={(e) => setForm({ ...form, label: e.target.value })} invalid={!!errors["oneoff-label"]} />}
-            </Field>
-            <Field label="Montant, CHF" error={errors["oneoff-amount"]}>
-              {(id) => <Input id={id} type="number" inputMode="decimal" step="0.01" min="0.01" required value={form.amount}
-                              className="text-right" onChange={(e) => setForm({ ...form, amount: e.target.value })} invalid={!!errors["oneoff-amount"]} />}
-            </Field>
-          </div>
-          <Field label="Quand" error={errors["oneoff-date"]}>
-            {(id) => <div className="sm:w-48"><Input id={id} type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })}
-                            invalid={!!errors["oneoff-date"]} /></div>}
-          </Field>
-          <div>
-            <div className="mb-1.5 text-[12.5px] font-medium text-ink-2">Nature</div>
-            <Pills label="Nature" value={form.destination} onChange={(id) => setForm({ ...form, destination: id })}
-                   options={d.destinations.map((x) => ({ id: x.id, label: NATURES[x.id]?.short ?? x.label, color: NATURES[x.id]?.color }))} />
-            <p className="mt-1.5 text-[12px] text-muted">{NATURES[form.destination]?.note}</p>
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={() => setAdding(false)}>Annuler</Button>
-            <Button type="submit" variant="primary" disabled={busy}><Plus size={15} />Ajouter</Button>
-          </div>
-        </form>
+        <OneOffForm d={d} initial={{ date: "", label: "", amount: "", destination: lastNature }} errors={errors} busy={busy}
+                    submit={(f) => void add(f)} cancel={() => setAdding(false)} />
       )}
       {byMonth.size === 0 && !adding && (
         <p className="rounded-xl border border-dashed border-hairline-2 px-3 py-4 text-center text-[13px] text-muted">
@@ -236,7 +271,15 @@ function OneOffs({ d }: { d: Previsions }) {
               <span className="num text-muted">−{chf(entries.reduce((a, e) => a + e.amount, 0), 0)}</span>
             </div>
             <ul className="divide-y divide-hairline rounded-xl border border-hairline">
-              {entries.map((e) => <Declared key={`${e.month}-${e.label}`} d={d} e={e} index={indexOf(e)} />)}
+              {entries.map((e) => editing === keyOf(e) ? (
+                <li key={keyOf(e)} className="p-1.5">
+                  <OneOffForm d={d} initial={fieldsOfEntry(e)} errors={errors} busy={busy} editing
+                              submit={(f) => void save(e, f)} cancel={() => setEditing(null)} />
+                </li>
+              ) : (
+                <Declared key={keyOf(e)} d={d} e={e} index={indexOf(e)}
+                          edit={() => { setAdding(false); setEditing(keyOf(e)); }} />
+              ))}
             </ul>
           </li>
         ))}
@@ -245,53 +288,106 @@ function OneOffs({ d }: { d: Previsions }) {
   );
 }
 
-function Declared({ d, e, index }: { d: Previsions; e: Previsions["plan"]["declared"][number]; index: number }) {
+function Declared({ d, e, index, edit }: { d: Previsions; e: Entry; index: number; edit: () => void }) {
   const { errors, run } = useAction(d);
-  const [editing, setEditing] = useState(false);
-  const [amount, setAmount] = useState(String(e.amount));
   const nature = NATURES[e.transfer || ""] ?? NATURES[""];
-  const saveAmount = async (ev: FormEvent) => {
-    ev.preventDefault();
-    if (await run({ action: "amount", month: e.month, label: e.label, amount }, "Montant modifié")) setEditing(false);
+  const remove = async () => {
+    if (await run({ action: "delete", month: e.month, label: e.label })) {
+      toast.success(`« ${e.label} » supprimé`, {
+        action: { label: "Annuler", onClick: async () => {
+          const s = e.seasonal as { category: string; month: number } | null;
+          await planAction(d.months, { action: "add", month: e.month, ...fieldsOfEntry(e), seasonal: s ? `${s.category}|${s.month}` : "" });
+          toast("Ponctuel rétabli");
+        } },
+      });
+    }
   };
   return (
     <li className="px-3 py-2.5 text-[13.5px]">
       <div className="flex items-center gap-2.5">
         <i className="inline-block h-8 w-1 shrink-0 rounded-full" style={{ background: nature.color }} />
-        <div className="min-w-0 flex-1">
+        <button type="button" onClick={edit} title="Modifier ce ponctuel"
+                className="min-w-0 flex-1 rounded-lg text-left transition hover:text-ink">
           <div className="truncate font-medium">{e.label}{e.seasonal ? <span className="ml-1.5 text-[11.5px] font-normal text-muted">· suggéré</span> : null}</div>
           <div className="num text-[12px] text-muted">{e.date ? frDate(e.date) : "dans le mois"} · {nature.short.toLowerCase()}</div>
-        </div>
-        {editing ? (
-          <form onSubmit={saveAmount} className="flex items-center gap-1">
-            <Input autoFocus type="number" inputMode="decimal" step="0.01" min="0.01" value={amount} onChange={(x) => setAmount(x.target.value)}
-                   aria-label={`Montant de « ${e.label} »`} className="w-28 text-right" invalid={!!errors[`amount-${index}`]} />
-            <Button size="sm" type="submit" variant="primary" aria-label="Enregistrer le montant"><Check size={14} /></Button>
-          </form>
-        ) : (
-          <button type="button" onClick={() => setEditing(true)} aria-label={`Modifier le montant de « ${e.label} »`}
-                  className="num rounded-lg px-1.5 py-1 font-semibold hover:bg-surface-2">−{chf(e.amount, 0)}</button>
-        )}
+        </button>
+        <span className="num px-1.5 font-semibold">−{chf(e.amount, 0)}</span>
+        <button type="button" aria-label={`Modifier « ${e.label} »`} className="rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-ink"
+                onClick={edit}>
+          <Pencil size={15} />
+        </button>
         <button type="button" aria-label={`Supprimer « ${e.label} »`} className="rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-critical"
-                onClick={() => run({ action: "delete", month: e.month, label: e.label }, `« ${e.label} » supprimé`)}>
+                onClick={() => void remove()}>
           <Trash2 size={15} />
         </button>
       </div>
       {errors[`amount-${index}`] && <p className="mt-1 text-[12.5px] text-critical">{errors[`amount-${index}`]}</p>}
-      {editing && (
-        <div className="mt-2 pl-3.5">
-          <Pills label={`Nature de « ${e.label} »`} value={e.transfer || ""}
-                 onChange={(id) => void run({ action: "destination", month: e.month, label: e.label, destination: id }, "Nature modifiée")}
-                 options={d.destinations.map((x) => ({ id: x.id, label: NATURES[x.id]?.short ?? x.label, color: NATURES[x.id]?.color }))} />
-        </div>
-      )}
     </li>
   );
 }
 
 /* ----------------------------------------------------- scheduled transfers */
 
-type SeriesFields = { amount: string; every: string; months: string; start: string; pocket: string };
+type SeriesFields = { amount: string; every: string; months: string; start: string; pocket: string; in_months: number[] };
+
+const ALL_YEAR = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const range = (a: number, b: number) => ALL_YEAR.filter((m) => m >= a && m <= b);
+/** Shortcuts for the usual shapes; any other is a click per month. */
+const MONTH_PRESETS: { label: string; months: number[] }[] = [
+  { label: "sans janv.–avril", months: range(5, 12) },
+  { label: "1er semestre", months: range(1, 6) },
+  { label: "2e semestre", months: range(7, 12) },
+  { label: "décembre seul", months: [12] },
+];
+
+/** Which months of the year a series pays in: the whole year, or the months
+ * clicked. A month chip is a toggle; a range is a shift-click from the last
+ * one touched. Empty stays a choice to finish, not "all". */
+function MonthsOfYear({ value, onChange, invalid }: { value: number[] | null; onChange: (v: number[] | null) => void; invalid?: boolean }) {
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const limited = value !== null;
+  const toggle = (m: number, shift: boolean) => {
+    const set = new Set(value ?? []);
+    if (shift && anchor !== null) {
+      const on = !set.has(m) || set.has(anchor);
+      range(Math.min(anchor, m), Math.max(anchor, m)).forEach((x) => (on ? set.add(x) : set.delete(x)));
+    } else if (set.has(m)) set.delete(m); else set.add(m);
+    setAnchor(m);
+    onChange([...set].sort((a, b) => a - b));
+  };
+  return (
+    <div className="space-y-2">
+      <Pills label="Mois de l'année" value={limited ? "some" : "all"}
+             onChange={(id) => onChange(id === "all" ? null : value ?? range(5, 12))}
+             options={[{ id: "all", label: "toute l'année" }, { id: "some", label: "certains mois seulement" }]} />
+      {limited && (
+        <>
+          <div role="group" aria-label="Mois où le versement a lieu"
+               className={cx("grid grid-cols-6 gap-1 sm:grid-cols-12", invalid && "rounded-lg ring-1 ring-critical")}>
+            {ALL_YEAR.map((m) => {
+              const on = value.includes(m);
+              return (
+                <button key={m} type="button" aria-pressed={on} title={MONTHS[m - 1]}
+                        onClick={(e) => toggle(m, e.shiftKey)}
+                        className={cx("rounded-lg border px-1 py-1.5 text-center text-[12px] capitalize transition",
+                          on ? "border-ink bg-ink font-semibold text-page" : "border-hairline-2 text-muted line-through decoration-muted/60 hover:bg-surface-2")}>
+                  {MONTHS_SHORT[m - 1].replace(".", "")}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5 text-[12px] text-muted">
+            {MONTH_PRESETS.map((p) => (
+              <button key={p.label} type="button" onClick={() => onChange(p.months)}
+                      className="rounded-full border border-hairline-2 px-2 py-0.5 hover:bg-surface-2 hover:text-ink">{p.label}</button>
+            ))}
+            <span className="hidden sm:inline">· Maj+clic choisit une plage</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /** "450 mois" as a reader says it: "37 ans et 6 mois". */
 function span(months: number): string {
@@ -303,13 +399,16 @@ function span(months: number): string {
 /** One series as the sentence it is -- to add one, or to edit one in place. */
 function SeriesForm({ d, initial, errors, busy, submit, cancel, editing }: {
   d: Previsions; initial: SeriesFields; errors: Record<string, string>; busy: boolean;
-  submit: (f: SeriesFields) => void; cancel: () => void; editing?: boolean;
+  submit: (f: SeriesFields, limited: boolean) => void; cancel: () => void; editing?: boolean;
 }) {
   const [f, setF] = useState(initial);
-  const fieldError = ["contrib-amount", "contrib-every", "contrib-months", "contrib-start", "contrib-pocket"].map((k) => errors[k]).find(Boolean);
+  const fieldError = ["contrib-amount", "contrib-every", "contrib-months", "contrib-start", "contrib-pocket", "contrib-in-months"].map((k) => errors[k]).find(Boolean);
+  // null = the whole year; a list = only those months (kept while editing,
+  // even empty, so unticking the last month does not silently mean "all").
+  const [some, setSome] = useState<number[] | null>(initial.in_months.length ? initial.in_months : null);
   const months = Number(f.months);
   return (
-    <form onSubmit={(e: FormEvent) => { e.preventDefault(); submit(f); }}
+    <form onSubmit={(e: FormEvent) => { e.preventDefault(); submit({ ...f, in_months: some ?? [] }, some !== null); }}
           className={cx("rounded-2xl border border-hairline-2 bg-surface-2/40 p-3.5", !editing && "mb-4")}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[14px]">
         <span>Verser</span>
@@ -343,10 +442,17 @@ function SeriesForm({ d, initial, errors, busy, submit, cancel, editing }: {
         </div>
         <span className="text-[12px] text-muted">vide = le mois prochain</span>
       </div>
+      <div className="mt-3 text-[13px] text-ink-2">
+        <div className="mb-1.5">en</div>
+        <MonthsOfYear value={some} onChange={setSome} invalid={!!errors["contrib-in-months"]} />
+        {some !== null && some.length > 0 && f.every !== "month" && (
+          <p className="mt-1.5 text-[12px] text-muted">Avec une cadence {d.every_options.find((x) => x.id === f.every)?.label ?? ""}, seuls les versements qui tombent sur ces mois ont lieu.</p>
+        )}
+      </div>
       {fieldError && <p role="alert" className="mt-2 text-[12.5px] text-critical">{fieldError}</p>}
       <div className="mt-3 flex justify-end gap-2">
         <Button type="button" variant="ghost" onClick={cancel}>Annuler</Button>
-        <Button type="submit" variant="primary" disabled={busy}>
+        <Button type="submit" variant="primary" disabled={busy || (some !== null && some.length === 0)}>
           {editing ? "Enregistrer" : <><Plus size={15} />Ajouter la série</>}
         </Button>
       </div>
@@ -358,17 +464,17 @@ function Series({ d }: { d: Previsions }) {
   const { errors, busy, run } = useAction(d);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
-  const blank: SeriesFields = { amount: "", every: "month", months: "24", start: "", pocket: d.pockets[0]?.id ?? "3a" };
+  const blank: SeriesFields = { amount: "", every: "month", months: "24", start: "", pocket: d.pockets[0]?.id ?? "3a", in_months: [] };
   const fieldsOf = (c: Previsions["plan"]["contributions"][number]): SeriesFields =>
-    ({ amount: String(c.amount), every: c.every, months: String(c.months), start: c.start, pocket: c.pocket });
+    ({ amount: String(c.amount), every: c.every, months: String(c.months), start: c.start, pocket: c.pocket, in_months: c.in_months ?? [] });
   const pocketName = (id: string) => (id === "3a" ? "le 3a" : "le placement");
 
-  const add = async (f: SeriesFields) => {
-    if (await run({ action: "contrib", ...f }, "Série ajoutée")) setAdding(false);
+  const add = async (f: SeriesFields, limited: boolean) => {
+    if (await run({ action: "contrib", ...f, in_months_on: limited ? "1" : "" }, "Série ajoutée")) setAdding(false);
   };
-  const save = async (i: number, f: SeriesFields) => {
+  const save = async (i: number, f: SeriesFields, limited: boolean) => {
     const before = fieldsOf(d.plan.contributions[i]);
-    if (await run({ action: "contrib", index: i, ...f })) {
+    if (await run({ action: "contrib", index: i, ...f, in_months_on: limited ? "1" : "" })) {
       setEditing(null);
       toast.success("Série modifiée", {
         action: { label: "Annuler", onClick: async () => {
@@ -380,7 +486,7 @@ function Series({ d }: { d: Previsions }) {
   };
   const remove = async (i: number) => {
     const c = d.plan.contributions[i];
-    if (await run({ action: "contrib-del", pocket: c.pocket, amount: c.amount, every: c.every, months: c.months, start: c.start })) {
+    if (await run({ action: "contrib-del", pocket: c.pocket, amount: c.amount, every: c.every, months: c.months, start: c.start, in_months: c.in_months ?? [] })) {
       toast.success("Série retirée", {
         action: { label: "Annuler", onClick: async () => {
           await planAction(d.months, { action: "contrib", ...fieldsOf(c) });
@@ -393,7 +499,7 @@ function Series({ d }: { d: Previsions }) {
     <Block icon={<Repeat size={16} />} title="Versements programmés"
            hint={d.plan.contributions.length ? plural(d.plan.contributions.length, "série", "séries") : "un virement qui revient : chaque mois vers le placement, chaque année au 3a"}
            actions={!adding && editing === null && <Button size="sm" onClick={() => setAdding(true)}><Plus size={14} />Ajouter</Button>}>
-      {adding && <SeriesForm d={d} initial={blank} errors={errors} busy={busy} submit={(f) => void add(f)} cancel={() => setAdding(false)} />}
+      {adding && <SeriesForm d={d} initial={blank} errors={errors} busy={busy} submit={(f, l) => void add(f, l)} cancel={() => setAdding(false)} />}
       {d.plan.contributions.length === 0 && !adding && (
         <p className="rounded-xl border border-dashed border-hairline-2 px-3 py-4 text-center text-[13px] text-muted">
           Aucune série. Un versement qui revient se déclare une fois.
@@ -403,7 +509,7 @@ function Series({ d }: { d: Previsions }) {
         {d.plan.contributions.map((c, i) => editing === i ? (
           <li key={i}>
             <SeriesForm d={d} initial={fieldsOf(c)} errors={errors} busy={busy} editing
-                        submit={(f) => void save(i, f)} cancel={() => setEditing(null)} />
+                        submit={(f, l) => void save(i, f, l)} cancel={() => setEditing(null)} />
           </li>
         ) : (
           <li key={i} className="flex items-center gap-3 rounded-xl border border-hairline px-3 py-2.5 text-[13.5px]">
@@ -413,6 +519,7 @@ function Series({ d }: { d: Previsions }) {
             <button type="button" onClick={() => { setAdding(false); setEditing(i); }} disabled={busy}
                     className="min-w-0 flex-1 rounded-lg text-left transition hover:text-ink" title="Modifier cette série">
               <b className="num">{chf(c.amount, 0)} CHF</b> {c.every_label} vers {pocketName(c.pocket)}
+              {c.in_months_label && <span className="font-medium text-ink-2"> · {c.in_months_label}</span>}
               <span className="block text-[12px] text-muted">pendant {span(c.months)} · dès {c.start_label}</span>
             </button>
             <button type="button" aria-label="Modifier cette série" className="rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-ink"

@@ -87,7 +87,7 @@ export interface Previsions {
     rate_segments: [number, number][];
     rate_years: RateYear[];
     declared: { month: string; label: string; amount: number; date: string; transfer: string; seasonal: unknown }[];
-    contributions: { pocket: string; amount: number; every: string; months: number; start: string; every_label: string; start_label: string }[];
+    contributions: { pocket: string; amount: number; every: string; months: number; start: string; every_label: string; start_label: string; in_months: number[]; in_months_label: string }[];
     ignored: { category: string; month: number; label: string }[];
     scenarios: ({ name: string; summary: string } & Market)[];
   };

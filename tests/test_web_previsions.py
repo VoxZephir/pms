@@ -429,3 +429,66 @@ def test_a_series_is_edited_in_place(client, plan_file):
                                   "months": "1", "pocket": "3a", "start": ""})
     assert status == 400 and "n'existe plus" in body["errors"]["contrib-amount"]
     assert len(plans.Plan.load(plan_file).contributions) == 2
+
+
+def test_a_one_off_is_edited_whole_in_place(client, plan_file):
+    _edit(client, {"action": "add", "month": "2026-12", "label": "Assurance maladie",
+                   "amount": "900", "seasonal": "Santé|12"})
+    _edit(client, {"action": "add", "date": "2026-11-25", "label": "Meubles", "amount": "3000"})
+    status, _ = _edit(client, {"action": "add", "was_month": "2026-11", "was_label": "Meubles",
+                               "date": "2027-01-10", "label": "Meubles du salon", "amount": "2500",
+                               "destination": ""})
+    assert status == 200
+    entries = plans.Plan.load(plan_file).one_offs
+    e = entries[1]
+    assert (e["month"], e["label"], e["amount"], e["date"]) == ("2027-01", "Meubles du salon", 2500.0, "2027-01-10")
+    # A month-only entry keeps its month and its provenance when renamed.
+    _edit(client, {"action": "add", "was_month": "2026-12", "was_label": "Assurance maladie",
+                   "month": "2026-12", "date": "", "label": "LAMal", "amount": "950"})
+    first = plans.Plan.load(plan_file).one_offs[0]
+    assert (first["label"], first["month"], first["amount"]) == ("LAMal", "2026-12", 950.0)
+    assert first["seasonal"] == {"category": "Santé", "month": 12}
+    # One that is gone is said, nothing is added.
+    status, body = _edit(client, {"action": "add", "was_month": "2026-11", "was_label": "Meubles",
+                                  "date": "2026-11-25", "label": "X", "amount": "1"})
+    assert status == 400 and "n'existe plus" in body["errors"]["oneoff-label"]
+    assert len(plans.Plan.load(plan_file).one_offs) == 2
+
+
+def test_a_series_can_skip_months_of_the_year(client, plan_file):
+    status, _ = _edit(client, {"action": "contrib", "amount": "1000", "every": "month", "months": "24",
+                               "pocket": "taxable", "start": "2027-01", "in_months": [5, 6, 7, 8, 9, 10, 11, 12],
+                               "in_months_on": "1"})
+    assert status == 200
+    (series,) = plans.Plan.load(plan_file).contributions
+    assert series["in_months"] == [5, 6, 7, 8, 9, 10, 11, 12]
+    (shown,) = _forecast(client, "months=36")["plan"]["contributions"]
+    assert shown["in_months_label"] == "de mai à décembre"
+    rows = _forecast(client, "months=36")["projection"]["rows"]
+    paid = {r["key"] for r in rows
+            if any(o.get("source") == "contribution" for o in r["one_offs"])}
+    assert "2027-04" not in paid and "2027-05" in paid and "2028-02" not in paid and "2028-12" in paid
+    # Every month ticked is the whole year: stored as before.
+    _edit(client, {"action": "contrib", "index": "0", "amount": "1000", "every": "month", "months": "24",
+                   "pocket": "taxable", "start": "2027-01", "in_months": list(range(1, 13)), "in_months_on": "1"})
+    assert "in_months" not in plans.Plan.load(plan_file).contributions[0]
+    # None ticked is refused, not read as "all year".
+    status, body = _edit(client, {"action": "contrib", "amount": "10", "every": "month", "months": "2",
+                                  "pocket": "3a", "start": "", "in_months": [], "in_months_on": "1"})
+    assert status == 400 and body["errors"]["contrib-in-months"]
+    # Removed by its whole content, months included.
+    _edit(client, {"action": "contrib", "index": "0", "amount": "1000", "every": "month", "months": "24",
+                   "pocket": "taxable", "start": "2027-01", "in_months": [12], "in_months_on": "1"})
+    _edit(client, {"action": "contrib-del", "pocket": "taxable", "amount": 1000.0, "every": "month",
+                   "months": 24, "start": "2027-01", "in_months": [12]})
+    assert plans.Plan.load(plan_file).contributions == []
+
+
+def test_the_months_of_a_series_read_as_said():
+    assert plans.months_phrase([5]) == "en mai"
+    assert plans.months_phrase([3, 6, 9]) == "en mars, juin et septembre"
+    assert plans.months_phrase([11, 12, 1, 2]) == "de novembre à février"
+    assert plans.months_phrase([1, 2, 3, 4, 5, 6]) == "de janvier à juin"
+    assert plans.months_phrase([4, 5, 6, 7, 8, 9, 10, 11, 12]) == "d'avril à décembre"
+    assert plans.months_phrase([8, 9, 10]) == "d'août à octobre"
+    assert plans.in_months_of(["13", "x", "5", 5]) == [5]

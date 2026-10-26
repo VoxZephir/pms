@@ -67,7 +67,10 @@ def previsions():
             "declared": _declared_one_offs(plan),
             "contributions": [{**c, "every_label": plans_module.CONTRIBUTION_LABELS[c["every"]],
                                "start_label": (plans_module.month_label(c["start"])
-                                               if c["start"] else "le mois prochain")}
+                                               if c["start"] else "le mois prochain"),
+                               "in_months": c.get("in_months", []),
+                               "in_months_label": (plans_module.months_phrase(c["in_months"])
+                                                   if c.get("in_months") else "")}
                               for c in plan.contributions],
             "ignored": [{"category": c, "month": m,
                          "label": plans_module.MONTH_NAMES[m - 1].capitalize()}

@@ -735,6 +735,11 @@ def apply_plan_action(plan: plans_module.Plan, form, horizon: int
         pocket = (form.get("pocket") or "").strip()
         every = (form.get("every") or "").strip()
         start = (form.get("start") or "").strip()
+        # The months of the year the series is limited to; none = all year.
+        in_months = form.getlist("in_months")
+        if form.get("in_months_on") and not any(
+                m.strip().isdigit() and 1 <= int(m) <= 12 for m in in_months):
+            errors["contrib-in-months"] = "Choisissez au moins un mois."
         values["contrib-amount"] = amount_text
         values["contrib-every"] = every
         values["contrib-months"] = (form.get("months") or "").strip()
@@ -767,10 +772,11 @@ def apply_plan_action(plan: plans_module.Plan, form, horizon: int
                     index = int(index_text)
                 except ValueError:
                     index = -1
-                if not plan.replace_contribution(index, pocket, amount, every, months, start):
+                if not plan.replace_contribution(index, pocket, amount, every, months, start,
+                                                 in_months):
                     errors["contrib-amount"] = "Cette série n'existe plus : rechargez la page."
             else:
-                plan.add_contribution(pocket, amount, every, months, start)
+                plan.add_contribution(pocket, amount, every, months, start, in_months)
     elif action == "contrib-del":
         try:
             amount = float(form.get("amount") or 0.0)
@@ -783,7 +789,7 @@ def apply_plan_action(plan: plans_module.Plan, form, horizon: int
         plan.remove_contribution(
             (form.get("pocket") or "").strip(), amount,
             (form.get("every") or "").strip(), months,
-            (form.get("start") or "").strip())
+            (form.get("start") or "").strip(), form.getlist("in_months"))
     elif action == "vol":
         # Typed as a percentage, stored as a fraction. Blank falls back to the
         # volatility measured on the pockets -- declared 0.0 is a flat band.
@@ -838,9 +844,16 @@ def apply_plan_action(plan: plans_module.Plan, form, horizon: int
                     pair = (category, int(month_no))
                 except ValueError:
                     pair = None
-            plan.add_one_off(month, label, amount, seasonal=pair,
-                             transfer=(form.get("destination") or ""),
-                             date=day.isoformat() if day else "")
+            transfer = form.get("destination") or ""
+            iso = day.isoformat() if day else ""
+            # `was_month`/`was_label` name the entry being edited: replaced
+            # where it stands rather than added beside it.
+            was = ((form.get("was_month") or "").strip(), (form.get("was_label") or "").strip())
+            if all(was):
+                if not plan.replace_one_off(was, month, label, amount, transfer=transfer, date=iso):
+                    errors["oneoff-label"] = "Ce ponctuel n'existe plus : rechargez la page."
+            else:
+                plan.add_one_off(month, label, amount, seasonal=pair, transfer=transfer, date=iso)
 
     return errors, values, applied_months
 

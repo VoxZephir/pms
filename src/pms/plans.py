@@ -84,6 +84,54 @@ CONTRIBUTION_EVERY = {"month": 1, "quarter": 3, "semester": 6, "year": 12}
 CONTRIBUTION_LABELS = {"month": "chaque mois", "quarter": "chaque trimestre",
                        "semester": "chaque semestre", "year": "chaque année"}
 
+
+def in_months_of(value) -> list[int]:
+    """The calendar months a series is limited to, 1-12, sorted. Empty -- and
+    all twelve, which say the same -- means the whole year. Anything else
+    in the list is dropped, not guessed."""
+    if isinstance(value, str):
+        value = [v for v in value.replace(";", ",").split(",") if v.strip()]
+    months = set()
+    for v in value or []:
+        try:
+            m = int(v)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= m <= 12:
+            months.add(m)
+    return [] if len(months) == 12 else sorted(months)
+
+
+def months_phrase(months: list[int]) -> str:
+    """"de mai à décembre", "en mai", "en mars, juin et septembre": the
+    months of a limited series as one says them. A run that crosses the new
+    year reads as one ("de novembre à février")."""
+    if not months:
+        return "toute l'année"
+    chosen = set(months)
+    # Start the reading just after a month left out, so a run across
+    # December-January is not cut in two.
+    first = next(m for m in range(1, 13) if m in chosen and ((m - 2) % 12) + 1 not in chosen) \
+        if len(chosen) < 12 else 1
+    runs: list[list[int]] = []
+    for i in range(12):
+        m = (first - 1 + i) % 12 + 1
+        if m not in chosen:
+            continue
+        if runs and (runs[-1][-1] % 12) + 1 == m:
+            runs[-1].append(m)
+        else:
+            runs.append([m])
+    if len(runs) == 1 and len(runs[0]) >= 3:
+        first_name = MONTH_NAMES[runs[0][0] - 1]
+        # "d'avril", "d'août", "d'octobre": elided before a vowel.
+        of = "d'" if first_name[0] in "aeiou" else "de "
+        return f"{of}{first_name} à {MONTH_NAMES[runs[0][-1] - 1]}"
+    names = [MONTH_NAMES[m - 1] for run in runs for m in run]
+    if len(names) == 1:
+        return f"en {names[0]}"
+    return "en " + ", ".join(names[:-1]) + " et " + names[-1]
+
 #: Named parameter sets the user can recall. The built-ins are examples of
 #: shape, not advice: the app proposes, and applying one is the user declaring
 #: the values -- the same standing as a confirmed seasonal suggestion. Keys are
@@ -336,6 +384,18 @@ def segments_from_years(years: list[dict], rates: list[str]
     return (segments if not errors else []), errors
 
 
+def _series(pocket: str, amount: float, every: str, months: int, start: str,
+            in_months=None) -> dict:
+    """A contribution series as stored. `in_months` is written only when it
+    limits the year, so a whole-year series keeps its old shape."""
+    entry = {"pocket": pocket, "amount": amount, "every": every,
+             "months": months, "start": start}
+    limited = in_months_of(in_months)
+    if limited:
+        entry["in_months"] = limited
+    return entry
+
+
 def _month_no(key: str) -> int:
     year, month = key.split("-")
     return int(year) * 12 + int(month) - 1
@@ -358,6 +418,10 @@ def _contribution_occurrences(plan: "Plan", keys: list[str],
         start_no = _month_no(start)
         for key in keys:
             delta = _month_no(key) - start_no
+            # A series limited to some months of the year skips the others,
+            # on top of its cadence ("chaque mois, de mai à décembre").
+            if c.get("in_months") and int(key[5:7]) not in c["in_months"]:
+                continue
             if 0 <= delta < c["months"] and delta % step == 0:
                 out.setdefault(key, []).append({
                     "label": ("Versement programmé (3a)"
@@ -718,9 +782,8 @@ class Plan:
                     valid = False
                 if not valid:
                     continue
-            self.contributions.append({"pocket": pocket, "amount": amount,
-                                       "every": every, "months": months,
-                                       "start": start})
+            self.contributions.append(_series(pocket, amount, every, months, start,
+                                              entry.get("in_months")))
 
         for pair in raw.get("ignored_seasonal", []):
             try:
@@ -798,6 +861,31 @@ class Plan:
         if destination:
             entry["transfer"] = destination
         self.one_offs.append(entry)
+
+    def replace_one_off(self, was: tuple[str, str], month: str, label: str, amount: float,
+                        transfer: bool | str = False, date: str = "") -> bool:
+        """Edit one entry whole -- day, label, amount, destination -- in place.
+
+        Its `seasonal` provenance stays, so a confirmed suggestion is not
+        offered again for being renamed or moved. Another entry already
+        holding the new (month, label) gives way, as `add_one_off` would.
+        """
+        index = next((i for i, e in enumerate(self.one_offs)
+                      if (e["month"], e["label"]) == was), None)
+        if index is None:
+            return False
+        entry = {"month": month, "label": label, "amount": amount}
+        if date:
+            entry["date"] = date
+        if "seasonal" in self.one_offs[index]:
+            entry["seasonal"] = self.one_offs[index]["seasonal"]
+        destination = _destination(transfer)
+        if destination:
+            entry["transfer"] = destination
+        self.one_offs[index] = entry
+        self.one_offs = [e for i, e in enumerate(self.one_offs)
+                         if i == index or (e["month"], e["label"]) != (month, label)]
+        return True
 
     def set_amount(self, month: str, label: str, amount: float) -> bool:
         """Resize an existing entry, in place.
@@ -905,27 +993,23 @@ class Plan:
         return months if months >= 1 else None
 
     def add_contribution(self, pocket: str, amount: float, every: str,
-                         months: int, start: str = "") -> None:
-        self.contributions.append({"pocket": pocket, "amount": amount,
-                                   "every": every, "months": months,
-                                   "start": start})
+                         months: int, start: str = "", in_months=None) -> None:
+        self.contributions.append(_series(pocket, amount, every, months, start, in_months))
 
     def replace_contribution(self, index: int, pocket: str, amount: float, every: str,
-                             months: int, start: str = "") -> bool:
+                             months: int, start: str = "", in_months=None) -> bool:
         """Edit one series in place: its position in the list stays."""
         if not 0 <= index < len(self.contributions):
             return False
-        self.contributions[index] = {"pocket": pocket, "amount": amount, "every": every,
-                                     "months": months, "start": start}
+        self.contributions[index] = _series(pocket, amount, every, months, start, in_months)
         return True
 
     def remove_contribution(self, pocket: str, amount: float, every: str,
-                            months: int, start: str) -> bool:
+                            months: int, start: str, in_months=None) -> bool:
         """Remove every series equal to the declared one. A series has no
         natural key beyond its full content; two identical ones are
         indistinguishable, so all matches go."""
-        wanted = {"pocket": pocket, "amount": amount, "every": every,
-                  "months": months, "start": start}
+        wanted = _series(pocket, amount, every, months, start, in_months)
         before = len(self.contributions)
         self.contributions = [c for c in self.contributions if c != wanted]
         return len(self.contributions) < before
