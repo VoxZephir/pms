@@ -63,7 +63,7 @@ export interface Meta {
   /** The forecast goes under the owner's cash floor: the alert, else null. */
   floor: FloorAlert | null;
   /** November to December: the 3a room left this year, else null. */
-  pillar3a: { year: number; left: number; paid: number; ceiling: number; days_left: number; text: string } | null;
+  pillar3a: { year: number; left: number; paid: number; ceiling: number; days_left: number; room: number; text: string } | null;
   overrides: number;
   crypto: boolean;
   /** The pocket's name when holdings are declared, else null. */

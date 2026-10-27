@@ -109,8 +109,9 @@ function Notices({ data, meta }: { data: Dashboard; meta?: Meta }) {
   }
   if (meta?.pillar3a) {
     const p = meta.pillar3a;
-    rows.push({ key: "pillar3a", icon: <PiggyBank size={17} />, tone: "text-s2", title: `3a ${p.year} : ${chf(p.left, 0)} CHF encore déductibles`,
-      detail: <>{chf(p.paid, 0)} versés sur {chf(p.ceiling, 0)} · à verser avant le 31.12, dans {p.days_left} jours (compter quelques jours de virement)</>,
+    rows.push({ key: "pillar3a", icon: <PiggyBank size={17} />, tone: "text-s2",
+      title: p.left >= 1 ? `3a ${p.year} : ${chf(p.left, 0)} CHF encore déductibles` : `3a ${p.year} : rachat possible, jusqu'à ${chf(p.room, 0)} CHF`,
+      detail: <>{p.text} Compter quelques jours de virement.</>,
       action: <Link to="/impots" className="shrink-0 rounded-lg border border-hairline-2 px-2.5 py-1 text-[12.5px] font-medium no-underline hover:bg-surface-2">Impôts</Link> });
   }
   for (const l of meta?.late ?? []) {

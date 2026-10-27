@@ -56,10 +56,14 @@ def floor_notice(data) -> dict | None:
     Projected once per ledger and plan file, not on every page load."""
     path = data.path.with_name("plans.json")
     try:
-        stamp = path.stat().st_mtime_ns
+        # The content, not the modification time: two saves in one clock
+        # tick would otherwise read as one. The file is a few kilobytes.
+        stamp = hash(path.read_bytes() + path.with_name("tax.json").read_bytes()
+                     if path.with_name("tax.json").exists() else path.read_bytes())
     except OSError:
         return None
-    key = (id(data.statement), len(data.statement.transactions), stamp, dt.date.today())
+    key = (id(data.statement), len(data.statement.transactions), data.statement.period_end,
+           stamp, dt.date.today())
     if key not in _FLOOR_CACHE:
         plan = plans_module.Plan.load(path)
         alert = None

@@ -453,6 +453,14 @@ function Notes({ s }: { s: Savings }) {
             {!p3.published && ` Plafond ${p3.year} pas encore dans l'app : celui de ${p3.year - 1}.`}
             {p3.gaps.map((g) => ` Lacune ${g.year} : ${chf(g.amount, 0)} CHF, rachetable dans les dix ans.`).join("")}
           </p>
+          {p3.buyback.room > 0 && (
+            <p data-buyback className="mt-1.5 text-[13px] text-ink-2">
+              Rachat possible en {p3.year} : jusqu'à <b>{chf(p3.buyback.room, 0)} CHF</b>
+              {p3.left > 0 ? ", une fois le versement de l'année complet" : ""}
+              {p3.buyback.bought > 0 ? ` (déjà ${chf(p3.buyback.bought, 0)} racheté cette année)` : ""}
+              {" "}— une petite cotisation par an au plus, sur demande à la fondation ; déductible comme un versement.
+            </p>
+          )}
         </Card>
       )}
     </div>

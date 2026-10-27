@@ -137,8 +137,27 @@ def test_the_3a_room_is_recalled_from_november_to_the_year_s_end():
     assert fiscal.pillar3a_reminder(FINPENSION, rows, D(2026, 10, 31)) is None   # too early
     r = fiscal.pillar3a_reminder(FINPENSION, rows, D(2026, 11, 20))
     assert (r["left"], r["days_left"]) == (5258.0, 41)
-    assert r["text"] == "3a : 5’258 CHF de plafond encore libres pour 2026, à verser avant le 31.12 (41 j)."
-    # Paid in full: nothing to say. No 3a at all: nothing either.
+    assert r["text"] == ("3a : 5’258 CHF de plafond encore libres pour 2026, "
+                         "puis jusqu'à 7’258 CHF de rachat de ta lacune 2025, avant le 31.12 (41 j).")
+    # Paid in full: the buyback alone. Bought back too: nothing to say.
     full = rows + [_txn(D(2026, 11, 2), -5258.0, 0.0, subcategory="Prévoyance 3a")]
-    assert fiscal.pillar3a_reminder(FINPENSION, full, D(2026, 11, 20)) is None
+    assert fiscal.pillar3a_reminder(FINPENSION, full, D(2026, 11, 20))["text"].startswith(
+        "3a 2026 complet : tu peux encore racheter jusqu'à 7’258 CHF de ta lacune 2025")
+    bought = full + [_txn(D(2026, 11, 3), -7258.0, 0.0, subcategory="Prévoyance 3a")]
+    assert fiscal.pillar3a_reminder(FINPENSION, bought, D(2026, 11, 20)) is None
     assert fiscal.pillar3a_reminder(None, [_txn(D(2026, 9, 30), -50.0, 0.0)], D(2026, 11, 20)) is None
+
+
+def test_a_deposit_beyond_the_ceiling_buys_back_the_oldest_gap():
+    """2025 left empty (a gap of 7'258); 2026 paid in full plus 3'000: the
+    3'000 buy back part of 2025, and 4'258 more can still be bought back in
+    2026 -- one small contribution a year, the gap is not bigger."""
+    rows = [_txn(D(2026, 9, 1), -10258.0, 0.0, subcategory="Prévoyance 3a")]  # after the journal
+    p = fiscal.pillar3a(FINPENSION, rows, 2026, D(2026, 11, 20))
+    assert p["left"] == 0 and p["gaps"] == [{"year": 2025, "amount": 4258.0}]
+    assert p["buyback"] == {"open": 4258.0, "bought": 3000.0, "room": 4258.0, "cap": 7258.0}
+    # In 2025 itself nothing can be bought back yet.
+    assert fiscal.pillar3a(FINPENSION, [], 2025, D(2025, 11, 20))["buyback"]["room"] == 0
+    # A year later, 2026 complete: the rest of 2025 is still open.
+    later = fiscal.pillar3a(FINPENSION, rows, 2027, D(2027, 11, 20))
+    assert later["gaps"] == [{"year": 2025, "amount": 4258.0}]

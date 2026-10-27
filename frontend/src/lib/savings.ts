@@ -74,7 +74,8 @@ export interface Savings {
     unread: string[];
   };
   reserve: null | { months: number; monthly: number; basis: number; low: number; high: number; excess: number; short: number };
-  pillar3a: null | { year: number; paid: number; ceiling: number; left: number; days_left: number | null; published: boolean; gaps: { year: number; amount: number }[] };
+  pillar3a: null | { year: number; paid: number; ceiling: number; left: number; days_left: number | null; published: boolean; gaps: { year: number; amount: number }[];
+    buyback: { open: number; bought: number; room: number; cap: number } };
   allocation: {
     classes: string[];
     targets: Record<string, number>;

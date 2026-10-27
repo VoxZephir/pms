@@ -375,7 +375,13 @@ Trois questions que la table « Par poche » pose sans y répondre.
   deux ans ; une année absente reprend la dernière et le dit), contre les versements de
   l'année : le journal finpension, puis les virements « Prévoyance 3a » du ledger datés
   après la fin du journal. Ce qui reste, à créditer chez la fondation avant le 31.12, et
-  les lacunes depuis 2025, rachetables dans les dix ans (OPP 3, art. 7a).
+  les lacunes depuis 2025, rachetables dans les dix ans (OPP 3, art. 7a). **Le rachat**
+  (27.10) : ce qu'une année reçoit au-delà de son plafond est un rachat (dès 2026), qui
+  comble d'abord la lacune la plus ancienne ; une année permet au plus une petite
+  cotisation de rachat (son plafond), une fois son propre versement complet. Le panneau et
+  le rappel de novembre-décembre (`pillar3a_reminder`) disent « complète d'abord l'année,
+  puis jusqu'à X de rachat ». Règles lues chez la BCVS et Cornèr, pas dans le texte de
+  l'ordonnance : la fondation fait foi, et la demande de rachat se fait chez elle.
 - **La fortune au 31.12** (`fiscal.year_end`, repli « Pour la déclaration d'impôts ») :
   chaque compte et devise à son solde imprimé du 31.12 (une chaîne vue plus tard compte
   son solde d'ouverture, comme `cash_points`), IBKR à sa NAV avec parts et liquidités,

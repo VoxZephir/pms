@@ -73,24 +73,51 @@ def deposits_3a(finpension: dict | None, transactions,
     return sorted(out)
 
 
+# A gap can be bought back for ten years after it (OPP 3, art. 7a).
+BUYBACK_YEARS = 10
+
+
 def pillar3a(finpension: dict | None, transactions, year: int,
              today: dt.date) -> dict:
-    """The year's ceiling against what was paid in, and the gaps since 2025."""
+    """The year's ceiling against what was paid in, the gaps since 2025, and
+    the buyback the year still allows.
+
+    A year's deposits up to its ceiling are its own contribution; beyond it,
+    a buyback (from 2026 on), which fills the oldest open gaps first. A
+    buyback is allowed once the year's own contribution is complete, up to
+    one small contribution (the year's ceiling) a year, for gaps of the last
+    ten years."""
     top, published = ceiling(year)
     deposits = deposits_3a(finpension, transactions, year)
     paid = sum(amount for _, amount, _ in deposits)
     deadline = dt.date(year, 12, 31)
-    gaps = []
-    for earlier in range(BUYBACK_FROM, year):
-        missing = ceiling(earlier)[0] - sum(
-            amount for _, amount, _ in deposits_3a(finpension, transactions, earlier))
-        if missing >= 0.5:
-            gaps.append({"year": earlier, "amount": round(missing, 2)})
+    # Walk the years since 2025: each leaves a gap or buys back older ones.
+    open_gaps: dict[int, float] = {}
+    bought_this_year = 0.0
+    for y in range(BUYBACK_FROM, year + 1):
+        y_top = ceiling(y)[0]
+        y_paid = paid if y == year else sum(a for _, a, _ in deposits_3a(finpension, transactions, y))
+        excess = max(y_paid - y_top, 0.0) if y > BUYBACK_FROM else 0.0
+        if y == year:
+            bought_this_year = excess
+        for g in sorted(open_gaps):
+            take = min(open_gaps[g], excess)
+            open_gaps[g] -= take
+            excess -= take
+        if y < year and y_top - y_paid >= 0.5:
+            open_gaps[y] = y_top - y_paid
+    gaps = [{"year": g, "amount": round(a, 2)} for g, a in sorted(open_gaps.items())
+            if a >= 0.5 and g >= year - BUYBACK_YEARS]
+    left = max(top - paid, 0.0)
+    open_total = sum(g["amount"] for g in gaps)
+    room = min(open_total, max(top - bought_this_year, 0.0)) if year > BUYBACK_FROM else 0.0
     return {"year": year, "ceiling": top, "published": published,
-            "paid": round(paid, 2), "left": round(max(top - paid, 0.0), 2),
+            "paid": round(paid, 2), "left": round(left, 2),
             "deposits": deposits, "deadline": deadline,
             "days_left": (deadline - today).days if today <= deadline else None,
-            "gaps": gaps}
+            "gaps": gaps,
+            "buyback": {"open": round(open_total, 2), "bought": round(bought_this_year, 2),
+                        "room": round(room, 2), "cap": top}}
 
 
 def year_ends(transactions, today: dt.date) -> list[int]:
@@ -226,9 +253,18 @@ def pillar3a_reminder(finpension: dict | None, transactions, today: dt.date) -> 
     if not finpension and not any(t.subcategory == SUBCATEGORY_3A for t in transactions):
         return None
     p = pillar3a(finpension, transactions, today.year, today)
-    if p["left"] < 1 or p["days_left"] is None:
+    room = p["buyback"]["room"]
+    if (p["left"] < 1 and room < 1) or p["days_left"] is None:
         return None
+    years = [g["year"] for g in p["gaps"]]
+    gap = f"ta lacune {years[0]}" if len(years) == 1 else f"tes lacunes {years[0]}–{years[-1]}"
+    by = f"avant le 31.12 ({p['days_left']} j)"
+    if p["left"] >= 1 and room >= 1:
+        text = (f"3a : {analysis.chf(p['left'], 0)} CHF de plafond encore libres pour {p['year']}, "
+                f"puis jusqu'à {analysis.chf(room, 0)} CHF de rachat de {gap}, {by}.")
+    elif p["left"] >= 1:
+        text = f"3a : {analysis.chf(p['left'], 0)} CHF de plafond encore libres pour {p['year']}, à verser {by}."
+    else:
+        text = f"3a {p['year']} complet : tu peux encore racheter jusqu'à {analysis.chf(room, 0)} CHF de {gap}, {by}."
     return {"year": p["year"], "left": p["left"], "paid": p["paid"], "ceiling": p["ceiling"],
-            "days_left": p["days_left"],
-            "text": f"3a : {analysis.chf(p['left'], 0)} CHF de plafond encore libres pour {p['year']}, "
-                    f"à verser avant le 31.12 ({p['days_left']} j)."}
+            "days_left": p["days_left"], "room": room, "gaps": p["gaps"], "text": text}
