@@ -16,6 +16,7 @@ import { PREVISIONS_KEEP, planAction, usePrevisions, type Previsions } from "@/l
 import { useView } from "@/lib/url";
 
 import { Independence } from "./previsions/Freedom";
+import { Hindsight } from "./previsions/Hindsight";
 import { Months } from "./previsions/Months";
 import { Contributions, SplitLegend, lines, stacked, tipParts, type SplitMode } from "./previsions/Parts";
 import { PlanEditor } from "./previsions/Plan";
@@ -69,6 +70,7 @@ function Body({ d }: { d: Previsions }) {
           ))}
         </div>
         <Projection d={d} />
+        <Hindsight d={d} />
         {d.wealth && <Wealth d={d} />}
         {d.wealth && <Contributions d={d} />}
         {d.freedom && <Independence f={d.freedom} />}

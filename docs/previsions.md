@@ -430,3 +430,28 @@ mois en dessous ; `floor_phrase` en fait une phrase, la même partout :
 
 `/api/meta` est demandé à chaque page : la projection n'y est refaite que si le ledger,
 `plans.json` ou le jour ont changé (`shell.floor_notice`).
+
+## Prévu contre réel (27.10)
+
+`hindsight.py`, le panneau sous le solde projeté. Deux sources, la même comparaison :
+
+- **Ton plan** : la première ouverture de Prévisions dans un mois garde la prévision du
+  plan affiché sur douze mois (`data/forecasts.json`, une par mois de relevé, trois ans
+  au plus ; la première du mois, avant tout recul). Les mois se comparent quand ils sont
+  entiers dans le relevé : la première comparaison vient le mois suivant.
+- **La méthode seule** : depuis chaque fin de mois passée (après six mois d'historique),
+  le relevé coupé là (`truncate` : les mêmes lignes, déjà converties sur tout le ledger,
+  chaque compte clos à son ouverture plus ses lignes) et `plans.project` sans plan. Elle
+  répond dès le premier jour, sans rien avoir gardé.
+
+L'identité du cash tient des deux côtés (fin = début + revenu − sorties), et la prévision
+à un mois part du même cash que le réel : l'écart se partage donc exactement entre un écart
+de revenu et un écart de sorties (`test_a_replayed_month_splits_its_cash_gap…`). Une
+sortie de trop se rapporte aux catégories au-dessus de leur propre médiane des douze mois
+d'avant.
+
+Le biais (moyenne des écarts à un mois) n'est dit « une habitude » qu'au-delà de 100 CHF
+et du même signe deux mois sur trois. Des sorties durablement au-dessus de la prévision
+proposent une dépense de base corrigée, appliquée seulement par un clic, annulable — et
+pour « la méthode seule », seulement tant qu'aucune dépense n'est déclarée : son biais
+parle de la base de l'historique, pas d'un chiffre saisi.

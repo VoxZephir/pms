@@ -596,3 +596,19 @@ def test_a_cash_floor_is_typed_once_and_said_everywhere(page):
     page.get_by_label("Seuil d'alerte").fill("")
     page.get_by_label("Seuil d'alerte").press("Enter")
     expect(page.locator("aside").get_by_text("Cash sous le seuil")).to_have_count(0)
+
+
+def test_forecast_against_what_happened_reads_month_by_month(page):
+    page.goto("/previsions")
+    _ready(page)
+    panel = page.locator("#p-hindsight")
+    panel.scroll_into_view_if_needed()
+    # No kept forecast has a whole month behind it yet: the method answers.
+    expect(panel.get_by_role("button", name="La méthode seule")).to_have_attribute("aria-pressed", "true")
+    expect(panel.locator("[data-hindsight-month]").first).to_be_visible()
+    expect(panel.get_by_text(re.compile(r"^Sur les \d+ derniers mois"))).to_be_visible()
+    if os.environ.get("PMS_SHOTS"):
+        page.wait_for_timeout(600)
+        panel.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "hindsight.png"))
+    panel.get_by_role("button", name="Ton plan").click()
+    expect(panel.get_by_text(re.compile("Première comparaison le mois prochain|La prévision de ce mois est gardée"))).to_be_visible()

@@ -12,7 +12,7 @@ from werkzeug.datastructures import MultiDict
 
 from ... import crypto as crypto_module
 from ... import finpension as finpension_module
-from ... import freedom, holdings
+from ... import freedom, hindsight, holdings
 from ... import ibkr as ibkr_module
 from ... import plans as plans_module
 from ..views.common import scale_mode, titres_mode
@@ -32,6 +32,11 @@ def previsions():
     plan = _plan()
     horizon = months_ahead(request.args)
     projection = plans_module.project(data.statement, plan, months_ahead=horizon)
+    # The first look of each month is kept, to be held against the months
+    # as they come (« Prévu contre réel »).
+    hindsight.record(data.path.with_name("forecasts.json"), data.statement,
+                     plans_module.project(data.statement, plan, months_ahead=12) if horizon < 12 else projection,
+                     plan.active)
     # What an ordinary month leaves: the plan's summary line says it, and
     # the browser does no arithmetic.
     projection["margin"] = round(projection["income"] - projection["baseline"], 2)
@@ -219,3 +224,35 @@ def previsions_smooth_save():
     plan.plan_scenarios[name] = result["declarations"]
     plan.save()
     return payload({"ok": True, "name": name, "amount": result["amount"]})
+
+
+_METHOD_CACHE: dict = {}
+
+
+@api.route("/api/previsions/hindsight")
+def previsions_hindsight():
+    """Forecast against what happened: the plan's kept forecasts, and the
+    history-only method replayed from past month-ends (`hindsight.py`)."""
+    data = store()
+    if data.empty:
+        return payload({"empty": True})
+    key = (id(data.statement), len(data.statement.transactions), data.statement.period_end)
+    if key not in _METHOD_CACHE:
+        _METHOD_CACHE.clear()
+        _METHOD_CACHE[key] = hindsight.method(data.statement)
+    plan = _plan()
+    spend = plan.spend if plan.spend is not None else plans_module.baseline(data.statement)
+    out = {"plan": hindsight.kept(data.statement, data.path.with_name("forecasts.json")),
+           "method": dict(_METHOD_CACHE[key]), "spend": round(spend, 2),
+           "spend_declared": plan.spend is not None}
+    for side in ("plan", "method"):
+        # Outflows steadily above the forecast: the usual month's spend the
+        # plan would need to stop being caught out, offered, never applied.
+        bias = out[side]["bias"]
+        steady = bias and bias["outflow"]["steady"] and bias["outflow"]["mean"] > 0
+        # The method speaks of the history's base; once a spend is declared
+        # its bias says nothing about that number.
+        if side == "method" and plan.spend is not None:
+            steady = False
+        out[side]["suggest_spend"] = round(spend + bias["outflow"]["mean"], -1) if steady else None
+    return payload(out)
