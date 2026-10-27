@@ -23,7 +23,8 @@ from . import api, payload, store
 from . import upcoming as upcoming_api
 from .shell import period_of
 
-GRAIN_FR = {"year": "année", "month": "mois", "week": "semaine", "day": "jour"}
+GRAIN_FR = {"year": "année", "semester": "semestre", "quarter": "trimestre",
+            "month": "mois", "week": "semaine", "day": "jour"}
 
 
 def drill_target(rows: list[dict], grain: str) -> tuple[str | None, str]:

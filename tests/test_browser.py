@@ -510,3 +510,23 @@ def test_the_median_is_drawn_over_the_columns_when_asked(page):
     # The switch follows the period, like the stack.
     page.get_by_role("button", name="Médiane").click()
     page.wait_for_url(lambda url: "median=1" not in url)
+
+
+def test_the_sidebar_folds_to_a_rail_and_stays_folded(page):
+    page.goto("/")
+    _ready(page)
+    page.get_by_role("button", name=re.compile("^Replier la barre latérale")).click()
+    rail = page.locator("aside")
+    assert rail.bounding_box()["width"] < 80
+    # Still every destination, by its name.
+    rail.get_by_role("link", name="Transactions").click()
+    page.wait_for_url(re.compile(r"/transactions"))
+    if os.environ.get("PMS_SHOTS"):
+        _ready(page)
+        page.wait_for_timeout(800)
+        page.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "rail.png"), clip={"x": 0, "y": 0, "width": 700, "height": 600})
+    page.reload()
+    _ready(page)
+    assert page.locator("aside").bounding_box()["width"] < 80
+    page.get_by_role("button", name=re.compile("^Déplier la barre latérale")).click()
+    assert page.locator("aside").bounding_box()["width"] > 200

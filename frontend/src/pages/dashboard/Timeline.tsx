@@ -25,7 +25,7 @@ export function Timeline({ data, onDay }: { data: Dashboard; onDay: (iso: string
   const { href, go } = useView();
   const t = data.timeline;
   const grain = data.period.grain;
-  const incomeMarker = grain === "month" || grain === "year";
+  const incomeMarker = grain !== "week" && grain !== "day";
   const byBucket = t.stack === "bucket";
   const ai = useAi();
   const [params] = useSearchParams();

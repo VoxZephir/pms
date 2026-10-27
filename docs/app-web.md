@@ -133,6 +133,18 @@ Le sommaire n'est déclaré nulle part : chaque `Panel` se marque `data-section`
   un panneau ne peut pas remonter jusqu'à la ligne, et « le dernier passé » en
   marquerait un autre.
 
+**La barre latérale se replie en un rail d'icônes** (le bouton à côté du logo, ou `[`) :
+64 px au lieu de 248, toutes les destinations gardées, nommées au survol, le groupe
+« Plus » à la suite derrière un trait. « Sur cette page » et les avis (relevé attendu,
+sauvegarde, mise à jour) attendent qu'elle se déplie ; un avis met un point sur le bouton
+qui la déplie. Le choix tient au navigateur (`localStorage`, `pms-sidebar-folded`),
+comme le groupe « Plus ».
+
+**Trimestre et semestre sont des granularités comme les autres** (`analysis.GRAINS`) :
+colonnes « T2 25 », « S1 25 », une fenêtre qui est un trimestre ou un semestre s'intitule
+« 2e trimestre 2025 » et ses flèches avancent d'autant. L'auto ne les choisit jamais
+(`suggest_grain`) : elles se demandent dans le sélecteur.
+
 ## Sur le téléphone
 
 Sous 1024 px, la barre latérale laisse la place à une barre d'onglets en bas :

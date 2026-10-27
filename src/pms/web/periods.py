@@ -109,6 +109,11 @@ def describe(start: dt.date, end: dt.date) -> str:
     if (start, end) == (year_start, year_end):
         return f"Année {start.year}"
 
+    for grain, noun in (("quarter", "trimestre"), ("semester", "semestre")):
+        if (start, end) == analysis.bucket_bounds(start, grain):
+            n = (start.month - 1) // analysis.GRAIN_MONTHS[grain] + 1
+            return f"{n}{'er' if n == 1 else 'e'} {noun} {start.year}"
+
     week_start, week_end = analysis.bucket_bounds(start, "week")
     if (start, end) == (week_start, week_end):
         _, week, _ = start.isocalendar()
@@ -195,6 +200,15 @@ def neighbours(start: dt.date, end: dt.date, low: dt.date,
             # unit the arrows get used on, so the off-by-one would show.
             prev_end = _last_of_month(prev)
             next_end = _last_of_month(next_)
+        elif any((start, end) == analysis.bucket_bounds(start, g)
+                 for g in analysis.GRAIN_MONTHS):
+            # A quarter or a semester steps by its own months, like a month.
+            size = 3 if (start, end) == analysis.bucket_bounds(start, "quarter") else 6
+            unit = "quarter" if size == 3 else "semester"
+            prev = _shift_month(start, -size)
+            next_ = _shift_month(start, size)
+            prev_end = analysis.bucket_bounds(prev, unit)[1]
+            next_end = analysis.bucket_bounds(next_, unit)[1]
         elif (start.month == 1 and start.day == 1 and end.month == 12
               and end.day == 31):
             unit = "year"

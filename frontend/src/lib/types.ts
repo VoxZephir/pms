@@ -48,7 +48,7 @@ export interface Period {
   bounds: { low: string; high: string };
 }
 
-export type Grain = "year" | "month" | "week" | "day";
+export type Grain = "year" | "semester" | "quarter" | "month" | "week" | "day";
 
 export interface Meta {
   empty: boolean;

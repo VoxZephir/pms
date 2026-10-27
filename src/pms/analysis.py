@@ -620,8 +620,11 @@ def weekday_profile(transactions: list[Transaction]) -> list[dict]:
 # --- period slicing ---------------------------------------------------------
 
 # Grains, coarse to fine. Drilling into a bucket moves one step down this list.
-GRAINS = ["year", "month", "week", "day"]
-GRAIN_LABELS = {"year": "Année", "month": "Mois", "week": "Semaine", "day": "Jour"}
+GRAINS = ["year", "semester", "quarter", "month", "week", "day"]
+GRAIN_LABELS = {"year": "Année", "semester": "Semestre", "quarter": "Trimestre",
+                "month": "Mois", "week": "Semaine", "day": "Jour"}
+# Calendar months per bucket, for the grains that are runs of months.
+GRAIN_MONTHS = {"quarter": 3, "semester": 6}
 
 
 def finer_grain(grain: str) -> str | None:
@@ -674,6 +677,12 @@ def bucket_bounds(day: dt.date, grain: str) -> tuple[dt.date, dt.date]:
         first = day.replace(day=1)
         following = (first + dt.timedelta(days=32)).replace(day=1)
         return first, following - dt.timedelta(days=1)
+    if grain in GRAIN_MONTHS:
+        size = GRAIN_MONTHS[grain]
+        first_month = (day.month - 1) // size * size + 1
+        first = day.replace(month=first_month, day=1)
+        last = bucket_bounds(day.replace(month=first_month + size - 1, day=1), "month")[1]
+        return first, last
     return day.replace(month=1, day=1), day.replace(month=12, day=31)
 
 
@@ -685,6 +694,8 @@ def bucket_key(day: dt.date, grain: str) -> str:
         return f"{year}-W{week:02d}"
     if grain == "month":
         return day.strftime("%Y-%m")
+    if grain in GRAIN_MONTHS:
+        return f"{day.year}-{'Q' if grain == 'quarter' else 'S'}{(day.month - 1) // GRAIN_MONTHS[grain] + 1}"
     return str(day.year)
 
 
@@ -700,6 +711,10 @@ def bucket_label(start: dt.date, grain: str) -> str:
         return f"s{week:02d} · {start.day} {MONTH_SHORT[start.month - 1]}"
     if grain == "month":
         return f"{MONTH_SHORT[start.month - 1]} {start.year % 100:02d}"
+    if grain in GRAIN_MONTHS:
+        # "T2 25", "S1 25": trimestre, semestre.
+        letter = "T" if grain == "quarter" else "S"
+        return f"{letter}{(start.month - 1) // GRAIN_MONTHS[grain] + 1} {start.year % 100:02d}"
     return str(start.year)
 
 

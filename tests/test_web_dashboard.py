@@ -403,3 +403,23 @@ def test_the_timeline_median_counts_complete_periods_only(client):
     # a week's, the weeks the window cuts left out.
     weeks = api(client, "/api/dashboard?from=2025-03-01&to=2025-04-30")
     assert weeks["period"]["grain"] == "week" and weeks["timeline"]["median"]["partial"] >= 1
+
+
+@pytest.mark.parametrize("grain, first, label, count", [("quarter", "2025-Q1", "T1 25", 4),
+                                                       ("semester", "2025-S1", "S1 25", 2)])
+def test_quarters_and_semesters_are_grains_like_the_others(client, grain, first, label, count):
+    year = "/api/dashboard?from=2025-01-01&to=2025-12-31&grain="
+    body = api(client, year + grain)
+    assert body["period"]["grain"] == grain
+    rows = body["timeline"]["rows"]
+    assert (rows[0]["key"], rows[0]["label"], len(rows)) == (first, label, count)
+    by_month = api(client, year + "month")["timeline"]["rows"]
+    assert round(sum(r["spending"] for r in rows), 2) == round(sum(r["spending"] for r in by_month), 2)
+
+
+def test_a_quarter_window_is_named_and_steps_by_a_quarter(client):
+    period = api(client, "/api/period?from=2025-04-01&to=2025-06-30")
+    assert period["title"] == "2e trimestre 2025"
+    n = period["neighbours"]
+    assert (n["prev"]["start"], n["prev"]["end"]) == ("2025-01-01", "2025-03-31")
+    assert n["next_label"] == "3e trimestre 2025"

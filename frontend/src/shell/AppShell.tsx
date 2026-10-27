@@ -1,6 +1,6 @@
 /** The frame around every page: a sidebar on the laptop; on the phone a
  * glass top bar with the period and a tab bar where the thumb is. */
-import { ChevronDown, Ellipsis, Moon, RefreshCw, Search, Sun, Wand2 } from "lucide-react";
+import { ChevronDown, Ellipsis, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Sun, Wand2 } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
@@ -28,6 +28,9 @@ export function AppShell() {
   const [palette, setPalette] = useState(false);
   const theme = useTheme();
   const { sections, active, scrolled } = useSections();
+  // The sidebar folded to a rail of icons: more room for the page. Kept per
+  // browser, like the "Plus" group.
+  const [folded, setFolded] = useStored<boolean>("pms-sidebar-folded", false);
   const page = NAV.find((n) => isActive(n.to, location.pathname));
   // Pages outside the navigation name themselves in the bar.
   const title = location.pathname.startsWith("/corrections/tri") ? "Trier les Twint"
@@ -38,6 +41,7 @@ export function AppShell() {
   useHotkeys({
     "mod+k": (e) => { e.preventDefault(); setPalette(true); },
     "/": (e) => { e.preventDefault(); setPalette(true); },
+    "[": () => { if (desktop) setFolded(!folded); },
   });
 
   // A new page starts at its top; a new window of the same page keeps the
@@ -51,8 +55,9 @@ export function AppShell() {
       <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[100] focus:rounded-xl focus:bg-surface focus:px-3 focus:py-2 focus:shadow-pop">
         Aller au contenu
       </a>
-      {desktop && <Sidebar onSearch={() => setPalette(true)} theme={theme} sections={sections} active={active} />}
-      <div className={desktop ? "pl-[248px]" : ""}>
+      {desktop && <Sidebar onSearch={() => setPalette(true)} theme={theme} sections={sections} active={active}
+                           folded={folded} onFold={() => setFolded(!folded)} />}
+      <div className={cx(desktop && (folded ? "pl-[64px]" : "pl-[248px]"), "transition-[padding] duration-200")}>
         <TopBar desktop={desktop} periodPage={!!page?.period && !location.pathname.startsWith("/jour/")} title={title}
                 onSearch={() => setPalette(true)} />
         <main id="main" className={cx(
@@ -76,16 +81,16 @@ export function AppShell() {
   );
 }
 
-function Brand() {
+function Brand({ folded }: { folded?: boolean }) {
   return (
-    <Link to="/" className="flex items-center gap-2.5 rounded-xl px-2 py-1.5 no-underline">
+    <Link to="/" aria-label="PMS, tableau de bord" className={cx("flex items-center gap-2.5 rounded-xl py-1.5 no-underline", folded ? "px-1" : "px-2")}>
       <span className="grid size-8 place-items-center rounded-[10px] bg-ink text-[13px] font-bold tracking-tight text-page">P</span>
-      <span className="text-[15px] font-semibold tracking-tight">PMS</span>
+      {!folded && <span className="text-[15px] font-semibold tracking-tight">PMS</span>}
     </Link>
   );
 }
 
-function SideLink({ item }: { item: (typeof NAV)[number] }) {
+function SideLink({ item, folded }: { item: (typeof NAV)[number]; folded?: boolean }) {
   const { pageHref } = useView();
   const location = useLocation();
   const active = isActive(item.to, location.pathname);
@@ -93,8 +98,10 @@ function SideLink({ item }: { item: (typeof NAV)[number] }) {
     <NavLink
       to={pageHref(item.to)}
       aria-current={active ? "page" : undefined}
+      title={folded ? item.label : undefined}
       className={cx(
-        "relative flex h-8 items-center gap-3 rounded-xl px-3 text-[13.5px] font-medium no-underline transition",
+        "relative flex h-8 items-center gap-3 rounded-xl text-[13.5px] font-medium no-underline transition",
+        folded ? "justify-center px-0" : "px-3",
         active ? "text-ink" : "text-ink-2 hover:bg-surface-2 hover:text-ink",
       )}
     >
@@ -104,22 +111,66 @@ function SideLink({ item }: { item: (typeof NAV)[number] }) {
                      transition={{ type: "spring", stiffness: 500, damping: 40 }} />
       )}
       <item.icon size={16} className="relative" strokeWidth={1.9} />
-      <span className="relative">{item.label}</span>
+      <span className={folded ? "sr-only" : "relative"}>{item.label}</span>
     </NavLink>
   );
 }
 
-function Sidebar({ onSearch, theme, sections, active }: {
+function Sidebar({ onSearch, theme, sections, active, folded, onFold }: {
   onSearch: () => void; theme: ReturnType<typeof useTheme>; sections: Section[]; active: string | null;
+  folded: boolean; onFold: () => void;
 }) {
   const location = useLocation();
   const { data: meta } = useApi<Meta>("/api/meta");
   const [moreStored, setMore] = useStored<boolean>("pms-nav-more", false);
   // A page of the folded group opens it: the current page is always in sight.
   const moreOpen = moreStored || NAV.some((n) => n.more && isActive(n.to, location.pathname));
+  const fold = (
+    <IconButton label={folded ? "Déplier la barre latérale ( [ )" : "Replier la barre latérale ( [ )"} onClick={onFold}>
+      {folded ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+    </IconButton>
+  );
+  const shell = "fixed inset-y-0 left-0 z-40 flex flex-col border-r border-hairline bg-[color-mix(in_srgb,var(--surface)_60%,var(--page))] py-4";
+  if (folded) {
+    // The rail: the same destinations as icons, named on hover; the page's
+    // sections and the notices wait for the sidebar to open again -- a
+    // notice is flagged by a dot on the unfold button.
+    const flagged = !!meta && (meta.late.length > 0 || !!meta.backup);
+    return (
+      <aside className={cx(shell, "w-[64px] items-center px-2")}>
+        <Brand folded />
+        <div className="relative mt-3">
+          {fold}
+          {flagged && <i className="pointer-events-none absolute right-1 top-1 size-2 rounded-full bg-warn" aria-hidden />}
+        </div>
+        <IconButton label="Rechercher (Ctrl K)" onClick={onSearch}><Search size={16} /></IconButton>
+        <nav aria-label="Navigation principale" className="no-scrollbar mt-3 flex min-h-0 w-full flex-1 flex-col gap-px overflow-y-auto">
+          {NAV.filter((n) => !n.more).map((item) => <SideLink key={item.to} item={item} folded />)}
+          <div className="mx-auto my-1.5 h-px w-6 bg-hairline-2" />
+          {NAV.filter((n) => n.more).map((item) => <SideLink key={item.to} item={item} folded />)}
+        </nav>
+        <div className="flex flex-col items-center gap-1 pt-3">
+          <NavLink to={UPLOAD.to} title={UPLOAD.label} aria-label={UPLOAD.label}
+                   className={({ isActive: a }) => cx(
+                     "grid size-8 place-items-center rounded-xl no-underline transition",
+                     a ? "bg-surface text-ink shadow-[0_0_0_1px_var(--hairline)]" : "text-ink-2 hover:bg-surface-2 hover:text-ink",
+                   )}>
+            <UPLOAD.icon size={16} strokeWidth={1.9} />
+          </NavLink>
+          <IconButton label={resolvedTheme(theme.theme) === "dark" ? "Thème clair" : "Thème sombre"} onClick={theme.toggle}>
+            {resolvedTheme(theme.theme) === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          </IconButton>
+          <RefreshButton compact />
+        </div>
+      </aside>
+    );
+  }
   return (
-    <aside className="fixed inset-y-0 left-0 z-40 flex w-[248px] flex-col border-r border-hairline bg-[color-mix(in_srgb,var(--surface)_60%,var(--page))] px-3 py-4">
-      <Brand />
+    <aside className={cx(shell, "w-[248px] px-3")}>
+      <div className="flex items-center justify-between">
+        <Brand />
+        {fold}
+      </div>
       <button
         type="button"
         onClick={onSearch}
