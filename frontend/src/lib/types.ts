@@ -264,7 +264,8 @@ export interface FloorAlert {
 export interface TaxProvision {
   basis: { year: number; tax: number; pay: number; rate: number; paid_in: number };
   years: { year: number; pay: number; pay_so_far: number; pay_estimated: boolean; estimated: number;
-           paid: number; paid_in: number; later: boolean; outstanding: number }[];
+           paid: number; paid_in: number; later: boolean; outstanding: number;
+           installments: { amount: number; count: number; to_come: number; months_to_come: number; balance: number } | null }[];
   outstanding: number; as_of: string;
   planned?: number; until?: string; uncovered?: number;
 }

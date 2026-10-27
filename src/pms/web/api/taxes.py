@@ -76,13 +76,13 @@ def tax_page():
 
 @api.route("/api/impots/reglages", methods=["POST"])
 def tax_settings():
-    """The canton the return is filed in, from which year, and whether a
-    year's tax is paid the year after."""
+    """The canton the return is filed in, from which year, whether a year's
+    tax is paid the year after, and the monthly installments if any."""
     body = request.get_json(silent=True) or {}
     try:
         since = int(body["since"]) if body.get("since") else None
         settings = taxes.save_settings(settings_path(), str(body.get("canton") or ""), since,
-                                       bool(body.get("paid_next_year")))
+                                       bool(body.get("paid_next_year")), body.get("installments"))
     except (TypeError, ValueError) as error:
         return payload({"error": str(error)}), 400
     return payload({"ok": True, "settings": settings})

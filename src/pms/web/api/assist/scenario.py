@@ -90,7 +90,7 @@ def _floor_changes(data, plan: plans_module.Plan, horizon: int, floor: float,
     def path(changes: list[dict] | None) -> dict | None:
         if changes is None:
             return None
-        copy = plans_module._detached(plan._declarations())
+        copy = plans_module._detached(plan._declarations(), plan.installments)
         if _apply_changes(copy, changes):
             return None
         return plans_module.project(statement, copy, months_ahead=horizon)
@@ -374,7 +374,7 @@ def ai_scenario():
             return payload({"errors": {"name": "Un nom de 60 caractères au plus, sans « : »."}}), 400
         if name in live.plan_scenarios:
             return payload({"errors": {"name": "Ce nom est déjà pris."}}), 400
-        copy = plans_module._detached(live._declarations())
+        copy = plans_module._detached(live._declarations(), live.installments)
         problems = _apply_changes(copy, changes)
         if problems or not changes:
             return payload({"errors": {"changes": problems[0] if problems else "Aucun changement."}}), 400
@@ -433,7 +433,7 @@ def ai_scenario():
                         "note": answer["note"] or "Cette phrase ne se traduit pas en plan."})
     else:
         changes = _clean(answer["changes"])
-    copy = plans_module._detached(live._declarations())
+    copy = plans_module._detached(live._declarations(), live.installments)
     problems = _apply_changes(copy, changes)
     if problems:
         return payload({"supported": False, "note": problems[0], "changes": changes}), 422

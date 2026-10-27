@@ -624,3 +624,22 @@ def test_the_tax_still_owed_shows_on_the_tax_page_and_beside_the_cash(page):
     page.goto("/previsions")
     _ready(page)
     expect(page.locator("#p-cash [data-tax-provision]")).to_contain_text("Impôts encore dus")
+
+
+def test_monthly_tax_installments_are_set_once_and_paid_in_the_forecast(page, server):
+    page.goto("/impots")
+    _ready(page)
+    page.get_by_label("Je paie par acomptes mensuels").check()
+    page.get_by_label("Premier acompte").fill("2026-09")
+    page.get_by_label("Montant par mois").fill("450")
+    page.get_by_role("button", name="Enregistrer").click()
+    expect(page.get_by_text(re.compile(r"acomptes de 450 CHF par mois"))).to_be_visible()
+    expect(page.locator("#p-provision [data-installments]")).to_contain_text("4 à venir")
+    if os.environ.get("PMS_SHOTS"):
+        page.locator("#p-provision").screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "acomptes.png"))
+    page.goto("/previsions")
+    _ready(page)
+    expect(page.get_by_text("Acompte d'impôts").first).to_be_attached()
+    # Back to no installments, for the tests after this one.
+    page.request.post("/api/impots/reglages", headers={"Origin": server},
+                      data={"canton": "", "since": None, "paid_next_year": False, "installments": None})

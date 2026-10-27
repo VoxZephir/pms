@@ -134,3 +134,32 @@ déjà d'ici la fin de l'année où ces impôts se paient (`plans.tax_cover` : l
 saisonnières « Impôts » et tout ponctuel nommé d'après l'impôt). Ce qui n'est pas couvert
 est du cash qui n'est pas libre ; « Garder en réserve » l'ajoute au seuil d'alerte
 (`docs/previsions.md`), d'un clic.
+
+## Acomptes mensuels (27.10)
+
+Quand le revenu se stabilise, on peut payer par **acomptes** : on annonce le revenu
+attendu, l'administration envoie des bordereaux mensuels, puis le décompte final dit le
+solde (à payer ou remboursé) l'année suivante. Le réglage est sur la page Impôts : le
+mois du premier acompte, le montant par mois, les mois de l'année où il tombe (tous par
+défaut). Il vit dans `data/tax.json` (`installments`), et change trois choses :
+
+- **Chaque paiement est rattaché à l'année qu'il règle** (`taxes.tax_year`) : l'année
+  que la ligne nomme quand une ligne qui parle d'impôt en nomme une (« ICC 2026 acompte » ;
+  un groupe d'IBAN ne compte pas), sinon, sous acomptes, un paiement du montant de
+  l'acompte (± 20 %) est de son année, tout autre (la dernière facture annuelle, le
+  solde, un remboursement) de l'année d'avant. Sans acomptes, la règle d'avant : l'année
+  même, ou la précédente si l'impôt se paie l'année suivante. La page et l'estimation
+  lisent les mêmes lignes (`tax_lines`).
+- **La prévision paie les acomptes** (`plans.project`, `Plan.installments` lu à côté
+  de `plans.json`, passé aux scénarios) : une ligne « Acompte d'impôts » chaque mois dû,
+  l'impôt sorti de la dépense de base de l'historique (`baseline(without=…)`, sinon il
+  serait compté deux fois une fois les acomptes dans le relevé), et plus de facture
+  annuelle suggérée — sauf, quand l'impôt se payait l'année suivante, dans l'année du
+  premier acompte : la dernière, celle de l'année d'avant, y arrive encore. Une dépense
+  de base déclarée doit donc **exclure** les impôts.
+- **« Impôts encore dus »** distingue, pour une année sous acomptes, les acomptes encore
+  à venir et le **solde probable** du décompte final : l'estimé (au taux de la dernière
+  année réglée) moins le payé moins ce qui reste à venir. Positif, à payer l'année
+  suivante ; négatif, un remboursement. C'est le signal utile quand le revenu annoncé
+  n'est plus le bon. `plans.tax_cover` compte les acomptes de la prévision comme impôt
+  déjà payé par elle.

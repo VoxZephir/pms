@@ -11,7 +11,8 @@ export interface TaxItem {
   canton?: { deductible: number; rule: string; certain: boolean };
 }
 
-export interface TaxSettings { canton: string; since: number | null; paid_next_year: boolean }
+export interface Installments { since: string; amount: number; months: number[] }
+export interface TaxSettings { canton: string; since: number | null; paid_next_year: boolean; installments: Installments | null }
 
 export interface Taxes {
   empty?: boolean;

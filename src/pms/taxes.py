@@ -56,7 +56,7 @@ CANTONS = {
            "donation_cap": 0.20, "training_cap": None,
            "guide": "https://www.ge.ch/c/guidepp2026"},
 }
-SETTINGS = {"canton": "", "since": None, "paid_next_year": False}
+SETTINGS = {"canton": "", "since": None, "paid_next_year": False, "installments": None}
 
 
 def load_settings(path) -> dict:
@@ -74,16 +74,78 @@ def load_settings(path) -> dict:
     except (TypeError, ValueError):
         out["since"] = None
     out["paid_next_year"] = bool(out["paid_next_year"])
+    out["installments"] = _installments(out["installments"])
     return out
 
 
-def save_settings(path, canton: str, since: int | None, paid_next_year: bool) -> dict:
+MONTH_KEY = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def _installments(raw) -> dict | None:
+    """Monthly provisional invoices from a month on: their amount and the
+    calendar months they fall in (all twelve when empty). Anything malformed
+    is no installments at all, never a guess."""
+    if not isinstance(raw, dict) or not MONTH_KEY.match(str(raw.get("since") or "")):
+        return None
+    try:
+        amount = float(raw.get("amount"))
+    except (TypeError, ValueError):
+        return None
+    if not amount > 0:
+        return None
+    months = sorted({int(m) for m in raw.get("months") or [] if str(m).isdigit() and 1 <= int(m) <= 12})
+    return {"since": raw["since"], "amount": round(amount, 2), "months": [] if len(months) == 12 else months}
+
+
+def save_settings(path, canton: str, since: int | None, paid_next_year: bool,
+                  installments: dict | None = None) -> dict:
     if canton and canton not in CANTONS:
         raise ValueError("Canton non pris en charge.")
+    if installments is not None and _installments(installments) is None:
+        raise ValueError("Acomptes : un mois de départ et un montant mensuel positif.")
     settings = {"canton": canton, "since": since if canton else None,
-                "paid_next_year": paid_next_year}
+                "paid_next_year": paid_next_year, "installments": _installments(installments)}
     Path(path).write_text(json.dumps(settings, indent=1), encoding="utf-8")
     return settings
+
+
+def installment_months(inst: dict, year: int) -> list[str]:
+    """The months of `year` an installment falls due in, from its start."""
+    months = inst["months"] or list(range(1, 13))
+    return [k for k in (f"{year}-{m:02d}" for m in months) if k >= inst["since"]]
+
+
+# A tax line that names its year ("ICC 2026 acompte 3/10"): only on a line
+# that speaks of tax, so a reference or an IBAN group never reads as a year.
+TAX_WORDS = re.compile(r"imp[ôo]t|\bicc\b|\bifd\b|acompte|bordereau|taxation|steuer", re.I)
+YEAR = re.compile(r"\b(20\d\d)\b")
+
+
+def tax_year(t, settings: dict) -> int:
+    """Which year's tax a payment settles. The year the bank line names,
+    when it names one; under monthly installments, an installment-sized
+    payment is its own year's, anything else (the final bill, a refund) the
+    year before's; otherwise the year paid, or the year before where a
+    year's tax is paid the year after."""
+    for line in [t.kind, t.merchant, *t.detail]:
+        if line and TAX_WORDS.search(line):
+            for y in YEAR.findall(line):
+                if t.date.year - 2 <= int(y) <= t.date.year + 1:
+                    return int(y)
+    inst = settings.get("installments")
+    if inst and t.date.strftime("%Y-%m") >= inst["since"]:
+        if t.amount_chf < 0 and abs(-t.amount_chf - inst["amount"]) <= 0.2 * inst["amount"]:
+            return t.date.year
+        return t.date.year - 1
+    later = bool(canton_for(settings, t.date.year - 1)) and settings["paid_next_year"]
+    return t.date.year - 1 if later else t.date.year
+
+
+def tax_lines(statement, year: int, settings: dict) -> list:
+    """The tax payments and refunds that settle `year`, whenever paid."""
+    return [t for t in statement.transactions
+            if t.category == TAXES and not analysis.is_internal(t)
+            and year - 1 <= t.date.year <= year + 2 and tax_year(t, settings) == year]
 
 
 def canton_for(settings: dict, year: int) -> dict | None:
@@ -285,9 +347,11 @@ def return_items(statement, year: int, *, net_income: float | None, finpension: 
     # Geneva) -- those of the next.
     paid_later = bool(canton) and settings["paid_next_year"]
     paid_year = year + 1 if paid_later else year
-    paid_rows = _in_year(statement, paid_year)
-    taxes_out = [t for t in paid_rows if t.category == TAXES and t.amount_chf < 0]
-    taxes_back = [t for t in paid_rows if t.category == TAXES and t.subcategory == "Remboursement"]
+    # Each payment to the year it settles (`tax_year`): with installments,
+    # a year's tax is paid across two.
+    lines = tax_lines(statement, year, {**SETTINGS, **settings})
+    taxes_out = [t for t in lines if t.amount_chf < 0]
+    taxes_back = [t for t in lines if t.amount_chf > 0 and t.subcategory == "Remboursement"]
 
     deductions = [i for i in items if i["group"] == "deductions"]
     return {
@@ -315,14 +379,18 @@ def return_items(statement, year: int, *, net_income: float | None, finpension: 
 # --- the provision: the tax still to pay, estimated from the tax already paid ----------------
 
 def _settled(statement, year: int, settings: dict) -> dict:
-    """The payments that settle `year`'s tax (those of the year, or of the
-    next where it is paid the year after), and whether they are all in."""
-    later = bool(canton_for(settings, year)) and settings["paid_next_year"]
+    """The payments that settle `year`'s tax (`tax_year`), and whether all
+    can be in: the year itself, or the next where a year's tax -- or what
+    its installments leave -- is paid the year after."""
+    inst = settings.get("installments")
+    under_installments = bool(inst) and inst["since"] <= f"{year}-12"
+    later = under_installments or (bool(canton_for(settings, year)) and settings["paid_next_year"])
     paid_year = year + 1 if later else year
-    rows = _in_year(statement, paid_year)
-    out = sum(-t.amount_chf for t in rows if t.category == TAXES and t.amount_chf < 0)
-    back = sum(t.amount_chf for t in rows if t.category == TAXES and t.subcategory == "Remboursement")
+    rows = tax_lines(statement, year, settings)
+    out = sum(-t.amount_chf for t in rows if t.amount_chf < 0)
+    back = sum(t.amount_chf for t in rows if t.amount_chf > 0 and t.subcategory == "Remboursement")
     return {"paid_in": paid_year, "later": later, "paid": round(out - back, 2),
+            "installments": under_installments,
             "complete": statement.period_end >= dt.date(paid_year, 12, 31)}
 
 
@@ -368,10 +436,24 @@ def provision(statement, settings: dict | None = None) -> dict | None:
         so_far = _pay(statement, year)
         pay = so_far if whole else so_far + recent / 12 * left
         estimated = basis["rate"] * pay
-        open_years.append({
+        entry = {
             "year": year, "pay": round(pay, 2), "pay_so_far": round(so_far, 2), "pay_estimated": not whole,
             "estimated": round(estimated, 2), "paid": settled["paid"], "paid_in": settled["paid_in"],
             "later": settled["later"], "outstanding": round(max(estimated - settled["paid"], 0.0), 2),
-        })
+            "installments": None,
+        }
+        inst = settings.get("installments")
+        if settled["installments"]:
+            # The invoices still due this year, and what the estimate says
+            # the final bill will be once they are paid: positive is more
+            # to pay, negative a refund.
+            due = [k for k in installment_months(inst, year) if k > end.strftime("%Y-%m")]
+            to_come = inst["amount"] * len(due)
+            entry["installments"] = {
+                "amount": inst["amount"], "count": len(installment_months(inst, year)),
+                "to_come": round(to_come, 2), "months_to_come": len(due),
+                "balance": round(estimated - settled["paid"] - to_come, 2),
+            }
+        open_years.append(entry)
     return {"basis": basis, "years": open_years,
             "outstanding": round(sum(y["outstanding"] for y in open_years), 2), "as_of": end}

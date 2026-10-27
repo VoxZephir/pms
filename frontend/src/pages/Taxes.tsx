@@ -10,10 +10,11 @@ import { Field, Input, Select } from "@/components/Form";
 import { PageHeader } from "@/components/PageState";
 import { TaxReserve } from "@/components/TaxProvision";
 import { Button, Callout, Card, Note, Panel, Reveal, Segmented, Skeleton, cx } from "@/components/ui";
-import { send, useApi } from "@/lib/api";
-import { chf, frDate, plural } from "@/lib/format";
+import { ApiError, send, useApi } from "@/lib/api";
+import { MONTHS, chf, frDate, plural } from "@/lib/format";
 import { useView } from "@/lib/url";
 import type { TaxItem, TaxLine, Taxes } from "./taxes/types";
+import { MonthsOfYear } from "./previsions/Plan";
 import { Securities } from "./taxes/Securities";
 
 const KEEP = ["year", "net"] as const;
@@ -300,31 +301,46 @@ function Paid({ data }: { data: Taxes }) {
 
 function CantonCard({ data }: { data: Taxes }) {
   const s = data.settings;
-  const [editing, setEditing] = useState(!s.canton);
+  const [editing, setEditing] = useState(!s.canton && !s.installments);
   const [canton, setCanton] = useState(s.canton);
   const [since, setSince] = useState(String(s.since ?? Math.max(...data.years)));
   const [later, setLater] = useState(s.paid_next_year);
+  const [monthly, setMonthly] = useState(!!s.installments);
+  const [from, setFrom] = useState(s.installments?.since ?? `${Math.max(...data.years) + 1}-01`);
+  const [amount, setAmount] = useState(s.installments ? String(s.installments.amount) : "");
+  const [months, setMonths] = useState<number[] | null>(s.installments?.months.length ? s.installments.months : null);
+  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const years = [...new Set([...data.years, Math.max(...data.years) + 1])].sort((a, b) => b - a);
   const save = async () => {
     setBusy(true);
+    setError(null);
     try {
-      await send("/api/impots/reglages", { canton, since: canton ? Number(since) : null, paid_next_year: canton ? later : false });
+      await send("/api/impots/reglages", {
+        canton, since: canton ? Number(since) : null, paid_next_year: canton ? later : false,
+        installments: monthly ? { since: from, amount: amount.replace(/['’ ]/g, ""), months: months ?? [] } : null,
+      });
       setEditing(false);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
     } finally { setBusy(false); }
   };
   const name = data.cantons.find((c) => c.id === s.canton)?.name;
-  if (!editing && s.canton) {
+  const inst = s.installments;
+  if (!editing && (s.canton || inst)) {
     return (
       <Card className="flex flex-wrap items-center gap-x-4 gap-y-2 p-4 text-[13.5px] sm:px-5">
-        <span><b>{name}</b> depuis {s.since}{s.paid_next_year ? " · l'impôt d'une année se paie l'année suivante" : ""}</span>
+        <span className="min-w-0 flex-1">
+          {s.canton ? <><b>{name}</b> depuis {s.since}{s.paid_next_year ? " · l'impôt d'une année se paie l'année suivante" : ""}</> : "Impôt fédéral"}
+          {inst && <> · <b>acomptes de {chf(inst.amount, 0)} CHF par mois</b> depuis {monthName(inst.since)}{inst.months.length ? ` (${inst.months.length} mois par an)` : ""}</>}
+        </span>
         <Button size="sm" variant="ghost" onClick={() => setEditing(true)}>Modifier</Button>
       </Card>
     );
   }
   return (
     <Card className="p-4 sm:p-5">
-      <div className="mb-3 text-[14px] font-semibold">Où déclares-tu ?</div>
+      <div className="mb-3 text-[14px] font-semibold">Où déclares-tu, et comment paies-tu ?</div>
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-44"><Field label="Canton">{(id) => (
           <Select id={id} value={canton} onChange={(e) => setCanton(e.target.value)}>
@@ -343,9 +359,37 @@ function CantonCard({ data }: { data: Taxes }) {
             L'impôt d'une année se paie l'année suivante
           </label>
         )}
-        <Button variant="primary" onClick={save} disabled={busy}>Enregistrer</Button>
+      </div>
+      <label className="mt-4 flex items-center gap-2 text-[13.5px] font-medium">
+        <input type="checkbox" checked={monthly} onChange={(e) => setMonthly(e.target.checked)} className="size-4 accent-[var(--ink)]" />
+        Je paie par acomptes mensuels (bordereaux sur le revenu annoncé)
+      </label>
+      {monthly && (
+        <div className="mt-3 space-y-3 rounded-2xl border border-hairline p-3.5">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="w-44"><Field label="Premier acompte">{(id) => (
+              <Input id={id} type="month" value={from} onChange={(e) => setFrom(e.target.value)} />
+            )}</Field></div>
+            <div className="w-40"><Field label="Montant par mois">{(id) => (
+              <Input id={id} inputMode="decimal" value={amount} placeholder="ex. 850" onChange={(e) => setAmount(e.target.value)} />
+            )}</Field></div>
+          </div>
+          <MonthsOfYear value={months} onChange={setMonths} invalid={months !== null && months.length === 0} />
+          <p className="text-[12px] leading-relaxed text-muted">
+            Prévisions paie alors chaque acompte au lieu de la grosse facture annuelle{later ? " (la dernière, celle de l'année d'avant, reste prévue dans l'année du premier acompte)" : ""}.
+            Les impôts encore dus distinguent les acomptes à venir et le solde probable du décompte final.
+          </p>
+        </div>
+      )}
+      {error && <p role="alert" className="mt-2 text-[12.5px] text-critical">{error}</p>}
+      <div className="mt-4 flex justify-end">
+        <Button variant="primary" onClick={save} disabled={busy || (monthly && (!amount.trim() || (months !== null && months.length === 0)))}>Enregistrer</Button>
       </div>
       <Note>Seul Genève a ses règles dans l'app ; un autre canton garde celles de l'impôt fédéral.</Note>
     </Card>
   );
+}
+
+function monthName(key: string): string {
+  return `${MONTHS[Number(key.slice(5, 7)) - 1]} ${key.slice(0, 4)}`;
 }

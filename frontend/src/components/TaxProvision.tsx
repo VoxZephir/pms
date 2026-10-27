@@ -24,7 +24,17 @@ export function TaxReserve({ p, onReserve, className }: { p: TaxProvision; onRes
           {p.years.map((y) => (
             <li key={y.year}>
               <b className="text-ink">{y.year}</b> : ≈ {chf(y.estimated, 0)} sur un salaire {y.pay_estimated ? `prévu de ${chf(y.pay, 0)} (${chf(y.pay_so_far, 0)} à ce jour)` : `de ${chf(y.pay, 0)}`}
-              {" "}· payé {chf(y.paid, 0)}{y.later ? ` en ${y.paid_in}` : ""} · <span className="font-medium text-ink">reste {chf(y.outstanding, 0)}</span>
+              {" "}· payé {chf(y.paid, 0)}{y.later && !y.installments ? ` en ${y.paid_in}` : ""} · <span className="font-medium text-ink">reste {chf(y.outstanding, 0)}</span>
+              {y.installments && (
+                <span data-installments className="mt-0.5 block pl-4 text-[12.5px] text-muted">
+                  acomptes de {chf(y.installments.amount, 0)} : {y.installments.months_to_come} à venir ({chf(y.installments.to_come, 0)}) ·{" "}
+                  {Math.abs(y.installments.balance) < 50
+                    ? "ils couvrent l'estimation"
+                    : y.installments.balance > 0
+                      ? <span className="font-medium text-warn">solde probable à payer en {y.paid_in} : ≈ {chf(y.installments.balance, 0)}</span>
+                      : <span className="font-medium text-good">remboursement probable en {y.paid_in} : ≈ {chf(-y.installments.balance, 0)}</span>}
+                </span>
+              )}
             </li>
           ))}
         </ul>

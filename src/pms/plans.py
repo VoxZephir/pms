@@ -292,12 +292,31 @@ def _vol(value) -> float | None:
     return value if 0 <= value <= 1.0 else None
 
 
-def _detached(declarations: dict) -> "Plan":
+def _detached(declarations: dict, installments: dict | None = None) -> "Plan":
     """A plan holding these declarations, tied to no file -- a saved
-    scenario, to project or compare without touching the live one."""
+    scenario, to project or compare without touching the live one. The tax
+    installments are not declarations: the caller hands them over."""
     plan = Plan(Path("unused"))
     plan._restore(declarations)
+    plan.installments = installments
     return plan
+
+
+TAXES = "Impôts"
+INSTALLMENT_LABEL = "Acompte d'impôts"
+
+
+def tax_installments(path: Path) -> dict | None:
+    """The installments the tax settings declare, with the month up to which
+    the old yearly bill still falls due: where a year's tax was paid the
+    year after, the last one comes in the year installments start."""
+    from . import taxes
+    settings = taxes.load_settings(path)
+    inst = settings["installments"]
+    if not inst:
+        return None
+    lump_until = f"{inst['since'][:4]}-12" if settings["paid_next_year"] else None
+    return {**inst, "lump_until": lump_until}
 
 
 def rate_at(segments: list[tuple[int, float]], row: int) -> float | None:
@@ -644,10 +663,18 @@ class Plan:
         # declaration -- it belongs to no scenario, and every one is held
         # to it (`floor_alert`).
         self.floor: float | None = None
+        # Monthly tax installments, from the tax settings beside the plan
+        # (`data/tax.json`, `taxes.load_settings`): not a declaration either,
+        # every scenario pays them. With `lump_until`, the month up to which
+        # the old yearly bill still comes (the year before's, paid the year
+        # after).
+        self.installments: dict | None = None
 
     @classmethod
     def load(cls, path: Path | str) -> "Plan":
         plan = cls(path)
+        # Read first: a plan never written still pays the installments.
+        plan.installments = tax_installments(plan.path.with_name("tax.json"))
         if not plan.path.exists():
             return plan
         try:
@@ -1087,7 +1114,7 @@ class Plan:
         the active one, so the comparison sees edits not yet switched away."""
         if name == self.active:
             return self
-        return _detached(self.plan_scenarios[name])
+        return _detached(self.plan_scenarios[name], self.installments)
 
     def ignore(self, category: str, month: int) -> None:
         if (category, month) not in self.ignored:
@@ -1109,7 +1136,7 @@ class Plan:
 
 # --- the projection -----------------------------------------------------------
 
-def baseline(statement: Statement) -> float:
+def baseline(statement: Statement, without: str | None = None) -> float:
     """What an ordinary month costs, with the seasonal spikes removed.
 
     Each observed month is reduced by the seasonal contributions it carries
@@ -1124,7 +1151,13 @@ def baseline(statement: Statement) -> float:
     adjusted = []
     for row in months:
         total = _consumed(row)
+        if without:
+            # A category paid on its own line (the tax installments): out of
+            # the ordinary month entirely, its spikes with it.
+            total -= row["categories"].get(without, 0.0)
         for s in seasonal:
+            if s["category"] == without:
+                continue
             if s["month"] != calendar_month(row["month"]):
                 continue
             carried = row["categories"].get(s["category"], 0.0)
@@ -1310,10 +1343,15 @@ def project(statement: Statement, plan: Plan | None = None,
         income = monthly_income(statement)
         income_source = "history" if income else None
 
-    history_base = baseline(statement)
+    as_of = statement.period_end
+    # Monthly tax installments: their own line each month from their start,
+    # the tax out of the ordinary month, and the yearly bill no longer
+    # suggested once the last one (paid the year after) is behind.
+    inst = plan.installments if plan.installments and plan.installments["since"] <= \
+        month_key(_add_months(as_of, months_ahead)) else None
+    history_base = baseline(statement, without=TAXES if inst else None)
     base = plan.spend if plan.spend is not None else history_base
     suggestions = seasonal_one_offs(statement)
-    as_of = statement.period_end
 
     # The statement almost never ends on the last of the month, and everything
     # planned for the rest of that month used to fall in the gap: the first
@@ -1335,7 +1373,8 @@ def project(statement: Statement, plan: Plan | None = None,
             spent_by_category[txn.category] += abs(txn.amount_chf)
     # A transfer to a pocket already made this month is not part of the
     # month's usual spend either: it would eat the remaining base.
-    spent_so_far = sum(v for c, v in spent_by_category.items() if not _saved(c))
+    spent_so_far = sum(v for c, v in spent_by_category.items()
+                       if not _saved(c) and not (inst and c == TAXES))
     earned_so_far = sum(t.amount_chf for t in analysis.income(statement)
                         if t.date >= month_start)
 
@@ -1384,6 +1423,14 @@ def project(statement: Statement, plan: Plan | None = None,
         # A programmed series is a declared transfer: the cash line subtracts
         # it like any other, and project_wealth credits the pocket.
         one_offs.extend(contributions_by_key.get(key, []))
+        if inst and key >= inst["since"] and (not inst["months"] or calendar_month(key) in inst["months"]):
+            amount = inst["amount"]
+            if this_partial:
+                # Already paid this month: the ledger carries it.
+                amount = max(amount - spent_by_category.get(TAXES, 0.0), 0.0)
+            if amount > 0:
+                one_offs.append({"label": INSTALLMENT_LABEL, "amount": round(amount, 2),
+                                 "source": "installment", "transfer": SPENT, "date": ""})
 
         # A confirmed suggestion is a declared entry, whether it kept its
         # category name or was renamed -- either way it must not be counted
@@ -1397,6 +1444,9 @@ def project(statement: Statement, plan: Plan | None = None,
         for s in suggestions:
             if s["month"] != calendar_month(key):
                 continue
+            if inst and s["category"] == TAXES and key >= inst["since"] \
+                    and not (inst["lump_until"] and key <= inst["lump_until"]):
+                continue  # paid by the installments now
             if (s["category"], s["month"]) in plan.ignored:
                 continue
             if s["category"] in declared_labels:
@@ -1692,7 +1742,7 @@ def smooth_taxable(statement: Statement, plan: Plan, months: int = 12, step: int
         spec = json.loads(json.dumps(base))
         if amount > 0:
             spec["contributions"].append(_series(TAXABLE, float(amount), "month", months, "", limited))
-        return _detached(spec)
+        return _detached(spec, plan.installments)
 
     if lowest(candidate(0))[0] < target - 0.005:
         return None
