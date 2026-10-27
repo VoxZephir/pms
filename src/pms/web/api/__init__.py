@@ -28,7 +28,7 @@ IMMUTABLE = "public, max-age=31536000, immutable"
 # document; the address says which view.
 PAGES = ("/", "/transactions", "/epargne", "/analyse", "/previsions",
          "/corrections", "/corrections/tri", "/importer", "/assistant", "/jour/<iso>",
-         "/a-venir", "/impots", "/projets", "/bilan", "/caviarder")
+         "/a-venir", "/impots", "/projets", "/bilan", "/caviarder", "/aide")
 
 # Addresses of the server-rendered app, kept alive for bookmarks and the
 # phone's home-screen icon.

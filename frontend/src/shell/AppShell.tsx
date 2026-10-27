@@ -3,7 +3,7 @@
 import { ChevronDown, Ellipsis, Moon, PanelLeftClose, PanelLeftOpen, RefreshCw, Search, Sun, Wand2 } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useState } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { Toaster, toast } from "sonner";
 
 import { Sheet } from "@/components/Sheet";
@@ -15,7 +15,7 @@ import type { Meta } from "@/lib/types";
 import { useView } from "@/lib/url";
 
 import { CommandPalette } from "./CommandPalette";
-import { NAV, TABS, UPLOAD, isActive } from "./nav";
+import { NAV, TABS, UPLOAD, helpAnchor, isActive } from "./nav";
 import { PeriodSwitcher } from "./PeriodSwitcher";
 import { PocketPicker } from "./PocketPicker";
 import { HorizonPicker, RatePicker, ScenarioPicker } from "./PrevisionsPickers";
@@ -38,7 +38,10 @@ export function AppShell() {
     : location.pathname.startsWith("/jour/") ? "Journée"
     : page?.short ?? page?.label ?? "";
 
+  const navigate = useNavigate();
   useHotkeys({
+    // The manual, open on what it says of the page being read.
+    "?": () => { if (!location.pathname.startsWith("/aide")) navigate(`/aide#${helpAnchor(location.pathname)}`); },
     "mod+k": (e) => { e.preventDefault(); setPalette(true); },
     "/": (e) => { e.preventDefault(); setPalette(true); },
     "[": () => { if (desktop) setFolded(!folded); },

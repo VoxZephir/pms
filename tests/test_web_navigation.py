@@ -12,7 +12,7 @@ from webhelpers import api
 from pms.web.api import SPA
 
 PAGES = ["/", "/transactions", "/epargne", "/analyse", "/previsions",
-         "/corrections", "/corrections/tri", "/importer", "/jour/2025-05-15", "/a-venir", "/impots", "/projets", "/bilan"]
+         "/corrections", "/corrections/tri", "/importer", "/jour/2025-05-15", "/a-venir", "/impots", "/projets", "/bilan", "/aide"]
 
 
 @pytest.fixture

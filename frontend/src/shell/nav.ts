@@ -1,5 +1,5 @@
 import {
-  CalendarClock, ChartColumnBig, EyeOff, Gift, Landmark, Luggage, House, PiggyBank, ReceiptText, Sparkles, Tags, TrendingUp, Upload, type LucideIcon,
+  BookOpen, CalendarClock, ChartColumnBig, EyeOff, Gift, Landmark, Luggage, House, PiggyBank, ReceiptText, Sparkles, Tags, TrendingUp, Upload, type LucideIcon,
 } from "lucide-react";
 
 export interface NavItem {
@@ -27,6 +27,7 @@ export const NAV: NavItem[] = [
   { to: "/corrections", label: "Corrections", icon: Tags, more: true },
   { to: "/assistant", label: "Assistant", icon: Sparkles, more: true },
   { to: "/caviarder", label: "Caviarder un PDF", icon: EyeOff, more: true },
+  { to: "/aide", label: "Manuel", icon: BookOpen, more: true },
 ];
 
 export const UPLOAD: NavItem = { to: "/importer", label: "Importer un relevé", short: "Importer", icon: Upload };
@@ -40,4 +41,11 @@ export function isActive(item: string, pathname: string): boolean {
   // the home tab, not "Plus".
   if (item === "/") return pathname === "/" || pathname.startsWith("/jour/");
   return pathname === item || pathname.startsWith(`${item}/`);
+}
+
+/** Where the manual speaks of a page: its card on `/aide`. */
+export function helpAnchor(path: string): string {
+  if (path === "/" || path.startsWith("/jour/")) return "p-accueil";
+  const page = [...NAV, UPLOAD].find((n) => n.to !== "/" && isActive(n.to, path));
+  return page ? `p-${page.to.slice(1)}` : "principe";
 }

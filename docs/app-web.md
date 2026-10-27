@@ -314,3 +314,18 @@ Le travail se fait sur une branche, fusionnée dans `main`. Quand la fusion arri
 jamais si un `main` local a des commits à lui) ; une copie sur `main` ne suit ensuite que
 `origin/main` (`updates.HOME_BRANCH`). Une copie restée sur une branche de travail garde
 l'ancien comportement : elle suit la branche distante qui a bougé.
+
+## Le manuel (`/aide`, 27.10)
+
+Une page sous « Plus » : ce que chaque page répond, la période, lire un graphique, le
+calendrier, les courbes mesurées puis projetées, corriger une catégorie, les raccourcis,
+les questions fréquentes. **Ses graphiques sont les vrais** (`Columns`, `Lines`,
+`CalendarHeat`) sur des chiffres inventés et toujours les mêmes (générateur à graine) :
+le lecteur essaie le survol, le clic, le glissé sur le composant qu'il retrouvera
+ailleurs, et aucun de ses chiffres n'est montré. Une capture d'écran aurait montré ses
+données, et vieilli au premier changement d'interface. Les animations (le chemin d'un
+relevé, la main qui glisse sur les colonnes) s'arrêtent sous `prefers-reduced-motion`.
+
+`?` ouvre le manuel sur la carte de la page en cours (`nav.helpAnchor`) ; `/aide#graphiques`
+ouvre une section comme le sommaire. Une page ajoutée à `NAV` doit avoir sa carte dans
+`PAGES` de `pages/Help.tsx`.

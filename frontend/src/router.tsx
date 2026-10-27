@@ -22,6 +22,7 @@ const TaxesPage = lazy(() => import("./pages/Taxes"));
 const ProjectsPage = lazy(() => import("./pages/Projects"));
 const RetroPage = lazy(() => import("./pages/Retro"));
 const RedactPage = lazy(() => import("./pages/Redact"));
+const HelpPage = lazy(() => import("./pages/Help"));
 
 function Lazy({ children }: { children: ReactNode }) {
   return (
@@ -52,6 +53,7 @@ export const router = createBrowserRouter(
         { path: "projets", element: <Lazy><ProjectsPage /></Lazy> },
         { path: "bilan", element: <Lazy><RetroPage /></Lazy> },
         { path: "caviarder", element: <Lazy><RedactPage /></Lazy> },
+        { path: "aide", element: <Lazy><HelpPage /></Lazy> },
         { path: "*", element: <PageError notFound /> },
       ],
     },

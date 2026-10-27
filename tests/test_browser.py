@@ -27,7 +27,7 @@ expect = sync_api.expect
 
 PAGES = ["/", "/?preset=all", "/transactions?preset=all", "/epargne", "/analyse",
          "/previsions", "/corrections", "/corrections/tri", "/importer", "/jour/2025-05-15",
-         "/a-venir", "/impots", "/projets", "/bilan"]
+         "/a-venir", "/impots", "/projets", "/bilan", "/aide"]
 
 
 @pytest.fixture(scope="module")
@@ -523,3 +523,30 @@ def test_the_sidebar_folds_to_a_rail_and_stays_folded(page):
     assert page.locator("aside").bounding_box()["width"] < 80
     page.get_by_role("button", name=re.compile("^Déplier la barre latérale")).click()
     assert page.locator("aside").bounding_box()["width"] > 200
+
+
+def test_the_manual_opens_on_the_page_being_read_and_its_demos_answer(page):
+    page.goto("/epargne")
+    _ready(page)
+    page.keyboard.press("?")
+    page.wait_for_url(re.compile(r"/aide#p-epargne$"))
+    expect(page.get_by_role("heading", name="Manuel")).to_be_visible()
+    card = page.locator("#p-epargne")
+    expect(card).to_be_in_viewport()
+    # The demo chart is the real one: a click says where it would lead.
+    demo = page.locator("#graphiques")
+    chart = demo.get_by_role("img", name=re.compile("^Démonstration : dépense"))
+    chart.scroll_into_view_if_needed()
+    page.wait_for_timeout(300)
+    box = chart.bounding_box()
+    page.mouse.click(box["x"] + box["width"] * 0.7, box["y"] + box["height"] * 0.6)
+    expect(demo.get_by_text(re.compile(r"^Ce clic ouvrirait \w+ 2025"))).to_be_visible()
+    # The period demo moves with the arrows, like the real switcher.
+    period = page.get_by_label(re.compile("^Démonstration de la période"))
+    period.click(position={"x": 8, "y": 8})
+    page.keyboard.press("ArrowRight")
+    expect(period.get_by_text("Juin 2025").first).to_be_visible()
+    expect(period.get_by_text("from=2025-06-01")).to_be_visible()
+    if os.environ.get("PMS_SHOTS"):
+        page.wait_for_timeout(600)
+        page.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "aide.png"), full_page=True)
