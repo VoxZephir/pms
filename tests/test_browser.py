@@ -495,3 +495,18 @@ def test_a_series_is_limited_to_some_months_by_clicking_them(page):
         page.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "series-form.png"), full_page=True)
     page.get_by_role("button", name="Ajouter la série").click()
     expect(page.get_by_text("d'avril à décembre")).to_be_visible()
+
+
+def test_the_median_is_drawn_over_the_columns_when_asked(page):
+    page.goto("/?preset=all")
+    _ready(page)
+    page.get_by_role("button", name="Médiane").click()
+    page.wait_for_url(re.compile(r"median=1"))
+    expect(page.get_by_text(re.compile(r"^médiane "))).to_be_visible()
+    expect(page.get_by_text(re.compile(r"sur \d+ périodes complètes"))).to_be_visible()
+    if os.environ.get("PMS_SHOTS"):
+        page.locator("section").filter(has=page.get_by_role("button", name="Médiane")).last \
+            .screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "median.png"))
+    # The switch follows the period, like the stack.
+    page.get_by_role("button", name="Médiane").click()
+    page.wait_for_url(lambda url: "median=1" not in url)

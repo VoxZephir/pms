@@ -1,10 +1,12 @@
 /** Spending per period, stacked by category or by need / want / save, the
  * income as a marker over each column. A column opens one level deeper;
  * a sideways drag selects a range. */
+import { Link, useSearchParams } from "react-router";
+
 import { Columns, type Column } from "@/charts/Columns";
 import { useAi } from "@/components/Assist";
-import { Button, Dot, Panel, Segmented } from "@/components/ui";
-import { bucketLabel, chf, compact } from "@/lib/format";
+import { Button, Dot, Panel, Segmented, cx } from "@/components/ui";
+import { bucketLabel, chf, compact, signedChf } from "@/lib/format";
 import type { Dashboard, SeriesRow } from "@/lib/types";
 import { useView, windowPatch } from "@/lib/url";
 
@@ -26,6 +28,11 @@ export function Timeline({ data, onDay }: { data: Dashboard; onDay: (iso: string
   const incomeMarker = grain === "month" || grain === "year";
   const byBucket = t.stack === "bucket";
   const ai = useAi();
+  const [params] = useSearchParams();
+  // The median of the periods on screen, at their grain -- computed by the
+  // server on the complete ones only; drawn when asked (?median=1).
+  const median = params.get("median") === "1" ? t.median : null;
+  const per = data.period.grains.find((g) => g.id === grain)?.label.toLowerCase() ?? grain;
   // E, as sketched: under the months, the dearest one and its "why".
   const dearest = grain === "month" && t.rows.length >= 2
     ? t.rows.reduce((a, r) => (r.spending > a.spending ? r : a), t.rows[0]) : null;
@@ -63,17 +70,29 @@ export function Timeline({ data, onDay }: { data: Dashboard; onDay: (iso: string
 
   return (
     <Panel
-      title={`Dépenses par ${data.period.grains.find((g) => g.id === grain)?.label.toLowerCase() ?? grain}`}
+      title={`Dépenses par ${per}`}
       hint={t.hint ? `${t.hint} · glisser sélectionne une plage` : undefined}
       actions={
+        <div className="flex flex-wrap items-center gap-2">
+        {t.median && (
+          <Link to={href({ median: median ? null : "1" })} preventScrollReset aria-pressed={!!median} role="button"
+                title={`La médiane des ${t.median.periods} périodes complètes affichées`}
+                className={cx("inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[12.5px] font-medium no-underline transition-colors",
+                  median ? "bg-surface-2 text-ink shadow-[0_0_0_1px_var(--hairline-2)]" : "text-ink-2 hover:bg-surface-2 hover:text-ink")}>
+            <i className={cx("inline-block w-3.5 border-t-[1.5px] border-dashed", median ? "border-ink" : "border-muted")} />Médiane
+          </Link>
+        )}
         <Segmented size="sm" label="Découpage des colonnes" value={t.stack}
                    options={t.stacks.map((s) => ({ id: s.id as "category" | "bucket", label: s.label }))}
                    hrefFor={(id) => href({ stack: id === "category" ? null : id })} />
+        </div>
       }
     >
       <Columns
         columns={columns}
         height={300}
+        reference={median?.amount}
+        referenceLabel={median ? `médiane ${compact(median.amount)}` : undefined}
         ariaLabel={`Dépenses par période, ${byBucket ? "par besoin, envie et épargne" : "par catégorie"}`}
         pickHint={t.drill === "detail" ? "Ouvrir la journée" : "Zoomer sur cette période"}
         tipFooter={(c) => {
@@ -82,6 +101,7 @@ export function Timeline({ data, onDay }: { data: Dashboard; onDay: (iso: string
             <div className="space-y-0.5">
               <div className="flex justify-between gap-3"><span>Dépensé</span><b className="num">{chf(r.spending)} CHF</b></div>
               {r.income > 0 && <div className="flex justify-between gap-3"><span>Encaissé</span><span className="num text-good">{chf(r.income)} CHF</span></div>}
+              {median && <div className="flex justify-between gap-3 text-muted"><span>vs médiane</span><span className="num">{signedChf(r.spending - median.amount)} CHF</span></div>}
               <div className="flex justify-between gap-3 text-muted"><span>Transactions</span><span className="num">{r.count}</span></div>
             </div>
           );
@@ -98,6 +118,13 @@ export function Timeline({ data, onDay }: { data: Dashboard; onDay: (iso: string
         {legend.map((l) => (
           <span key={l.name} className="inline-flex items-center gap-1.5"><Dot color={l.color} />{l.name}</span>
         ))}
+        {median && (
+          <span className="inline-flex items-center gap-1.5" title={median.partial ? `${median.partial} période(s) incomplète(s) laissée(s) de côté` : undefined}>
+            <i className="inline-block w-3.5 border-t-[1.5px] border-dashed border-ink-2" />
+            Médiane : <span className="num">{chf(median.amount, 0)}</span> CHF par {per}
+            <span className="text-muted">· sur {median.periods} périodes complètes</span>
+          </span>
+        )}
         {incomeMarker && <span className="inline-flex items-center gap-1.5"><i className="h-[2.5px] w-3 rounded-full bg-good" />Encaissé (repère)</span>}
       </div>
       {ai?.enabled && dearest && dearest.spending > 0 && (

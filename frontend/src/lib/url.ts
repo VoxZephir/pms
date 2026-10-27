@@ -12,7 +12,7 @@ export const WINDOW_KEYS = ["from", "to", "grain", "preset"] as const;
 
 /** Dashboard and savings view switches: carried across period changes. */
 export const VIEW_KEYS = [
-  "stack", "split", "scale", "focus", "perf", "rate", "stats", "bench", "shares", "smooth", "titres",
+  "stack", "median", "split", "scale", "focus", "perf", "rate", "stats", "bench", "shares", "smooth", "titres",
 ] as const;
 
 /** The table's filters: carried only within the transactions views. */

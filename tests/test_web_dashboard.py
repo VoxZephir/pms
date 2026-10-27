@@ -387,3 +387,19 @@ def test_each_category_against_the_window_before(client):
     assert [abs(r["delta"]) for r in rows] == sorted((abs(r["delta"]) for r in rows), reverse=True)
     spent = data["kpis"]["spend"]
     assert abs(sum(r["now"] for r in rows) - spent) < 1.0 or all(abs(r["delta"]) >= 0.5 for r in rows)
+
+
+def test_the_timeline_median_counts_complete_periods_only(client):
+    body = api(client, "/api/dashboard?preset=all")
+    t = body["timeline"]
+    rows, median = t["rows"], t["median"]
+    assert median is not None and median["periods"] + median["partial"] == len(rows)
+    # The statement opens and closes mid-month: those two are left out.
+    whole = sorted(r["spending"] for r in rows[1:-1])
+    mid = len(whole) // 2
+    expected = whole[mid] if len(whole) % 2 else (whole[mid - 1] + whole[mid]) / 2
+    assert median["amount"] == pytest.approx(expected, abs=0.01)
+    # At the grain on screen: two months are drawn by week, the median is
+    # a week's, the weeks the window cuts left out.
+    weeks = api(client, "/api/dashboard?from=2025-03-01&to=2025-04-30")
+    assert weeks["period"]["grain"] == "week" and weeks["timeline"]["median"]["partial"] >= 1

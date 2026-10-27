@@ -151,6 +151,29 @@ def _income(window, period) -> dict | None:
     return {"payers": len(sources), "slots": slots, "table": table, "rows": rows}
 
 
+def _median(rows: list[dict], grain: str, low: dt.date, high: dt.date) -> dict | None:
+    """The median spending of the periods on screen, at their own grain.
+
+    Only the periods the statement covers end to end count: the month under
+    way and the one the statement opens on would pull it down for having
+    fewer days, not for costing less. Fewer than three such periods say
+    nothing a reader could not see on the columns themselves.
+    """
+    def day(value) -> dt.date:
+        return value if isinstance(value, dt.date) else dt.date.fromisoformat(value)
+
+    def complete(row: dict) -> bool:
+        first, last = analysis.bucket_bounds(day(row["start"]), grain)
+        # Cut neither by the window on screen nor by the statement's ends.
+        return (day(row["start"]), day(row["end"])) == (first, last) and first >= low and last <= high
+
+    whole = [r["spending"] for r in rows if complete(r)]
+    if len(whole) < 3:
+        return None
+    return {"amount": round(statistics.median(whole), 2), "periods": len(whole),
+            "partial": len(rows) - len(whole)}
+
+
 @api.route("/api/budgets", methods=["POST"])
 def budgets_edit():
     """Declare or remove a monthly budget. A budget that does not parse is
@@ -196,6 +219,7 @@ def dashboard():
 
     rows = analysis.timeseries(window, grain, start, end)
     drill, drill_hint = drill_target(rows, grain)
+    median = _median(rows, grain, low, high)
 
     days = period["days"]
     years_spanned = end.year - start.year + 1
@@ -268,6 +292,7 @@ def dashboard():
             "rows": rows, "drill": drill, "hint": drill_hint,
             "stack": stack,
             "stacks": [{"id": k, "label": v["label"]} for k, v in STACKS.items()],
+            "median": median,
         },
         "bucket_order": buckets.ORDER,
         "bucket_fill": BUCKET_FILL,

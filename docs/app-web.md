@@ -159,6 +159,15 @@ conditions sur le rythme : facturé au plus une fois par mois (`LATE_MIN_INTERVA
 et régulièrement espacé (`LATE_MAX_JITTER`). Le rythme est une **médiane** : la moyenne
 serait étirée par le mois manquant qu'on cherche justement.
 
+**La médiane des colonnes de dépenses se demande** (`?median=1`, une clé de vue : elle
+suit la période et la granularité). C'est la médiane des périodes affichées, à leur
+granularité — par mois, par semaine, par jour —, calculée par le serveur
+(`api/dashboard._median`) sur les seules périodes **complètes** : celle en cours et celle
+où le relevé commence, ou celles qu'une fenêtre coupe, pèseraient pour avoir moins de
+jours, pas pour avoir coûté moins. Moins de trois périodes complètes : pas de médiane, ni
+de bouton. Une ligne pointillée sur le graphique, la valeur et le nombre de périodes dans
+la légende, l'écart à la médiane dans l'infobulle d'une colonne.
+
 **La bande « D'où vient l'argent » donne des parts, pas des montants.** Chaque colonne
 occupe toute la hauteur et se divise selon la part de chaque payeur. Elle répond à « qui
 me payait, et quand ça a changé » ; une hauteur au montant laisserait un gros mois écraser

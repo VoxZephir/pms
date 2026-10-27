@@ -139,7 +139,8 @@ export interface Dashboard {
   panels: Record<string, boolean>;
   categories: CategoryRow[];
   legend: { name: string; slot: number }[];
-  timeline: { rows: SeriesRow[]; drill: string | null; hint: string; stack: "category" | "bucket"; stacks: { id: string; label: string }[] };
+  timeline: { rows: SeriesRow[]; drill: string | null; hint: string; stack: "category" | "bucket"; stacks: { id: string; label: string }[];
+    median: null | { amount: number; periods: number; partial: number } };
   bucket_order: string[];
   bucket_fill: Record<string, string>;
   buckets: Buckets;
