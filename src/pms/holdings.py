@@ -19,6 +19,21 @@ from . import analysis
 # return gives back: the gross is the net over 0.65.
 WITHHOLDING = 0.35
 
+# What a holding is. A share is equity and may pay a dividend; anything else
+# (a watch, a painting) only has a declared value: it counts in the wealth
+# and the savings, never as equity in the allocation.
+SHARE, OTHER = "share", "other"
+KINDS = {SHARE: "Action non cotée", OTHER: "Autre bien"}
+
+
+def kind_of(holding: dict) -> str:
+    return holding.get("kind") if holding.get("kind") in KINDS else SHARE
+
+
+def pocket_name(holdings: list[dict]) -> str:
+    """The savings pocket's name: what it holds, said plainly."""
+    return "Titres non cotés" if all(kind_of(h) == SHARE for h in holdings) else "Hors marché"
+
 
 def load(path) -> list[dict]:
     try:
@@ -36,6 +51,7 @@ def load(path) -> list[dict]:
             except (TypeError, ValueError):
                 continue
         out.append({"id": str(h.get("id") or uuid.uuid4().hex[:8]), "name": str(h["name"]),
+                    "kind": kind_of(h),
                     "quantity": float(h.get("quantity") or 1), "payer": str(h.get("payer") or ""),
                     "withholding": bool(h.get("withholding", True)), "since": h.get("since"),
                     "values": values})
@@ -73,9 +89,12 @@ def clean(raw: dict) -> dict:
             since = int(since)
         except (TypeError, ValueError):
             raise ValueError("Année d'entrée invalide.") from None
-    return {"id": str(raw.get("id") or uuid.uuid4().hex[:8]), "name": name, "quantity": quantity,
-            "payer": str(raw.get("payer") or "").strip()[:80],
-            "withholding": bool(raw.get("withholding", True)), "since": since, "values": values}
+    kind = kind_of(raw)
+    share = kind == SHARE
+    return {"id": str(raw.get("id") or uuid.uuid4().hex[:8]), "name": name, "kind": kind, "quantity": quantity,
+            # A dividend is a share's: another good has no payer.
+            "payer": str(raw.get("payer") or "").strip()[:80] if share else "",
+            "withholding": bool(raw.get("withholding", True)) and share, "since": since, "values": values}
 
 
 def value_at(holding: dict, year: int) -> float | None:

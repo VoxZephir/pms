@@ -102,7 +102,11 @@ def savings():
                                   split, focus, book.crypto, values["crypto"], values["titres"],
                                   titres_each=[(h["name"], holdings_module.value_on([h], end))
                                                for h in book.securities
-                                               if end >= holdings_module.start(h)])
+                                               if end >= holdings_module.start(h)],
+                                  titres_other=holdings_module.value_on(
+                                      [h for h in book.securities
+                                       if holdings_module.kind_of(h) == holdings_module.OTHER], end),
+                                  titres_name=book.name("titres"))
     fees = _fees(custodian["total_chf"], custodian["count"], ibkr, finpension, values,
                  start, end, book.crypto)
     out["fees"] = fees
@@ -116,9 +120,14 @@ def savings():
                        if finpension else None)
 
     targets = allocation_module.Allocation.load(data.path.with_name("allocation.json")).targets
-    by_class = _savings_parts(ibkr, values["swissquote"], finpension, values["finpension"],
-                              "asset", "total", book.crypto, values["crypto"], values["titres"],
-                              titres_in_actions=True)
+    # The other goods (a watch) are no class of the portfolio: left out of
+    # the allocation, which is about what is invested.
+    others = holdings_module.value_on([h for h in book.securities
+                                       if holdings_module.kind_of(h) == holdings_module.OTHER], end)
+    by_class = [p for p in _savings_parts(ibkr, values["swissquote"], finpension, values["finpension"],
+                                          "asset", "total", book.crypto, values["crypto"], values["titres"],
+                                          titres_in_actions=True, titres_other=others)
+                if p["name"] != "Autres biens"]
     total_by_class = sum(p["value"] for p in by_class) or 1.0
     exposure = allocation_module.exposure(by_class, allocation_module.leverage(ibkr["positions"]))
     out["allocation"] = {
@@ -189,6 +198,7 @@ def savings():
     # switch only when some are declared.
     declared = holdings_module.load(data.path.with_name("holdings.json"))
     out["titres"] = {"declared": len(declared), "counted": titres,
+                     "name": holdings_module.pocket_name(declared),
                      "value": holdings_module.value_on(declared, end) if declared else 0.0}
     return payload(out)
 

@@ -42,6 +42,6 @@ export interface Security {
 }
 
 export interface Holding {
-  id: string; name: string; quantity: number; payer: string; withholding: boolean;
+  id: string; name: string; kind: "share" | "other"; quantity: number; payer: string; withholding: boolean;
   since: number | null; values: Record<string, number>;
 }

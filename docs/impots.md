@@ -98,6 +98,10 @@ vide reprend la précédente), et le bénéficiaire tel que le relevé imprime l
   se déclarent dans l'état des titres, et 35.00 d'impôt anticipé que la déclaration
   rembourse. La page et l'export donnent les trois chiffres.
 - L'indépendance financière (Prévisions) compte le titre dans le patrimoine.
+- **Un autre bien** (une montre, une œuvre : nature « autre bien », `holdings.kind`) se
+  déclare au même endroit, par sa valeur au 31.12 seule : il entre dans la fortune (ligne
+  de nature `asset`), sans payeur ni dividende, et le panneau s'appelle « Titres et biens
+  hors relevé ».
 
 Le versement lui-même se classe « Revenus · Dividendes » : la règle publique attrape une
 ligne qui dit « Dividende » ; une ligne qui ne porte que le nom de la société (le cas

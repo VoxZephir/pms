@@ -46,7 +46,7 @@ export interface SavingsReads {
 }
 
 export interface Savings {
-  titres: { declared: number; counted: boolean; value: number };
+  titres: { declared: number; counted: boolean; value: number; name: string };
   reads: SavingsReads;
   empty?: boolean;
   available: boolean;

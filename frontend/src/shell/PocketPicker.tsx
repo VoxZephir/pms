@@ -21,7 +21,7 @@ export function PocketPicker({ compact = false }: { compact?: boolean }) {
     { id: "ibkr", label: "IBKR", short: "IBKR" },
     { id: "finpension", label: "3a finpension", short: "3a" },
     ...(meta?.crypto ? [{ id: "crypto", label: "Crypto (Revolut)", short: "Crypto" }] : []),
-    ...(meta?.titres ? [{ id: "titres", label: "Titres non cotés", short: "Titres" }] : []),
+    ...(meta?.titres ? [{ id: "titres", label: meta.titres, short: meta.titres === "Hors marché" ? "Hors marché" : "Titres" }] : []),
   ];
   const current = pockets.find((p) => p.id === (params.get("focus") || "total")) ?? pockets[0];
   return (

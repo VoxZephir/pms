@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from .savings import POCKET_NAMES, SavingsBook
+from .savings import SavingsBook
 
 # The pockets that earn a return of their own; the current account's
 # "return" is its interest, nil on a Swissquote account.
@@ -95,7 +95,7 @@ def monthly_returns(book: SavingsBook, pocket: str, start: dt.date,
 
     def month(entry):
         return {"year": entry[0], "month": entry[1] + 1, "rate": entry[2]} if entry else None
-    return {"pocket": pocket, "name": POCKET_NAMES[pocket], "since": first if first > start else None,
+    return {"pocket": pocket, "name": book.name(pocket), "since": first if first > start else None,
             "years": years, "best": month(best), "worst": month(worst),
             "up": sum(1 for _, _, r in whole if r > 0), "count": len(whole)}
 
@@ -133,7 +133,7 @@ def drawdown(book: SavingsBook, pocket: str, start: dt.date, end: dt.date) -> di
         kept.append(min(chunk, key=lambda r: r[1]) if stride > 1 else chunk[0])
     if kept[-1][0] != rows[-1][0]:
         kept.append(rows[-1])
-    return {"pocket": pocket, "name": POCKET_NAMES[pocket], "since": first if first > start else None,
+    return {"pocket": pocket, "name": book.name(pocket), "since": first if first > start else None,
             "rows": [{"date": day, "dd": round(dd, 5)} for day, dd in kept],
             "worst": worst, "current": rows[-1][1]}
 

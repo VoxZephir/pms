@@ -62,7 +62,8 @@ export interface Meta {
   backup: { title: string; detail: string } | null;
   overrides: number;
   crypto: boolean;
-  titres: boolean;
+  /** The pocket's name when holdings are declared, else null. */
+  titres: string | null;
   savings: boolean;
 }
 

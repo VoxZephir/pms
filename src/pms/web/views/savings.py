@@ -255,6 +255,11 @@ class SavingsBook:
         self._values: dict[tuple[str, dt.date], float] = {}
         self._cumulative: dict[str, tuple[list, list]] = {}
 
+    def name(self, pocket: str) -> str:
+        """A pocket's name; the declared holdings' one says what they are."""
+        return (holdings_module.pocket_name(self.securities) if pocket == "titres"
+                else POCKET_NAMES[pocket])
+
     def pockets(self) -> list[str]:
         """The pockets this book holds, in the page's order -- one list for
         every part of the page."""
@@ -391,7 +396,7 @@ class SavingsBook:
         # from a year on -- over the pocket's own life: a pocket younger than
         # the window has not had the window's years to earn its return.
         own = (end - self.start_of(pocket, start)).days
-        return {"pocket": pocket, "name": POCKET_NAMES[pocket],
+        return {"pocket": pocket, "name": self.name(pocket),
                 "start_value": round(first, 2), "value": round(last, 2),
                 "change": round(last - first, 2), "put_in": round(put_in, 2),
                 "gain": round(last - first - put_in, 2),
@@ -853,7 +858,7 @@ def _split_series(split: str, finpension: dict | None,
             spec = [part(f"titre_{h['id']}", h["name"], free[i % len(free)])
                     for i, h in enumerate(held)]
         else:
-            spec = [part("titres", "Titres non cotés", 4)]
+            spec = [part("titres", holdings_module.pocket_name(held), 4)]
     elif split == "currency":
         spec = [part("chf", "CHF", 0), part("usd", "USD", 2)]
     elif split == "asset":
@@ -861,10 +866,15 @@ def _split_series(split: str, finpension: dict | None,
                 part("mf", "Trend-Following", 3)]
         if crypto:
             spec.append(part("crypto", "Crypto", 5))
-        # Equity too, but a line of their own: folded into "Actions" they
-        # were there and nowhere to be seen.
-        if titres:
-            spec.append(part("titres", "Titres non cotés", 4))
+        # Unlisted shares are equity too, but a line of their own: folded
+        # into "Actions" they were there and nowhere to be seen. Another good
+        # (a watch) is no asset class of the portfolio: a line of its own.
+        held = titres if isinstance(titres, list) else []
+        kinds = {holdings_module.kind_of(h) for h in held}
+        if holdings_module.SHARE in kinds or (titres and not held):
+            spec.append(part("titres_share", "Titres non cotés", 4))
+        if holdings_module.OTHER in kinds:
+            spec.append(part("titres_other", "Autres biens", 6))
     elif split == "fund":
         spec = [part("cash", "Cash", 0), part("rss", "RSST", 2)]
         for isin, holding in (finpension["holdings"].items()
@@ -886,7 +896,8 @@ def _split_series(split: str, finpension: dict | None,
         if crypto:
             spec.append(part("crypto", "Crypto (Revolut)", 5))
         if titres:
-            spec.append(part("titres", "Titres non cotés", 4))
+            held = titres if isinstance(titres, list) else []
+            spec.append(part("titres", holdings_module.pocket_name(held), 4))
     # The whole-portfolio line rides on top only in the total view; a
     # focused pocket shows its own breakdown alone.
     if focus == "total":
@@ -899,7 +910,8 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                    focus: str = "total", crypto: dict | None = None,
                    crypto_value: float = 0.0, titres_value: float = 0.0,
                    titres_in_actions: bool = False,
-                   titres_each: list[tuple[str, float]] | None = None) -> list[dict]:
+                   titres_each: list[tuple[str, float]] | None = None,
+                   titres_other: float = 0.0, titres_name: str = "Titres non cotés") -> list[dict]:
     """The savings split for the bar, one of three views of the same money.
 
     By account (the default), by currency, or by asset class. A focus
@@ -909,9 +921,10 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
     with no currency -- folds into "Autres", so the bar always fills.
 
     By asset class, unlisted shares are a part of their own, as on the
-    curve. The allocation asks `titres_in_actions`: its targets name
-    classes, and a part no target names is aimed at zero -- it would
-    propose selling a share nobody can sell.
+    curve, and another good (`titres_other`, of `titres_value`) another.
+    The allocation asks `titres_in_actions`: its targets name classes, and a
+    part no target names is aimed at zero -- it would propose selling a
+    share nobody can sell. It leaves the other goods out itself.
     """
     finp = finp_value
     nav = ibkr["nav_chf"]
@@ -1005,7 +1018,7 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
     elif focus == "titres":
         parts = ([(name, round(value, 2)) for name, value in titres_each]
                  if titres_each and len(titres_each) > 1
-                 else [("Titres non cotés", round(titres_value, 2))])
+                 else [(titres_name, round(titres_value, 2))])
     elif focus == "crypto":
         # One coin per part, in the proportions of the last capture.
         held = [(p["symbol"], p["value_chf"] or 0.0)
@@ -1059,15 +1072,18 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                         + finp * weight / total_weight
             else:
                 classes["Autres"] = classes.get("Autres", 0.0) + finp
-        if titres_value and titres_in_actions:
-            classes["Actions"] = classes.get("Actions", 0.0) + titres_value
+        shares_value = titres_value - titres_other
+        if shares_value and titres_in_actions:
+            classes["Actions"] = classes.get("Actions", 0.0) + shares_value
         labels = {"MF": "Trend-Following"}
         for name in ("Actions", "Obligations", "MF"):
             if classes.get(name):
                 parts.append((labels.get(name, name),
                               round(classes[name], 2)))
-        if titres_value and not titres_in_actions:
-            parts.append(("Titres non cotés", round(titres_value, 2)))
+        if shares_value > 0.005 and not titres_in_actions:
+            parts.append(("Titres non cotés", round(shares_value, 2)))
+        if titres_other:
+            parts.append(("Autres biens", round(titres_other, 2)))
         if crypto_value:
             parts.append(("Crypto", round(crypto_value, 2)))
         if classes.get("Autres"):
@@ -1113,7 +1129,7 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
         if crypto_value:
             parts.append(("Crypto", round(crypto_value, 2)))
         if titres_value:
-            parts.append(("Titres non cotés", round(titres_value, 2)))
+            parts.append((titres_name, round(titres_value, 2)))
     else:
         parts = [("Swissquote", round(swiss, 2)),
                  ("IBKR", round(ibkr["nav_chf"], 2))]
@@ -1124,7 +1140,7 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
         if crypto_value:
             parts.append(("Crypto (Revolut)", round(crypto_value, 2)))
         if titres_value:
-            parts.append(("Titres non cotés", round(titres_value, 2)))
+            parts.append((titres_name, round(titres_value, 2)))
 
     pocket_value = {"ibkr": nav, "finpension": finp, "swissquote": swiss,
                     "crypto": crypto_value, "titres": titres_value}.get(focus, ibkr["total"])
@@ -1166,6 +1182,10 @@ def _evolution_row(statement, ibkr: dict, finpension: dict | None,
     each = {f"titre_{h['id']}": (holdings_module.value_on([h], point_day)
                                  if h in owned else None)
             for h in securities or []}
+    # By nature, for the asset-class view: shares are equity, a watch is not.
+    for kind in holdings_module.KINDS:
+        of_kind = [h for h in owned if holdings_module.kind_of(h) == kind]
+        each[f"titres_{kind}"] = holdings_module.value_on(of_kind, point_day) if of_kind else None
 
     cash_chf = sum(c["amount"] for c in ibkr["cash"] if c["currency"] == "CHF")
     usd_cash_chf = sum(c["amount"] for c in ibkr["cash"]

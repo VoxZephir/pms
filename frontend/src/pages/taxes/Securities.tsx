@@ -7,7 +7,7 @@ import { toast } from "sonner";
 
 import { Field, Input } from "@/components/Form";
 import { Sheet } from "@/components/Sheet";
-import { Button, Note, Panel } from "@/components/ui";
+import { Button, Note, Panel, Segmented } from "@/components/ui";
 import { ApiError, send } from "@/lib/api";
 import { chf } from "@/lib/format";
 import type { Holding, Taxes } from "./types";
@@ -21,9 +21,9 @@ export function Securities({ data }: { data: Taxes }) {
   const [editing, setEditing] = useState<Partial<Holding> | null>(null);
   const shown = new Map(data.securities.map((s) => [s.id, s]));
   return (
-    <Panel id="p-securities" title="Titres hors relevé"
-           hint="une action non cotée, reçue ou achetée : sa valeur fiscale, son dividende, l'impôt anticipé à récupérer"
-           actions={<Button size="sm" onClick={() => setEditing({ quantity: 1, withholding: true, values: {} })}><Plus size={15} />Ajouter</Button>}>
+    <Panel id="p-securities" title="Titres et biens hors relevé"
+           hint="une action non cotée (sa valeur fiscale, son dividende, l'impôt anticipé) ou un autre bien, une montre : sa valeur"
+           actions={<Button size="sm" onClick={() => setEditing({ kind: "share", quantity: 1, withholding: true, values: {} })}><Plus size={15} />Ajouter</Button>}>
       {data.holdings.length ? (
         <ul className="divide-y divide-hairline">
           {data.holdings.map((h) => {
@@ -33,7 +33,7 @@ export function Securities({ data }: { data: Taxes }) {
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-medium">{h.name}</div>
                   <div className="truncate text-[12px] text-muted">
-                    {h.quantity} titre{h.quantity > 1 ? "s" : ""}
+                    {h.kind === "other" ? `autre bien${h.quantity !== 1 ? ` × ${h.quantity}` : ""}` : `${h.quantity} titre${h.quantity > 1 ? "s" : ""}`}
                     {Object.entries(h.values).map(([y, v]) => ` · ${y} : ${chf(v, 0)}`).join("")}
                     {h.payer && ` · dividende versé par « ${h.payer} »`}
                   </div>
@@ -68,8 +68,8 @@ export function Securities({ data }: { data: Taxes }) {
 
 function HoldingSheet({ value, years, onClose }: { value: Partial<Holding> | null; years: number[]; onClose: () => void }) {
   return (
-    <Sheet open={!!value} onOpenChange={(o) => !o && onClose()} title={value?.id ? "Modifier le titre" : "Ajouter un titre"}
-           description="La valeur est celle de la déclaration (cours fiscal, ou valeur communiquée par la société), pas un prix de marché.">
+    <Sheet open={!!value} onOpenChange={(o) => !o && onClose()} title={value?.id ? "Modifier" : "Ajouter un titre ou un bien"}
+           description="La valeur est celle de la déclaration (cours fiscal, valeur communiquée par la société, ou valeur estimée d'un bien), pas un prix de marché.">
       {value && <HoldingForm key={value.id ?? "new"} value={value} years={years} onClose={onClose} />}
     </Sheet>
   );
@@ -77,6 +77,8 @@ function HoldingSheet({ value, years, onClose }: { value: Partial<Holding> | nul
 
 function HoldingForm({ value, years, onClose }: { value: Partial<Holding>; years: number[]; onClose: () => void }) {
   const all = [...new Set([...years, Math.max(...years) + 1])].sort((a, b) => a - b);
+  const [kind, setKind] = useState<"share" | "other">(value.kind ?? "share");
+  const share = kind === "share";
   const [name, setName] = useState(value.name ?? "");
   const [quantity, setQuantity] = useState(String(value.quantity ?? 1));
   const [payer, setPayer] = useState(value.payer ?? "");
@@ -87,20 +89,29 @@ function HoldingForm({ value, years, onClose }: { value: Partial<Holding>; years
   const [err, setErr] = useState<string | undefined>();
   const submit = async () => {
     try {
-      await write({ holding: { id: value.id, name, quantity, payer, withholding, since: since || null, values } },
-                  value.id ? "Titre modifié" : "Titre ajouté");
+      await write({ holding: { id: value.id, name, kind, quantity, payer, withholding, since: since || null, values } },
+                  value.id ? (share ? "Titre modifié" : "Bien modifié") : (share ? "Titre ajouté" : "Bien ajouté"));
       onClose();
     } catch (e) { setErr(e instanceof ApiError ? e.message : String(e)); }
   };
   return (
     <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-      <Field label="Nom" error={err}>{(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="Société SA, action nominative" autoFocus />}</Field>
+      <div>
+        <div className="mb-1.5 text-[12.5px] font-medium text-ink-2">Nature</div>
+        <Segmented label="Nature" value={kind} onChange={setKind}
+                   options={[{ id: "share", label: "Action non cotée" }, { id: "other", label: "Autre bien (montre, œuvre…)" }]} />
+        <p className="mt-1 text-[12px] text-muted">
+          {share ? "Compte en Actions dans l'allocation ; son dividende est retrouvé dans le relevé."
+                 : "Compte dans la fortune et l'épargne, hors de l'allocation : pas une classe d'actifs, pas de dividende."}
+        </p>
+      </div>
+      <Field label="Nom" error={err}>{(id) => <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder={share ? "Société SA, action nominative" : "Montre, tableau…"} autoFocus />}</Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Nombre de titres">{(id) => <Input id={id} inputMode="decimal" value={quantity} onChange={(e) => setQuantity(e.target.value)} />}</Field>
+        <Field label={share ? "Nombre de titres" : "Nombre"}>{(id) => <Input id={id} inputMode="decimal" value={quantity} onChange={(e) => setQuantity(e.target.value)} />}</Field>
         <Field label="Détenu depuis (année)">{(id) => <Input id={id} inputMode="numeric" value={since} onChange={(e) => setSince(e.target.value)} placeholder="2024" />}</Field>
       </div>
       <div>
-        <div className="mb-1.5 text-[12.5px] font-medium text-ink-2">Valeur d'un titre au 31.12 (CHF)</div>
+        <div className="mb-1.5 text-[12.5px] font-medium text-ink-2">{share ? "Valeur d'un titre au 31.12 (CHF)" : "Valeur au 31.12 (CHF)"}</div>
         <div className="grid grid-cols-3 gap-2">
           {all.map((y) => (
             <Field key={y} label={String(y)}>{(id) => (
@@ -111,6 +122,7 @@ function HoldingForm({ value, years, onClose }: { value: Partial<Holding>; years
         </div>
         <p className="mt-1 text-[12px] text-muted">Une année laissée vide reprend la valeur de la précédente.</p>
       </div>
+      {share && <>
       <Field label="Le dividende arrive de (bénéficiaire sur le relevé)" hint="tel qu'il s'affiche dans la table des transactions">
         {(id, d) => <Input id={id} aria-describedby={d} value={payer} onChange={(e) => setPayer(e.target.value)} placeholder="Société SA" />}
       </Field>
@@ -118,6 +130,7 @@ function HoldingForm({ value, years, onClose }: { value: Partial<Holding>; years
         <input type="checkbox" checked={withholding} onChange={(e) => setWithholding(e.target.checked)} className="size-4 accent-[var(--ink)]" />
         Société suisse : dividende versé net de 35 % d'impôt anticipé
       </label>
+      </>}
       <div className="pt-1"><Button type="submit" variant="primary" disabled={!name.trim()}>Enregistrer</Button></div>
     </form>
   );

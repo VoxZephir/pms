@@ -269,11 +269,14 @@ def return_items(statement, year: int, *, net_income: float | None, finpension: 
         if unit is None:
             continue
         paid = holdings.dividends(statement, h, year)
-        securities.append({"id": h["id"], "name": h["name"], "quantity": h["quantity"], "unit": unit,
+        securities.append({"id": h["id"], "name": h["name"], "kind": holdings.kind_of(h),
+                           "quantity": h["quantity"], "unit": unit,
                            "value": round(unit * h["quantity"], 2), "payer": h["payer"],
                            "withholding": h["withholding"], "dividends": paid})
-        quantity = f"{h['quantity']:g} titre{'s' if h['quantity'] > 1 else ''}"
-        wealth["rows"].append({"name": h["name"], "kind": "security",
+        share = holdings.kind_of(h) == holdings.SHARE
+        quantity = (f"{h['quantity']:g} titre{'s' if h['quantity'] > 1 else ''}" if share
+                    else f"{h['quantity']:g}")
+        wealth["rows"].append({"name": h["name"], "kind": "security" if share else "asset",
                                "detail": f"{quantity} × {analysis.chf(unit, 2)}, valeur déclarée",
                                "value": round(unit * h["quantity"], 2)})
         wealth["taxable"] = round(wealth["taxable"] + unit * h["quantity"], 2)

@@ -613,7 +613,7 @@ function Crypto({ s }: { s: Savings }) {
 /* ------------------------------------------------------------------ fees */
 
 function Fees({ s }: { s: Savings }) {
-  const names: Record<string, string> = { swissquote: "Swissquote", ibkr: "IBKR", finpension: "3a finpension", crypto: "Crypto", titres: "Titres non cotés" };
+  const names: Record<string, string> = { swissquote: "Swissquote", ibkr: "IBKR", finpension: "3a finpension", crypto: "Crypto", titres: s.titres.name };
   const rows = Object.entries(s.fees).filter(([k]) => k !== "total").map(([k, f]) => ({ k, ...f }));
   return (
     <Panel foldable defaultOpen={false} title="Frais sur la période"
@@ -759,9 +759,10 @@ function Risk({ s }: { s: Savings }) {
 function TitresSwitch({ s }: { s: Savings }) {
   const { href } = useView();
   return (
-    <Segmented size="sm" label="Titres non cotés" value={s.titres.counted ? "on" : "off"}
-               options={[{ id: "on", label: "Titres comptés", title: `${chf(s.titres.value, 0)} CHF à leur valeur fiscale` },
-                         { id: "off", label: "Sans les titres" }]}
+    <Segmented size="sm" label={s.titres.name} value={s.titres.counted ? "on" : "off"}
+               options={[{ id: "on", label: s.titres.name === "Hors marché" ? "Hors marché compté" : "Titres comptés",
+                           title: `${chf(s.titres.value, 0)} CHF à leur valeur déclarée` },
+                         { id: "off", label: s.titres.name === "Hors marché" ? "Sans le hors-marché" : "Sans les titres" }]}
                hrefFor={(id) => href({ titres: id === "on" ? null : "0" })} />
   );
 }

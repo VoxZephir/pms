@@ -504,8 +504,14 @@ de tout, d'un clic. Elle n'apparaît que si un titre est déclaré.
   cible ne nomme est visée à zéro — elle proposerait de vendre un titre invendable.
 - **Plusieurs titres** (une action, une montre…) : la poche ouverte (`?focus=titres`) en
   trace un par ligne et les montre un par un dans sa composition (`titre_<id>` sur chaque
-  point de la courbe) ; partout ailleurs, leur somme. Un objet sans dividende se déclare
-  comme un titre sans payeur ; l'allocation le compte aussi en Actions.
+  point de la courbe) ; partout ailleurs, leur somme.
+- **Une nature par titre** (`holdings.kind`) : « action non cotée » (défaut) ou « autre
+  bien » (une montre, une œuvre). Un autre bien n'a ni payeur ni impôt anticipé (`clean`
+  les efface), compte dans la fortune et l'épargne, a sa ligne « Autres biens » par classe
+  d'actifs (`titres_other`) et reste **hors de l'allocation** : ce n'est pas une classe du
+  portefeuille, et visé à zéro il ferait proposer de le vendre. La poche s'appelle
+  « Titres non cotés » tant qu'elle ne tient que des actions, « Hors marché » dès qu'un
+  autre bien y entre (`holdings.pocket_name`, servi aussi par `/api/meta`).
 
 ## Rafraîchir depuis l'app (26.10)
 

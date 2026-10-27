@@ -325,7 +325,7 @@ def test_an_unlisted_share_is_a_pocket_and_counts_in_the_total(client, share):
     assert titres["gain"] == pytest.approx(290, abs=0.01)
     total_on, total_off = _pocket(on, "total"), _pocket(off, "total")
     assert total_on["gain"] - total_off["gain"] == pytest.approx(290, abs=0.01)
-    assert on["titres"] == {"declared": 1, "counted": True, "value": 1250}
+    assert on["titres"] == {"declared": 1, "counted": True, "value": 1250, "name": "Titres non cotés"}
     assert off["titres"]["counted"] is False
 
 
@@ -341,7 +341,7 @@ def test_the_share_is_in_the_curve_and_the_split(client, share):
 def test_by_asset_class_the_share_is_its_own_line_but_the_allocation_counts_it_as_equity(client, share):
     q = "/api/savings?from=2025-01-01&to=2026-07-30&split=asset"
     s = api(client, q)
-    assert any(p["key"] == "titres" for p in s["evolution"]["spec"])
+    assert any(p["key"] == "titres_share" for p in s["evolution"]["spec"])
     assert any(p["name"] == "Titres non cotés" and p["value"] == 1250 for p in s["parts"])
     assert sum(p["value"] for p in s["parts"]) == pytest.approx(s["total"], abs=1)
     # "Actions" no longer carries it, on the curve as in the bar.
@@ -366,3 +366,36 @@ def test_several_holdings_each_have_their_line_in_their_pocket(client, pockets):
         assert s["hero"]["value"] == pytest.approx(5450, abs=0.01)
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_another_good_is_its_own_class_and_stays_out_of_the_allocation(client, pockets):
+    from pms import holdings
+    path = client.application.extensions["pms_store"].path.with_name("holdings.json")
+    watch = {"id": "w1", "name": "Montre Exemple", "kind": "other", "quantity": 1, "payer": "",
+             "withholding": False, "since": 2025, "values": {"2025": 4000, "2026": 4200}}
+    path.write_text(json.dumps({"holdings": [*SHARE["holdings"], watch]}), encoding="utf-8")
+    try:
+        q = "/api/savings?from=2025-01-01&to=2026-07-30"
+        s = api(client, q + "&split=asset")
+        parts = {p["name"]: p["value"] for p in s["parts"]}
+        assert parts["Titres non cotés"] == 1250 and parts["Autres biens"] == 4200
+        keys = [p["key"] for p in s["evolution"]["spec"]]
+        assert "titres_share" in keys and "titres_other" in keys
+        # The allocation is about what is invested: the share is equity, the
+        # watch is not there at all.
+        assert "Autres biens" not in s["allocation"]["current"]
+        path.write_text(json.dumps(SHARE), encoding="utf-8")
+        without = api(client, q + "&split=asset")["allocation"]["current"]
+        assert s["allocation"]["current"] == pytest.approx(without)
+        path.write_text(json.dumps({"holdings": [*SHARE["holdings"], watch]}), encoding="utf-8")
+        # The pocket says what it holds.
+        assert s["titres"]["name"] == "Hors marché"
+        assert _pocket(api(client, q), "titres")["name"] == "Hors marché"
+        assert api(client, "/api/meta")["titres"] == "Hors marché"
+    finally:
+        path.unlink(missing_ok=True)
+    # A good has no dividend, whatever was typed.
+    cleaned = holdings.clean({**watch, "payer": "Quelqu'un", "withholding": True})
+    assert (cleaned["kind"], cleaned["payer"], cleaned["withholding"]) == ("other", "", False)
+    assert holdings.pocket_name([cleaned]) == "Hors marché"
+    assert holdings.pocket_name(holdings.load(path)) == "Titres non cotés"  # none left: the default

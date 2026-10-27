@@ -64,7 +64,10 @@ def meta():
         "watching": "pms_watcher" in current_app.extensions,
         "overrides": len(data.overrides),
         "crypto": data.path.with_name("crypto.json").exists(),
-        "titres": bool(holdings_module.load(data.path.with_name("holdings.json"))),
+        # The pocket's name when some are declared ("Titres non cotés", or
+        # "Hors marché" with a watch among them), else nothing.
+        "titres": (holdings_module.pocket_name(declared)
+                   if (declared := holdings_module.load(data.path.with_name("holdings.json"))) else None),
         "savings": data.path.with_name("ibkr.json").exists(),
         # Said only when something is wrong: a failed run, a copy that does
         # not read back, no run for two weeks (backup.health).
