@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -1747,3 +1748,20 @@ def floor_phrase(floor: float, first: dict, low: dict) -> str:
     if low["key"] == first["key"]:
         return f"{head} ({analysis.chf(first['end'], 0)} CHF)."
     return f"{head}, au plus bas {analysis.chf(low['end'], 0)} CHF en {low['label'].lower()}."
+
+
+TAX_LABEL = re.compile(r"imp[ôo]t", re.I)
+
+
+def tax_cover(projection: dict, provision: dict | None) -> dict | None:
+    """The tax still owed (`taxes.provision`) against the tax the forecast
+    already pays before the open years are settled: the seasonal "Impôts"
+    bills and any one-off named after the tax. What is left uncovered is
+    cash the forecast spends that is not free."""
+    if not provision or not provision["years"]:
+        return None
+    until = f"{max(y['paid_in'] for y in provision['years'])}-12"
+    planned = sum(o["amount"] for r in projection["rows"] if r["key"] <= until
+                  for o in r["one_offs"] if o.get("transfer", SPENT) == SPENT and TAX_LABEL.search(o["label"]))
+    return {**provision, "planned": round(planned, 2), "until": until,
+            "uncovered": round(max(provision["outstanding"] - planned, 0.0), 2)}

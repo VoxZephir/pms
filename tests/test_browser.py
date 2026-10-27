@@ -612,3 +612,15 @@ def test_forecast_against_what_happened_reads_month_by_month(page):
         panel.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "hindsight.png"))
     panel.get_by_role("button", name="Ton plan").click()
     expect(panel.get_by_text(re.compile("Première comparaison le mois prochain|La prévision de ce mois est gardée"))).to_be_visible()
+
+
+def test_the_tax_still_owed_shows_on_the_tax_page_and_beside_the_cash(page):
+    page.goto("/impots")
+    _ready(page)
+    panel = page.locator("#p-provision")
+    expect(panel.get_by_text(re.compile(r"^Taux tiré de 2025"))).to_be_visible()
+    if os.environ.get("PMS_SHOTS"):
+        panel.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "provision.png"))
+    page.goto("/previsions")
+    _ready(page)
+    expect(page.locator("#p-cash [data-tax-provision]")).to_contain_text("Impôts encore dus")

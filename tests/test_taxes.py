@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+from pathlib import Path
 
 import pytest
 
@@ -121,3 +122,38 @@ def test_the_canton_is_set_from_the_page(client):
                            headers={"Origin": "http://localhost"}).status_code == 400
     finally:
         path.unlink(missing_ok=True)
+
+
+# --- the provision -----------------------------------------------------------------------------
+
+def test_the_tax_still_owed_is_the_rate_paid_on_a_past_year_applied_to_the_open_one(statement):
+    from pms import hindsight, plans
+    # Before the year's bill: the whole of it is still owed.
+    before = hindsight.truncate(statement, dt.date(2026, 4, 30))
+    p = taxes.provision(before)
+    basis = p["basis"]
+    assert basis["year"] == 2025 and basis["rate"] == round(basis["tax"] / basis["pay"], 4)
+    (open_year,) = p["years"]
+    assert open_year["year"] == 2026 and open_year["pay_estimated"] and open_year["paid"] == 0
+    assert open_year["pay"] > open_year["pay_so_far"]
+    assert open_year["outstanding"] == p["outstanding"] == round(basis["rate"] * open_year["pay"], 2)
+    # One year of history suggests no seasonal bill yet: the forecast pays
+    # none of it, all of it is cash that is not free.
+    cover = plans.tax_cover(plans.project(before, None, months_ahead=12), p)
+    assert (cover["until"], cover["planned"], cover["uncovered"]) == ("2026-12", 0, p["outstanding"])
+    # A bill declared in the plan, named after the tax, covers its amount.
+    plan = plans.Plan(Path("unused"))
+    plan.add_one_off("2026-06", "Impôts 2026", 2000.0)
+    cover = plans.tax_cover(plans.project(before, plan, months_ahead=12), p)
+    assert cover["planned"] == 2000 and cover["uncovered"] == round(max(p["outstanding"] - 2000, 0), 2)
+    # After it: paid, nothing owed.
+    after = taxes.provision(statement)
+    assert after["years"][0]["paid"] > 0 and after["outstanding"] == 0
+    # Paid the year after (Geneva) with no whole year settled: no basis, no guess.
+    assert taxes.provision(statement, {"canton": "GE", "since": 2024, "paid_next_year": True}) is None
+
+
+def test_the_provision_reaches_both_pages(client):
+    assert api(client, "/api/impots")["provision"]["basis"]["year"] == 2025
+    tax = api(client, "/api/previsions")["tax"]
+    assert tax["outstanding"] == 0 and tax["uncovered"] == 0

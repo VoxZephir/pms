@@ -8,6 +8,7 @@ import { Link } from "react-router";
 
 import { Field, Input, Select } from "@/components/Form";
 import { PageHeader } from "@/components/PageState";
+import { TaxReserve } from "@/components/TaxProvision";
 import { Button, Callout, Card, Note, Panel, Reveal, Segmented, Skeleton, cx } from "@/components/ui";
 import { send, useApi } from "@/lib/api";
 import { chf, frDate, plural } from "@/lib/format";
@@ -83,6 +84,12 @@ export default function TaxesPage() {
         </div>
         <Securities data={data} />
         <Paid data={data} />
+        {data.provision && (
+          <Panel id="p-provision" title="À mettre de côté" hint="les impôts des années pas encore réglées, estimés au taux déjà payé">
+            <TaxReserve p={data.provision} className="!border-0 !p-0" />
+            <Note>Prévisions le compare à ce que la prévision du cash paie déjà, et peut en faire le seuil d'alerte.</Note>
+          </Panel>
+        )}
       </div>
     </div>
   );

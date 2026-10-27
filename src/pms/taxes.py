@@ -310,3 +310,68 @@ def return_items(statement, year: int, *, net_income: float | None, finpension: 
                  "back": round(sum(t.amount_chf for t in taxes_back), 2),
                  "rows": _rows(taxes_out) + [{**_line(t), "amount": round(-t.amount_chf, 2)} for t in taxes_back]},
     }
+
+
+# --- the provision: the tax still to pay, estimated from the tax already paid ----------------
+
+def _settled(statement, year: int, settings: dict) -> dict:
+    """The payments that settle `year`'s tax (those of the year, or of the
+    next where it is paid the year after), and whether they are all in."""
+    later = bool(canton_for(settings, year)) and settings["paid_next_year"]
+    paid_year = year + 1 if later else year
+    rows = _in_year(statement, paid_year)
+    out = sum(-t.amount_chf for t in rows if t.category == TAXES and t.amount_chf < 0)
+    back = sum(t.amount_chf for t in rows if t.category == TAXES and t.subcategory == "Remboursement")
+    return {"paid_in": paid_year, "later": later, "paid": round(out - back, 2),
+            "complete": statement.period_end >= dt.date(paid_year, 12, 31)}
+
+
+def _pay(statement, year: int) -> float:
+    return sum(p["amount"] for p in salaries(_in_year(statement, year)))
+
+
+def provision(statement, settings: dict | None = None) -> dict | None:
+    """The tax still owed on the years not yet settled, estimated -- never
+    computed from a barème: the rate actually paid on the salary of the
+    last year whose tax is wholly in the ledger, applied to the salary of
+    the open years (the current one carried to December at the pace of the
+    last twelve months), minus what is already paid toward them.
+
+    None when no year can serve as the basis (a whole year of pay and its
+    tax paid in full in the ledger)."""
+    settings = {**SETTINGS, **(settings or {})}
+    end = statement.period_end
+    basis = None
+    for year in sorted({t.date.year for t in statement.transactions}, reverse=True):
+        if not _whole(statement, year):
+            continue
+        settled = _settled(statement, year, settings)
+        pay = _pay(statement, year)
+        if settled["complete"] and settled["paid"] > 0 and pay > 0:
+            basis = {"year": year, "tax": settled["paid"], "pay": round(pay, 2),
+                     "rate": round(settled["paid"] / pay, 4), "paid_in": settled["paid_in"]}
+            break
+    if basis is None:
+        return None
+    # The last twelve months' pay, for the months of the current year to come.
+    year_ago = end - dt.timedelta(days=365)
+    recent = sum(p["amount"] for p in salaries([t for t in statement.transactions
+                                                if year_ago < t.date <= end and not analysis.is_internal(t)]))
+    # The months after the statement's: its own month's pay is taken as in.
+    left = 12 - end.month
+    open_years = []
+    for year in range(basis["year"] + 1, end.year + 1):
+        settled = _settled(statement, year, settings)
+        if settled["complete"]:
+            continue
+        whole = _whole(statement, year)
+        so_far = _pay(statement, year)
+        pay = so_far if whole else so_far + recent / 12 * left
+        estimated = basis["rate"] * pay
+        open_years.append({
+            "year": year, "pay": round(pay, 2), "pay_so_far": round(so_far, 2), "pay_estimated": not whole,
+            "estimated": round(estimated, 2), "paid": settled["paid"], "paid_in": settled["paid_in"],
+            "later": settled["later"], "outstanding": round(max(estimated - settled["paid"], 0.0), 2),
+        })
+    return {"basis": basis, "years": open_years,
+            "outstanding": round(sum(y["outstanding"] for y in open_years), 2), "as_of": end}

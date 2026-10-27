@@ -1,4 +1,5 @@
 /** `/api/impots`: the return rubric by rubric (`taxes.py`). */
+import type { TaxProvision } from "@/lib/types";
 
 export interface TaxLine { date: string; label: string; amount: number; key: string | null }
 
@@ -34,6 +35,7 @@ export interface Taxes {
   settings: TaxSettings;
   cantons: { id: string; name: string }[];
   franchise: { franchise: number; declared: boolean };
+  provision: TaxProvision | null;
 }
 
 export interface Security {

@@ -12,7 +12,7 @@ from werkzeug.datastructures import MultiDict
 
 from ... import crypto as crypto_module
 from ... import finpension as finpension_module
-from ... import freedom, hindsight, holdings
+from ... import freedom, hindsight, holdings, taxes
 from ... import ibkr as ibkr_module
 from ... import plans as plans_module
 from ..views.common import scale_mode, titres_mode
@@ -50,6 +50,8 @@ def previsions():
         "freedom": _freedom(data, plan, projection, wealth),
         "floor": plan.floor,
         "floor_alert": plans_module.floor_alert(projection, plan.floor),
+        "tax": plans_module.tax_cover(projection, taxes.provision(
+            data.statement, taxes.load_settings(data.path.with_name("tax.json")))),
         "as_of": data.statement.period_end,
         "months": horizon,
         "horizon_label": months_label(horizon),

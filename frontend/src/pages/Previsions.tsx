@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { Lines, spreadTicks } from "@/charts/Lines";
 import { Input } from "@/components/Form";
+import { TaxReserve } from "@/components/TaxProvision";
 import { MonthlyProfile } from "@/components/MonthlyProfile";
 import { Num } from "@/components/Num";
 import { PageHeader } from "@/components/PageState";
@@ -121,6 +122,14 @@ function Projection({ d }: { d: Previsions }) {
         <Callout tone="warn" className="mt-3" title="Sous ton seuil">
           {d.floor_alert.text} {d.floor_alert.count! > 1 ? `${d.floor_alert.count} fins de mois sur ${d.floor_alert.months} en dessous.` : ""} Le résumé de la semaine et la barre latérale le rappellent tant que le plan affiché y passe.
         </Callout>
+      )}
+      {d.tax && (
+        <TaxReserve p={d.tax} className="mt-3" onReserve={(amount) => {
+          const floor = Math.ceil(((d.floor ?? 0) + amount) / 100) * 100;
+          void planAction(d.months, { action: "floor", amount: String(floor) }).then((r) => r.errors
+            ? toast.error(Object.values(r.errors)[0])
+            : toast.success(`Seuil d'alerte : ${chf(floor, 0)} CHF`, { description: "Le cash projeté est tenu au-dessus de ce qui est dû aux impôts." }));
+        }} />
       )}
       {d.floor_alert && !d.floor_alert.below && (
         <p className="mt-3 text-[12.5px] text-good">Le plan tient : jamais sous {chf(d.floor_alert.floor, 0)} CHF sur {d.horizon_label}.</p>

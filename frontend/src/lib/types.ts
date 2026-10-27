@@ -257,3 +257,14 @@ export interface FloorAlert {
   low?: { key: string; label: string; amount: number };
   text?: string;
 }
+
+/** The tax still owed, estimated from the rate paid on a whole past year
+ * (`taxes.provision`); with `planned`/`uncovered` in Prévisions
+ * (`plans.tax_cover`). */
+export interface TaxProvision {
+  basis: { year: number; tax: number; pay: number; rate: number; paid_in: number };
+  years: { year: number; pay: number; pay_so_far: number; pay_estimated: boolean; estimated: number;
+           paid: number; paid_in: number; later: boolean; outstanding: number }[];
+  outstanding: number; as_of: string;
+  planned?: number; until?: string; uncovered?: number;
+}

@@ -62,6 +62,7 @@ def tax_data(args, today: dt.date | None = None) -> dict:
                              settings=taxes.load_settings(settings_path(data)),
                              owned=holdings.load(holdings_path(data)))
     out["years"] = years
+    out["provision"] = taxes.provision(statement, taxes.load_settings(settings_path(data)))
     out["franchise"] = settings
     out["holdings"] = holdings.load(holdings_path(data))
     out["cantons"] = [{"id": k, "name": v["name"]} for k, v in taxes.CANTONS.items()]

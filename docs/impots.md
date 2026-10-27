@@ -111,3 +111,26 @@ reconnaît, peut la ranger ailleurs.
 
 Le titre n'entre pas dans le panneau Épargne, qui suit des comptes valorisés au jour le
 jour ; une valeur fiscale annuelle n'y a pas sa place.
+
+## À mettre de côté (27.10)
+
+`taxes.provision` : les impôts des années pas encore réglées, **estimés, jamais calculés
+d'un barème**. Coder l'IFD, l'ICC et les centimes communaux aurait été une deuxième
+déclaration, fausse à la première tranche mal lue. Le relevé connaît mieux : ce qui a
+été payé.
+
+- **Le taux** : la dernière année entière dans le relevé dont l'impôt est payé en entier
+  (l'année même, ou la suivante quand le réglage dit qu'on paie l'année d'après) ; impôts
+  payés, remboursements déduits, sur le salaire net versé (`salaries`, la même lecture
+  que la page).
+- **Les années ouvertes**, après celle-là : le salaire de l'année (l'année en cours
+  menée à décembre au rythme des douze derniers mois) × ce taux, moins ce qui est déjà
+  payé pour elle. Le reste, sommé, est « encore dû ».
+- Sans année de base (un relevé trop court, ou des impôts payés l'année suivante dont
+  aucune n'est close), rien n'est estimé.
+
+La page Impôts le montre ; **Prévisions** le confronte à ce que la prévision du cash paie
+déjà d'ici la fin de l'année où ces impôts se paient (`plans.tax_cover` : les factures
+saisonnières « Impôts » et tout ponctuel nommé d'après l'impôt). Ce qui n'est pas couvert
+est du cash qui n'est pas libre ; « Garder en réserve » l'ajoute au seuil d'alerte
+(`docs/previsions.md`), d'un clic.
