@@ -101,6 +101,18 @@ def fold(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", text.casefold()) if not unicodedata.combining(c))
 
 
+def fold_same(text: str) -> str:
+    """`fold`, character by character, keeping the length: an index in the
+    folded text is the same character in the original ("ß" stays itself
+    rather than become "ss"). Matching runs on this, so "Genève" and
+    "GENEVE" are one name, and a match maps back to the words on the page."""
+    out = []
+    for c in text:
+        f = fold(c)
+        out.append(f if len(f) == 1 else (c.lower() if len(c.lower()) == 1 else c))
+    return "".join(out)
+
+
 def iban_ok(compact: str) -> bool:
     """The ISO 13616 check: the country and check digits moved to the end,
     letters as numbers, the whole thing 1 modulo 97."""
@@ -163,6 +175,9 @@ def statement_terms(path: Path) -> list[tuple[str, str]]:
     return out
 
 
+RULE = "règle personnelle"
+
+
 def rule_patterns() -> list[re.Pattern]:
     """The personal rules' patterns, read as they are matched."""
     from . import categories
@@ -178,10 +193,21 @@ def rule_patterns() -> list[re.Pattern]:
 
 
 def _term_pattern(term: str) -> re.Pattern | None:
-    words = [re.escape(w) for w in term.split() if w]
+    """A name to find in folded text, its words across spaces, commas and
+    line ends."""
+    words = [re.escape(w) for w in fold_same(term).split() if w]
     if not words or len("".join(words)) < 3:
         return None
     return re.compile(r"(?<![\w])" + r"[\s,]+".join(words) + r"(?![\w])", re.IGNORECASE)
+
+
+def _loose_pattern(term: str) -> re.Pattern | None:
+    """A name as it may still be read: its words in order, whatever stands
+    between them (a hyphen, a slash, nothing at all), whole words."""
+    words = [re.escape(w) for w in re.findall(r"\w+", fold_same(term))]
+    if not words or len("".join(words)) < 3:
+        return None
+    return re.compile(r"(?<![\w])" + r"[\W_]*".join(words) + r"(?![\w])", re.IGNORECASE)
 
 
 class Block:
@@ -200,6 +226,7 @@ class Block:
             parts.append(w[4])
             self.owner.extend([i] * len(w[4]))
         self.text = "".join(parts)
+        self.folded = fold_same(self.text)
         self.hit: set[int] = set()
 
     def mark(self, start: int, end: int) -> None:
@@ -218,7 +245,7 @@ def find(block: Block, terms: list[tuple[str, re.Pattern]], keep: list[re.Patter
 
     def take(kind: str, start: int, end: int) -> None:
         piece = text[start:end]
-        if any(k.search(piece) for k in keep):
+        if any(k.search(block.folded[start:end]) for k in keep):
             return
         owners = {o for o in block.owner[start:end] if o is not None}
         if owners <= block.hit:
@@ -244,7 +271,9 @@ def find(block: Block, terms: list[tuple[str, re.Pattern]], keep: list[re.Patter
     for m in CLIENT.finditer(text):
         take("numéro de client", m.start(1), m.end(1))
     for kind, pattern in terms:
-        for m in pattern.finditer(text):
+        # The names are folded; a personal rule is a regex as written,
+        # matched as the categories match it.
+        for m in pattern.finditer(text if kind == RULE else block.folded):
             take(kind, m.start(), m.end())
     for m in TITLED.finditer(text):
         take("nom (civilité)", m.start(), m.end())
@@ -282,9 +311,6 @@ def find(block: Block, terms: list[tuple[str, re.Pattern]], keep: list[re.Patter
 def redact(source: Path, target: Path, also: list[str] = (), keep: list[str] = ()) -> Report:
     """Write `target`, a copy of `source` with what is found removed, and
     say what was. Raises when the read-back still finds a removed term."""
-    import pymupdf
-
-    report = Report()
     terms: list[tuple[str, re.Pattern]] = []
     seen: set[str] = set()
     named = statement_terms(source) + [("ajouté", t) for t in also if t.strip()]
@@ -302,9 +328,37 @@ def redact(source: Path, target: Path, also: list[str] = (), keep: list[str] = (
                     p = _term_pattern(word)
                     if p and len(word) >= 3:
                         terms.append((kind, p))
-    terms += [("règle personnelle", p) for p in rule_patterns()]
+    terms += [(RULE, p) for p in rule_patterns()]
     keep_patterns = [p for p in (_term_pattern(k) for k in keep) if p]
 
+    # A name found in one place may stand elsewhere in a form no rule
+    # catches there (cut by a block, glued to a word): the read-back sees it.
+    # Each round removes again, from the original, every name still read --
+    # whole and word by word -- until none is; past three, refuse.
+    report = Report()
+    for _ in range(3):
+        report = _apply(source, target, terms, keep_patterns)
+        if not report.leftover:
+            return report
+        for f in report.leftover:
+            loose = _loose_pattern(f)
+            if loose:
+                terms.append(("même nom ailleurs", loose))
+            for word in re.findall(r"\w+", f):
+                p = _term_pattern(word)
+                if p and len(word) >= 4:
+                    terms.append(("même nom ailleurs", p))
+    raise RuntimeError(f"{len(report.leftover)} élément(s) encore lisible(s) après caviardage : "
+                       + ", ".join(mask(t) for t in report.leftover[:5]))
+
+
+def _apply(source: Path, target: Path, terms: list[tuple[str, re.Pattern]],
+           keep_patterns: list[re.Pattern]) -> Report:
+    """One redaction of `source` into `target`, then the read-back: every
+    name found must be gone, accents and case aside, whole words only."""
+    import pymupdf
+
+    report = Report()
     doc = pymupdf.open(source)
     report.pages = doc.page_count
     for page in doc:
@@ -324,16 +378,11 @@ def redact(source: Path, target: Path, also: list[str] = (), keep: list[str] = (
     doc.save(target, garbage=4, deflate=True, clean=True)
     doc.close()
 
-    # Read back: nothing found may still be in the text layer.
     check = pymupdf.open(target)
-    left = fold(" ".join(page.get_text() for page in check))
+    left = fold_same("\n".join(page.get_text() for page in check))
     check.close()
-    compact = left.replace(" ", "")
-    for f in {f.text for f in report.found}:
-        folded = fold(f)
-        if (f and folded in left) or (len(folded.replace(" ", "")) >= 15 and folded.replace(" ", "") in compact):
+    for f in sorted({f.text for f in report.found}):
+        loose = _loose_pattern(f)
+        if loose and loose.search(left):
             report.leftover.append(f)
-    if report.leftover:
-        raise RuntimeError(f"{len(report.leftover)} élément(s) encore lisible(s) après caviardage : "
-                           + ", ".join(mask(t) for t in report.leftover[:5]))
     return report

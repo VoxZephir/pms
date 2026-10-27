@@ -191,3 +191,37 @@ def test_a_ubs_export_loses_its_people_and_keeps_the_words_around_them(tmp_path)
     # The redacted copy still reads, and still adds up.
     s = ubs.parse_statement(out)
     assert len(s.transactions) == len(synthetic_ubs.ROWS) and parser.reconcile(s) == []
+
+
+def test_a_name_goes_with_or_without_its_accents(tmp_path):
+    """A counterparty printed « Genève Conseil » on a transfer and
+    « GENEVE CONSEIL » elsewhere: one name. The match was accent-sensitive and
+    the read-back not, so the second stayed and the real statement was refused."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((50, 60), "Versement pour Genève Conseil", fontsize=10)
+    page.insert_text((50, 90), "Paiement carte GENEVE CONSEIL 1204", fontsize=10)
+    src = tmp_path / "accents.pdf"
+    doc.save(src)
+    out = tmp_path / "out.pdf"
+    report = redact.redact(src, out, also=["Genève Conseil"])
+    text = redact.fold(_text(out))
+    assert "geneve" not in text and "1204" in text and report.leftover == []
+
+
+def test_a_name_cut_across_two_blocks_is_removed_in_a_second_round(tmp_path):
+    """« Jean Dupont » is found on its line; elsewhere the given name ends one
+    block and the surname starts the next, where no rule sees a name. The
+    read-back reads it, and the next round removes it word by word."""
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((50, 60), "Virement de Jean Dupont", fontsize=10)
+    page.insert_text((300, 200), "Remboursement Jean", fontsize=10)
+    page.insert_text((50, 222), "Dupont, merci", fontsize=10)
+    src = tmp_path / "cut.pdf"
+    doc.save(src)
+    out = tmp_path / "out.pdf"
+    report = redact.redact(src, out)
+    text = redact.fold(_text(out))
+    assert "dupont" not in text and "merci" in text and "remboursement" in text
+    assert report.leftover == []

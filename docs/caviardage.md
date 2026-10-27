@@ -58,3 +58,21 @@ et ouvre le dossier.
 lancement ; `caviarder.bat` et `run.bat --test` le font. La série 1.x n'a aucune
 dépendance propre (la 2.0 en tire treize). Sa licence est l'AGPL : sans effet pour un outil
 personnel, à peser avant tout usage commercial.
+
+## Accents et noms coupés (27.10)
+
+Le relevé réel était refusé : quatre noms « encore lisibles ». La recherche comparait les
+noms tels quels (« Genève » ne trouvait pas « GENEVE »), la relecture sans accents ni
+casse : un nom retiré à un endroit restait à un autre, et la relecture le voyait. Deux
+changements :
+
+- **la recherche se fait sur le texte replié** (`fold_same` : sans accents ni casse,
+  caractère pour caractère, pour que la position trouvée retombe sur les mots de la page) ;
+  les règles personnelles restent des expressions lues sur le texte tel quel, comme les
+  catégories les lisent ;
+- **un nom encore lu est retiré au tour suivant**, depuis l'original : en entier, ses mots
+  séparés par n'importe quoi (un tiret, une fin de bloc, rien), et mot par mot (quatre
+  lettres au moins). Trois tours au plus, puis le refus, comme avant. La relecture
+  cherche des mots entiers : un nom dans un mot plus long n'est pas lui.
+
+Les deux cas ont leur test, qui échoue sans le changement.
