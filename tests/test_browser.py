@@ -119,26 +119,10 @@ def _timeline(page):
 # --- every page -----------------------------------------------------------------
 
 @pytest.mark.parametrize("url", PAGES)
-def test_no_page_throws(page, url):
-    """The fixture fails the test on any uncaught error."""
-    page.goto(url)
-    _ready(page)
-
-
-@pytest.mark.parametrize("url", PAGES)
-def test_no_page_scrolls_sideways_on_a_phone(phone, url):
-    """Wide content scrolls in its own box; the page itself never does."""
-    phone.goto(url)
-    _ready(phone)
-    width = phone.evaluate("document.documentElement.scrollWidth")
-    assert width <= 390, f"{url}: {width}px wide"
-
-
-@pytest.mark.parametrize("url", ["/?preset=all", "/transactions?preset=all", "/epargne",
-                                 "/previsions", "/corrections", "/importer"])
-def test_every_control_has_a_name(page, url):
-    """A placeholder is not a label: it disappears the moment you type, and
-    leaves a screen reader announcing "edit, blank"."""
+def test_no_page_throws_and_every_control_has_a_name(page, url):
+    """The fixture fails the test on any uncaught error. And a placeholder is
+    not a label: it disappears the moment you type, and leaves a screen
+    reader announcing "edit, blank". One visit per page for both."""
     page.goto(url)
     _ready(page)
     nameless = page.evaluate("""() => [...document.querySelectorAll(
@@ -151,6 +135,15 @@ def test_every_control_has_a_name(page, url):
         return true;
       }).map(el => el.outerHTML.slice(0, 120))""")
     assert not nameless, nameless
+
+
+@pytest.mark.parametrize("url", PAGES)
+def test_no_page_scrolls_sideways_on_a_phone(phone, url):
+    """Wide content scrolls in its own box; the page itself never does."""
+    phone.goto(url)
+    _ready(phone)
+    width = phone.evaluate("document.documentElement.scrollWidth")
+    assert width <= 390, f"{url}: {width}px wide"
 
 
 def test_the_skip_link_leads_to_the_content(page):

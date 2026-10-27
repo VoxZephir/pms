@@ -39,7 +39,7 @@ uv lock                                  # après une modification des dépendan
 .venv/Scripts/python -m pms --redact r.pdf      # caviarder (IBAN, noms, adresses) vers output/caviarde/ ; caviarder.bat
 .venv/Scripts/python -m pms --from 2025-01-01 --to 2025-12-31
 .venv/Scripts/python -m pms.web          # app Flask (127.0.0.1 ; le téléphone passe par `tailscale serve`) ; ramasse les relevés téléchargés (--no-watch)
-.venv/Scripts/python -m pytest tests -q  # ~3 min, ruff, build du front et navigateur compris
+.venv/Scripts/python -m pytest tests -q -n auto --dist loadgroup  # ~1 min sur 4 cœurs, ruff, build du front et navigateur compris (sans -n : ~2,5 min)
 .venv/Scripts/python -m ruff check src tests
 cd frontend && npm install               # une fois : seulement pour modifier l'interface
 cd frontend && npm run build             # types vérifiés, build dans src/pms/web/static/spa/ — à commiter
@@ -417,6 +417,10 @@ du dépôt, sans `inbox/` ni `data/`, passe tout sauf les tests du parser. Avant
 tests sur 392 y étaient sautés : la couche web n'était testée que sur la machine qui
 porte le relevé.
 
+- **La suite tourne en parallèle** (`-n auto --dist loadgroup`, pytest-xdist) : un test ne
+  compte sur aucun autre passé avant lui. `statement` arrive déjà classé et converti en CHF
+  (la fixture le fait, comme `Store`) ; les tests du vrai relevé portent
+  `xdist_group("real")`, pour que ses 14 s de parsing ne se paient qu'une fois.
 - Un test sur l'app prend `statement`, `ledger_file` ou `client` — jamais le vrai
   relevé. S'il lui faut une forme de données absente, l'ajouter à
   `tests/synthetic.py`, inventée, jamais recopiée du relevé réel.

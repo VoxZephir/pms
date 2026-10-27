@@ -185,7 +185,7 @@ export const IconButton = forwardRef<
  * are links when `href` is given (the view lives in the URL), buttons
  * otherwise. */
 export function Segmented<T extends string | number>({
-  options, value, onChange, hrefFor, label, size = "md", className,
+  options, value, onChange, hrefFor, label, size = "md", className, columns,
 }: {
   options: { id: T; label: ReactNode; title?: string }[];
   value: T;
@@ -194,6 +194,9 @@ export function Segmented<T extends string | number>({
   label: string;
   size?: "sm" | "md";
   className?: string;
+  /** Lay the options on a grid of this many columns rather than one row that
+   * scrolls: for a set too long for its box (seven grains in a popover). */
+  columns?: number;
 }) {
   const group = useId();
   return (
@@ -201,9 +204,11 @@ export function Segmented<T extends string | number>({
       role="group"
       aria-label={label}
       className={cx(
-        "relative inline-flex max-w-full overflow-x-auto rounded-xl bg-surface-2 p-[3px] no-scrollbar",
+        "relative rounded-xl bg-surface-2 p-[3px]",
+        columns ? "grid w-full gap-y-[3px]" : "inline-flex max-w-full overflow-x-auto no-scrollbar",
         className,
       )}
+      style={columns ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined}
     >
       {options.map((o) => {
         const active = o.id === value;
@@ -221,6 +226,7 @@ export function Segmented<T extends string | number>({
         );
         const cls = cx(
           "relative shrink-0 whitespace-nowrap rounded-[9px] font-medium transition-colors no-underline",
+          !!columns && "text-center",
           size === "sm" ? "px-2.5 py-1 text-[12.5px]" : "px-3 py-1.5 text-[13.5px]",
           active ? "text-ink" : "text-ink-2 hover:text-ink",
         );

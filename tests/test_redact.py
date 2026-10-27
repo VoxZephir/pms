@@ -95,14 +95,14 @@ def test_the_cli_refuses_what_is_not_a_pdf(tmp_path, capsys):
     assert cli.main(["--redact", str(other)]) == 1
 
 
-def test_a_real_statement_loses_its_holder_and_iban(tmp_path):
+@pytest.mark.xdist_group("real")
+def test_a_real_statement_loses_its_holder_and_iban(real_statement, tmp_path):
     """On the PDF in inbox/ when there is one: the holder, the IBAN and the
-    client number leave the file, the card payments stay. Skipped without."""
+    client number leave the file, the card payments stay. Skipped without.
+    The statement is the suite's one parse of it (`real_statement`), not a
+    second one: 14 s each."""
     from conftest import STATEMENT
-    if not STATEMENT.exists():
-        pytest.skip("pas de relevé dans inbox/")
-    from pms import parser
-    statement = parser.parse(STATEMENT)
+    statement = real_statement
     out = tmp_path / "out.pdf"
     redact.redact(STATEMENT, out)
     text = _text(out)

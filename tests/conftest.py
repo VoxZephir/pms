@@ -27,8 +27,18 @@ STATEMENT = ROOT / "inbox" / "transactionStatement.pdf"
 
 @pytest.fixture(scope="session")
 def statement():
+    """The invented statement, classified and converted to CHF once, the way
+    the app's Store does. Done here rather than by whichever test happened to
+    run first: under `pytest -n` the order changes, and a test reading
+    `amount_chf` on a statement nobody had annotated saw no income at all."""
     import synthetic
-    return synthetic.build()
+
+    from pms import analysis
+    from pms.categories import classify_all
+    built = synthetic.build()
+    classify_all(built.transactions)
+    analysis.annotate_chf(built)
+    return built
 
 
 @pytest.fixture(scope="session")

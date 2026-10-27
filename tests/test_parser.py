@@ -16,6 +16,10 @@ from pms.categories import UNCATEGORISED, classify_all
 from pms.ledger import key_of
 from pms.parser import reconcile
 
+# The real statement takes 14 s to parse: under `pytest -n` every test reading
+# it runs on one worker (`--dist loadgroup`), so it is parsed once.
+pytestmark = pytest.mark.xdist_group("real")
+
 
 def test_running_balance_reconciles(real_statement):
     assert reconcile(real_statement) == []

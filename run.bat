@@ -125,7 +125,8 @@ if errorlevel 1 (
 
 REM --- 3. Mode test ------------------------------------------------------
 if /I "%MODE%"=="--test" (
-    "%PY%" -m pytest tests -q
+    REM Sur tous les coeurs ; les tests du vrai releve sur un seul (--dist loadgroup).
+    "%PY%" -m pytest tests -q -n auto --dist loadgroup
     set "CODE=!ERRORLEVEL!"
     echo.
     pause

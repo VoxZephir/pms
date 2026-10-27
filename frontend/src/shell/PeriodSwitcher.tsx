@@ -259,6 +259,7 @@ function PeriodPicker({ period, onDone }: { period: Period; onDone: () => void }
         <div className="eyebrow mb-2">Granularité</div>
         <Segmented
           label="Granularité"
+          columns={4}
           value={period.auto_grain ? "auto" : period.grain}
           options={[{ id: "auto", label: "Auto" }, ...period.grains.map((g) => ({ id: g.id, label: g.label }))]}
           onChange={(id) => go({ from: period.start, to: period.end, grain: id })}

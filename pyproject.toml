@@ -33,6 +33,9 @@ dev = [
     # Drives the installed Edge or Chrome for tests/test_browser.py -- no
     # `playwright install`, no browser download.
     "playwright>=1.50",
+    # The suite on every core (`-n auto`, run.bat --test): ~2.5 min one test
+    # after another, a fraction of that spread out.
+    "pytest-xdist>=3.6",
     # The PDF redaction tool (redact.py, caviarder.bat): rewrites the page
     # content so a redacted word is gone from the file, not hidden under a
     # box. Kept out of the app's own install; 1.x has no dependency of its

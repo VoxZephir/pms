@@ -15,6 +15,10 @@ from webhelpers import api
 
 from pms.web import create_app
 
+# The real statement takes 14 s to parse: under `pytest -n` every test reading
+# it runs on one worker (`--dist loadgroup`), so it is parsed once.
+pytestmark = pytest.mark.xdist_group("real")
+
 VIEWS = [
     "/api/dashboard?preset=all", "/api/dashboard?preset=12m",
     "/api/dashboard?preset=all&stack=bucket",
