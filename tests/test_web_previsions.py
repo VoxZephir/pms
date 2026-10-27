@@ -527,3 +527,32 @@ def test_lumpy_brokerage_transfers_become_one_standing_order_with_the_same_low_p
     assert again.status_code == 400 and "smooth-name" in again.get_json()["errors"]
     gone = api(client, "/api/previsions/smooth?scenario=Inconnu")
     assert gone["error"].startswith("Ce scénario n'existe plus")
+
+
+# --- the cash floor ----------------------------------------------------------------------------
+
+def test_a_cash_floor_alerts_on_the_page_every_page_and_the_weekly_summary(client, plan_file):
+    assert _forecast(client)["floor_alert"] is None
+    assert api(client, "/api/meta")["floor"] is None
+    low = _forecast(client)["projection"]["low"]["amount"]
+    # Under the lowest month-end: the plan holds, nothing is said elsewhere.
+    _edit(client, {"action": "floor", "amount": "1"})
+    held = _forecast(client)["floor_alert"]
+    assert held == {"floor": 1.0, "below": False, "months": held["months"]}
+    assert api(client, "/api/meta")["floor"] is None
+    # Above it, typed the Swiss way: the first month under, the lowest, a sentence.
+    floor = round(low + 5000, -3)
+    assert _edit(client, {"action": "floor", "amount": f"{floor:,.0f}".replace(",", "'")})[0] == 200
+    alert = _forecast(client)["floor_alert"]
+    assert alert["below"] and alert["floor"] == floor and alert["low"]["amount"] == low
+    assert alert["text"].startswith("Cash projeté sous ton seuil de ")
+    assert api(client, "/api/meta")["floor"]["text"] == alert["text"]
+    assert f"⚠ {alert['text']}" in api(client, "/api/semaine")["summary"]["lines"]
+    assert json.loads(plan_file.read_text(encoding="utf-8"))["cash_floor"] == floor
+    # Not part of a scenario: saving one leaves the floor where it is.
+    _edit(client, {"action": "plan-save-as", "name": "Avec seuil"})
+    assert "cash_floor" not in plans.Plan.load(plan_file).plan_scenarios["Avec seuil"]
+    status, body = _edit(client, {"action": "floor", "amount": "beaucoup"})
+    assert status == 400 and "plan-floor" in body["errors"]
+    _edit(client, {"action": "floor", "amount": ""})
+    assert _forecast(client)["floor_alert"] is None and api(client, "/api/meta")["floor"] is None

@@ -102,6 +102,11 @@ function Notices({ data, meta }: { data: Dashboard; meta?: Meta }) {
         ? <>{plural(meta.gaps.length, "rupture")} dans les soldes le {frDate(meta.gaps[0].after)} : deux relevés ordonnent cette journée différemment, ou le même mouvement y est entré deux fois. Le bouton ⟳ en haut, ou <code>.\run.bat</code>, le répare ; s'il reste, <code>.\run.bat --reparse</code>.</>
         : <>{plural(meta.gaps.length, "rupture")} dans les soldes : des mouvements manquent entre le {frDate(meta.gaps[0].after)} et le {frDate(meta.gaps[0].before)}.</> });
   }
+  if (meta?.floor) {
+    rows.push({ key: "floor", icon: <TriangleAlert size={17} />, tone: "text-warn", title: "Cash projeté sous ton seuil",
+      detail: <>{meta.floor.text} Le plan de Prévisions, sur un an.</>,
+      action: <Link to="/previsions" className="shrink-0 rounded-lg border border-hairline-2 px-2.5 py-1 text-[12.5px] font-medium no-underline hover:bg-surface-2">Prévisions</Link> });
+  }
   for (const l of meta?.late ?? []) {
     rows.push({ key: `late-${l.bank}`, icon: <Inbox size={17} />, tone: "text-warn", title: `Relevé ${l.bank} attendu`,
       detail: <>le dernier va jusqu'au {frDate(l.until)}, il y a {l.days} jours · {meta?.watching ? "téléchargé sur le PC, il entre tout seul" : "à envoyer depuis Importer"}</>,

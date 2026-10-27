@@ -639,6 +639,10 @@ class Plan:
         # The last plan deleted, whole, so the toast that confirms the
         # deletion can undo it. One deep: an undo, not a recycle bin.
         self.deleted: dict | None = None
+        # The cash the owner does not want to go under: an alert, not a
+        # declaration -- it belongs to no scenario, and every one is held
+        # to it (`floor_alert`).
+        self.floor: float | None = None
 
     @classmethod
     def load(cls, path: Path | str) -> "Plan":
@@ -680,6 +684,11 @@ class Plan:
                 and isinstance(deleted.get("plan"), dict):
             plan.deleted = {"name": str(deleted["name"]).strip(),
                             "plan": _detached(deleted["plan"])._declarations()}
+        try:
+            floor = float(raw.get("cash_floor"))
+        except (TypeError, ValueError):
+            floor = None
+        plan.floor = floor if floor is not None and floor >= 0 and floor == floor else None
         return plan
 
     def _restore(self, raw: dict) -> None:
@@ -830,6 +839,7 @@ class Plan:
             "plan_scenarios": self.plan_scenarios,
             "active_scenario": self.active,
             **({"deleted_scenario": self.deleted} if self.deleted else {}),
+            **({"cash_floor": self.floor} if self.floor is not None else {}),
         }
         # Write then move, so an interrupted save cannot leave a truncated file.
         temporary = self.path.with_suffix(".tmp")
@@ -1709,3 +1719,31 @@ def smooth_taxable(statement: Statement, plan: Plan, months: int = 12, step: int
                  for b, a in zip(before, after)],
         "declarations": smooth._declarations(),
     }
+
+
+def floor_alert(projection: dict, floor: float | None) -> dict | None:
+    """Where the projected cash goes under the owner's floor: the first
+    month-end below it, the lowest, how many months. None without a floor;
+    `below` False when the plan holds."""
+    if floor is None:
+        return None
+    rows = projection["rows"]
+    below = [r for r in rows if r["end"] < floor]
+    if not below:
+        return {"floor": floor, "below": False, "months": len(rows)}
+    first = below[0]
+    low = min(below, key=lambda r: r["end"])
+    return {
+        "floor": floor, "below": True, "count": len(below), "months": len(rows),
+        "first": {"key": first["key"], "label": first["label"], "amount": first["end"]},
+        "low": {"key": low["key"], "label": low["label"], "amount": low["end"]},
+        "text": floor_phrase(floor, first, low),
+    }
+
+
+def floor_phrase(floor: float, first: dict, low: dict) -> str:
+    """The alert in one sentence -- the weekly message, the sidebar, the page."""
+    head = f"Cash projeté sous ton seuil de {analysis.chf(floor, 0)} CHF dès {first['label'].lower()}"
+    if low["key"] == first["key"]:
+        return f"{head} ({analysis.chf(first['end'], 0)} CHF)."
+    return f"{head}, au plus bas {analysis.chf(low['end'], 0)} CHF en {low['label'].lower()}."

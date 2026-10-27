@@ -7,6 +7,7 @@ import datetime as dt
 from flask import current_app, request
 
 from ... import analysis, backup
+from ... import plans as plans_module
 from .. import news as news_module
 from .. import periods
 from ... import holdings as holdings_module
@@ -45,6 +46,30 @@ def period_route():
     return payload(period_of(request.args))
 
 
+_FLOOR_CACHE: dict = {}
+
+
+def floor_notice(data) -> dict | None:
+    """The cash alert (`plans.floor_alert`) on the plan on screen, over a
+    year: said on every page while the projection goes under the floor.
+    Projected once per ledger and plan file, not on every page load."""
+    path = data.path.with_name("plans.json")
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return None
+    key = (id(data.statement), len(data.statement.transactions), stamp, dt.date.today())
+    if key not in _FLOOR_CACHE:
+        plan = plans_module.Plan.load(path)
+        alert = None
+        if plan.floor is not None:
+            alert = plans_module.floor_alert(plans_module.project(data.statement, plan, months_ahead=12),
+                                             plan.floor)
+        _FLOOR_CACHE.clear()
+        _FLOOR_CACHE[key] = alert if alert and alert["below"] else None
+    return _FLOOR_CACHE[key]
+
+
 @api.route("/api/meta")
 def meta():
     """The ledger as a whole: its span, its health, what just came in and
@@ -72,4 +97,5 @@ def meta():
         # Said only when something is wrong: a failed run, a copy that does
         # not read back, no run for two weeks (backup.health).
         "backup": None if empty else backup.health(data.path.parent),
+        "floor": None if empty else floor_notice(data),
     })

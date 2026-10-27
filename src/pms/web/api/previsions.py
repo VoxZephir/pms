@@ -43,6 +43,8 @@ def previsions():
         c["line"] = [r["end"] for r in c.pop("rows")]
     return payload({
         "freedom": _freedom(data, plan, projection, wealth),
+        "floor": plan.floor,
+        "floor_alert": plans_module.floor_alert(projection, plan.floor),
         "as_of": data.statement.period_end,
         "months": horizon,
         "horizon_label": months_label(horizon),

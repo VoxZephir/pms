@@ -138,7 +138,7 @@ function Sidebar({ onSearch, theme, sections, active, folded, onFold }: {
     // The rail: the same destinations as icons, named on hover; the page's
     // sections and the notices wait for the sidebar to open again -- a
     // notice is flagged by a dot on the unfold button.
-    const flagged = !!meta && (meta.late.length > 0 || !!meta.backup);
+    const flagged = !!meta && (meta.late.length > 0 || !!meta.backup || !!meta.floor);
     return (
       <aside className={cx(shell, "w-[64px] items-center px-2")}>
         <Brand folded />
@@ -205,6 +205,12 @@ function Sidebar({ onSearch, theme, sections, active, folded, onFold }: {
           </Link>
         )}
         <UpdateNotice compact />
+        {meta?.floor && (
+          <Link to="/previsions" title={meta.floor.text}
+                className="truncate rounded-lg border border-[color-mix(in_srgb,var(--warn)_30%,transparent)] bg-[color-mix(in_srgb,var(--warn)_8%,transparent)] px-2.5 py-1 text-[12px] text-ink-2 no-underline">
+            <b className="text-ink">Cash sous le seuil</b> · {meta.floor.first?.label.toLowerCase()}
+          </Link>
+        )}
         {meta?.backup && (
           <div role="status" title={meta.backup.detail}
                className="truncate rounded-lg border border-[color-mix(in_srgb,var(--critical)_30%,transparent)] bg-[color-mix(in_srgb,var(--critical)_7%,transparent)] px-2.5 py-1 text-[12px] text-ink-2">

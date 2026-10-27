@@ -1,15 +1,18 @@
 /** Is there enough cash at time t, and where does it all end up? The cash
  * month by month, net worth measured then projected, whole plans compared
  * as scenarios -- and the plan itself, editable in place. */
+import { useEffect, useState, type FormEvent } from "react";
+import { toast } from "sonner";
 
 import { Lines, spreadTicks } from "@/charts/Lines";
+import { Input } from "@/components/Form";
 import { MonthlyProfile } from "@/components/MonthlyProfile";
 import { Num } from "@/components/Num";
 import { PageHeader } from "@/components/PageState";
 import { ScenarioAssist } from "@/components/Assist";
 import { Callout, Card, Note, Panel, Segmented, Skeleton, cx } from "@/components/ui";
 import { MONTHS_SHORT, chf, frDate } from "@/lib/format";
-import { PREVISIONS_KEEP, usePrevisions, type Previsions } from "@/lib/previsions";
+import { PREVISIONS_KEEP, planAction, usePrevisions, type Previsions } from "@/lib/previsions";
 import { useView } from "@/lib/url";
 
 import { Independence } from "./previsions/Freedom";
@@ -88,12 +91,17 @@ function Projection({ d }: { d: Previsions }) {
   const labels = ["aujourd'hui", ...p.rows.map((r) => r.label)];
   const values = [p.cash, ...p.rows.map((r) => r.end)];
   const lowIndex = values.indexOf(Math.min(...values));
+  const refs = [
+    ...(Math.min(...values) < 0 ? [{ value: 0, color: "var(--critical)", label: "0" }] : []),
+    ...(d.floor != null ? [{ value: d.floor, color: "var(--warn)", label: `seuil ${chf(d.floor, 0)}`, dash: true }] : []),
+  ];
   return (
-    <Panel title="Solde projeté" hint="pointillé = prévu · chaque point est la fin d'un mois">
+    <Panel id="p-cash" title="Solde projeté" hint="pointillé = prévu · chaque point est la fin d'un mois"
+           actions={<FloorField d={d} />}>
       <Lines xs={values.map((_, i) => i)} height={230} zero={false}
              series={[{ key: "cash", name: "Solde", color: "var(--s0)", values, dash: true, area: true }]}
              markers={[{ index: lowIndex, series: "cash", label: `bas ${chf(values[lowIndex], 0)}` }]}
-             refs={Math.min(...values) < 0 ? [{ value: 0, color: "var(--critical)", label: "0" }] : []}
+             refs={refs}
              tipFormat={(v) => `${chf(v, 0)} CHF`}
              tipExtra={(i) => {
                if (i === 0) return [];
@@ -107,8 +115,42 @@ function Projection({ d }: { d: Previsions }) {
              xLabel={(i) => labels[i]}
              xTicks={(w) => spreadTicks(values.length, w, (i) => (i === 0 ? "auj." : shortMonth(p.rows[i - 1].key)), 64)}
              ariaLabel="Évolution prévue du solde mois par mois" />
+      {d.floor_alert?.below && (
+        <Callout tone="warn" className="mt-3" title="Sous ton seuil">
+          {d.floor_alert.text} {d.floor_alert.count! > 1 ? `${d.floor_alert.count} fins de mois sur ${d.floor_alert.months} en dessous.` : ""} Le résumé de la semaine et la barre latérale le rappellent tant que le plan affiché y passe.
+        </Callout>
+      )}
+      {d.floor_alert && !d.floor_alert.below && (
+        <p className="mt-3 text-[12.5px] text-good">Le plan tient : jamais sous {chf(d.floor_alert.floor, 0)} CHF sur {d.horizon_label}.</p>
+      )}
       <Note>Cash initial + revenus mensuels − dépense de base − ponctuels. Les montants sont des médianes du passé ; la seule certitude est le solde du relevé.</Note>
     </Panel>
+  );
+}
+
+/** The cash not to go under: typed once, then the line on the chart, the
+ * callout under it, and the alert on every page and in the weekly summary. */
+function FloorField({ d }: { d: Previsions }) {
+  const [text, setText] = useState(d.floor != null ? chf(d.floor, 0) : "");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setText(d.floor != null ? chf(d.floor, 0) : ""); }, [d.floor]);
+  const save = async (e?: FormEvent) => {
+    e?.preventDefault();
+    const typed = text.trim();
+    if ((d.floor == null && !typed) || (d.floor != null && typed === chf(d.floor, 0))) return;
+    const r = await planAction(d.months, { action: "floor", amount: typed });
+    if (r.errors) { setError(Object.values(r.errors)[0]); return; }
+    setError(null);
+    toast.success(typed ? `Seuil d'alerte : ${typed} CHF` : "Seuil d'alerte retiré");
+  };
+  return (
+    <form onSubmit={save} className="flex items-center gap-2">
+      <label htmlFor="cash-floor" className="whitespace-nowrap text-[12.5px] text-muted">Seuil d'alerte</label>
+      <Input id="cash-floor" value={text} inputMode="numeric" placeholder="aucun" invalid={!!error}
+             title={error ?? "Le cash à ne pas passer : laissé vide, pas d'alerte"} aria-describedby={error ? "cash-floor-error" : undefined}
+             className="!h-9 !w-28 text-right sm:!h-8 sm:!text-[13px]" onChange={(e) => { setText(e.target.value); setError(null); }} onBlur={() => void save()} />
+      {error && <span id="cash-floor-error" role="alert" className="text-[12px] text-critical">{error}</span>}
+    </form>
   );
 }
 

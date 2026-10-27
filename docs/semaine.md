@@ -14,6 +14,8 @@ et l'aperçu sont en bas de la page À venir (`pages/upcoming/Weekly.tsx`).
   cours » du tableau de bord), et les budgets dépassés ;
 - ce qui tombe dans les sept prochains jours (`upcoming.commitments`), et les délais à
   30 jours ou moins (`upcoming.deadlines`) ;
+- le cash projeté sous le seuil d'alerte de Prévisions, sur un an (`plans.floor_alert`,
+  `docs/previsions.md`) ;
 - un relevé vieux de plus de dix jours.
 
 **Jamais un nom.** Le message traverse un serveur de notifications : il dit « assurance

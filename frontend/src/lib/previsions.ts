@@ -2,6 +2,7 @@
 import { useMemo } from "react";
 
 import { ApiError, send, useApi } from "./api";
+import type { FloorAlert } from "./types";
 import { useView } from "./url";
 
 /** The keys the forecast page keeps from one view to the next. */
@@ -51,6 +52,8 @@ export interface Freedom {
 export interface Previsions {
   empty?: boolean;
   freedom: Freedom | null;
+  floor: number | null;
+  floor_alert: FloorAlert | null;
   as_of: string;
   months: number;
   horizon_label: string;

@@ -413,3 +413,20 @@ La feuille montre le montant, les deux points bas, ce qui part vers IBKR avant e
 et le cash de fin de mois des deux plans côte à côte ; « Créer ce scénario » l'enregistre
 à côté de l'original (`POST /api/previsions/smooth`), sans changer le plan affiché.
 Un aperçu est un `GET` : rien ne s'écrit avant le clic.
+
+## Le seuil d'alerte du cash (27.10)
+
+« Seuil d'alerte », à côté du solde projeté : le cash qu'on ne veut pas passer. Il est
+écrit à part dans `plans.json` (`cash_floor`), hors des déclarations : ce n'est pas une
+hypothèse d'un scénario mais une limite du titulaire, et chaque plan y est tenu.
+`plans.floor_alert` dit le premier mois sous le seuil, le plus bas, combien de fins de
+mois en dessous ; `floor_phrase` en fait une phrase, la même partout :
+
+- sur la page, une ligne pointillée au seuil et un encadré (ou « Le plan tient ») ;
+- dans la barre latérale et les avis du tableau de bord (`/api/meta`, `floor`), tant que
+  le plan affiché, sur un an, y passe ;
+- dans le résumé de la semaine poussé par ntfy, une ligne « ⚠ … » : des montants et des
+  mois, jamais un nom.
+
+`/api/meta` est demandé à chaque page : la projection n'y est refaite que si le ledger,
+`plans.json` ou le jour ont changé (`shell.floor_notice`).

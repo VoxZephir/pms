@@ -40,9 +40,11 @@ def _week_sums(spend, end: dt.date, weeks: int, first: dt.date) -> list[float]:
     return sums
 
 
-def summary(statement, today: dt.date, budgets: dict[str, float] | None = None) -> dict:
+def summary(statement, today: dt.date, budgets: dict[str, float] | None = None,
+            floor: str | None = None) -> dict:
     """The week that ends on the statement's last day, and the one ahead of
-    today. Facts first, then the lines of the message."""
+    today. Facts first, then the lines of the message. `floor` is the
+    forecast's cash alert, already a sentence (`plans.floor_alert`)."""
     end = statement.period_end
     start = end - dt.timedelta(days=WEEK - 1)
     spend = analysis.spending(statement)
@@ -77,6 +79,7 @@ def summary(statement, today: dt.date, budgets: dict[str, float] | None = None) 
         "due_total": round(sum(c["amount"] for _, c in due), 2),
         "deadlines": [{"by": d["by"], "days": d["days"], "title": d["title"]} for d in deadlines],
         "over_budget": [{"category": b["category"], "over": round(b["spent"] - b["budget"], 2)} for b in over],
+        "floor": floor,
     }
     return {**facts, **message(facts)}
 
@@ -107,6 +110,8 @@ def message(f: dict) -> dict:
         lines.append(f"Les 7 prochains jours : {_chf(f['due_total'])} CHF à payer — {items}{more}.")
     for d in f["deadlines"]:
         lines.append(f"⏰ {d['title']} : avant le {d['by']:%d.%m} ({d['days']} j).")
+    if f.get("floor"):
+        lines.append(f"⚠ {f['floor']}")
     if f["stale"] > 10:
         lines.append(f"Le relevé s'arrête il y a {f['stale']} jours : un nouveau rendrait ce résumé juste.")
     title = "Ta semaine"

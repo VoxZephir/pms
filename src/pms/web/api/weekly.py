@@ -10,6 +10,7 @@ from flask import request
 from ... import budgets as budgets_module
 from ... import notify, weekly
 from . import api, payload, store
+from .shell import floor_notice
 
 
 def notify_path(data=None):
@@ -21,7 +22,9 @@ def compose(data, today: dt.date | None = None) -> dict:
     if data.empty:
         raise RuntimeError("aucun relevé")
     budgets = budgets_module.Budgets.load(data.path.with_name("budgets.json"))
-    return weekly.summary(data.statement, today or dt.date.today(), budgets.amounts)
+    alert = floor_notice(data)
+    return weekly.summary(data.statement, today or dt.date.today(), budgets.amounts,
+                          floor=alert["text"] if alert else None)
 
 
 def _settings_out(settings: dict, now: dt.datetime) -> dict:

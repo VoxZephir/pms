@@ -574,3 +574,25 @@ def test_a_scenario_smooths_its_brokerage_transfers_into_a_new_one(page, server)
         sheet.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "lisser.png"))
     sheet.get_by_role("button", name="Créer ce scénario").click()
     expect(page.get_by_role("button", name="Actions sur « À lisser — IBKR mensuel »")).to_be_visible()
+
+
+def test_a_cash_floor_is_typed_once_and_said_everywhere(page):
+    page.goto("/previsions")
+    _ready(page)
+    low = page.request.get("/api/previsions").json()["projection"]["low"]["amount"]
+    field = page.get_by_label("Seuil d'alerte")
+    field.fill(f"{round(low + 5000, -3):,.0f}".replace(",", "'"))
+    field.press("Enter")
+    cash = page.locator("#p-cash")
+    expect(cash.get_by_text("Sous ton seuil")).to_be_visible()
+    expect(page.locator("aside").get_by_text("Cash sous le seuil")).to_be_visible()
+    if os.environ.get("PMS_SHOTS"):
+        cash.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "seuil.png"))
+    page.goto("/")
+    _ready(page)
+    expect(page.get_by_text("Cash projeté sous ton seuil", exact=True)).to_be_visible()
+    page.goto("/previsions")
+    _ready(page)
+    page.get_by_label("Seuil d'alerte").fill("")
+    page.get_by_label("Seuil d'alerte").press("Enter")
+    expect(page.locator("aside").get_by_text("Cash sous le seuil")).to_have_count(0)

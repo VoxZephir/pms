@@ -594,6 +594,22 @@ def apply_plan_action(plan: plans_module.Plan, form, horizon: int
                 plan.income = float(amount_text)
             except ValueError:
                 errors["plan-income"] = "Utilisez le point décimal, pas la virgule."
+    elif action == "floor":
+        # The cash not to go under: blank removes the alert. Typed the
+        # Swiss way (5'000) or plain.
+        values["plan-floor"] = amount_text
+        if not amount_text:
+            plan.floor = None
+        else:
+            try:
+                floor = float(amount_text.replace("'", "").replace("’", "").replace(" ", ""))
+            except ValueError:
+                errors["plan-floor"] = "Un montant en francs, par exemple 5'000."
+            else:
+                if floor < 0 or floor != floor:
+                    errors["plan-floor"] = "Un montant positif."
+                else:
+                    plan.floor = floor
     elif action == "spend":
         values["plan-spend"] = amount_text
         if not amount_text:

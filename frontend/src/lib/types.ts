@@ -60,6 +60,8 @@ export interface Meta {
   late: { bank: string; until: string; days: number; url: string }[];
   watching: boolean;
   backup: { title: string; detail: string } | null;
+  /** The forecast goes under the owner's cash floor: the alert, else null. */
+  floor: FloorAlert | null;
   overrides: number;
   crypto: boolean;
   /** The pocket's name when holdings are declared, else null. */
@@ -247,4 +249,11 @@ export interface Choices {
   categories: string[];
   subcategories: Record<string, string[]>;
   buckets: string[];
+}
+
+export interface FloorAlert {
+  floor: number; below: boolean; months: number; count?: number;
+  first?: { key: string; label: string; amount: number };
+  low?: { key: string; label: string; amount: number };
+  text?: string;
 }
