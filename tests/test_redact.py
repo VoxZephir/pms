@@ -225,3 +225,21 @@ def test_a_name_cut_across_two_blocks_is_removed_in_a_second_round(tmp_path):
     text = redact.fold(_text(out))
     assert "dupont" not in text and "merci" in text and "remboursement" in text
     assert report.leftover == []
+
+
+def test_the_client_number_goes_wherever_it_stands(tmp_path, monkeypatch):
+    """The cover prints « Client » and the number in two blocks, and the
+    number again elsewhere, spaced or glued: the number the statement was
+    read with is searched everywhere, not only after its label."""
+    monkeypatch.setattr(redact, "statement_terms", lambda path: [(redact.CLIENT_KIND, "7654321")])
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((50, 60), "Client", fontsize=10)
+    page.insert_text((400, 300), "7654321", fontsize=10)
+    page.insert_text((50, 500), "Réf. 765 4321 · dossier X7654321-01 · solde 1'234.00", fontsize=10)
+    src = tmp_path / "client.pdf"
+    doc.save(src)
+    out = tmp_path / "out.pdf"
+    redact.redact(src, out)
+    text = _text(out).replace(" ", "")
+    assert "7654321" not in text and "1'234.00" in text

@@ -168,6 +168,11 @@ def statement_terms(path: Path) -> list[tuple[str, str]]:
     out = []
     if statement.holder:
         out.append(("titulaire", statement.holder))
+    if statement.client_number:
+        # Read from "Client 1234567" on the cover; the label and the number
+        # can sit in two blocks, where the CLIENT rule never sees them side
+        # by side.
+        out.append((CLIENT_KIND, statement.client_number))
     for t in statement.transactions:
         if t.kind.startswith(NAMELESS_KINDS) or not t.merchant.strip():
             continue
@@ -190,6 +195,18 @@ def rule_patterns() -> list[re.Pattern]:
             except re.error:
                 continue
     return out
+
+
+CLIENT_KIND = "numéro de client"
+
+
+def _number_pattern(number: str) -> re.Pattern | None:
+    """A number wherever its digits run, spaced or not, even inside a longer
+    word: the whole word goes."""
+    digits = re.sub(r"\D", "", number)
+    if len(digits) < 4:
+        return None
+    return re.compile(r"[ .'’]?".join(digits))
 
 
 def _term_pattern(term: str) -> re.Pattern | None:
@@ -316,7 +333,7 @@ def redact(source: Path, target: Path, also: list[str] = (), keep: list[str] = (
     named = statement_terms(source) + [("ajouté", t) for t in also if t.strip()]
     for kind, name in named:
         key = fold(" ".join(name.split()))
-        pattern = _term_pattern(name)
+        pattern = _number_pattern(name) if kind == CLIENT_KIND else _term_pattern(name)
         if pattern and key not in seen:
             seen.add(key)
             terms.append((kind, pattern))
@@ -381,8 +398,9 @@ def _apply(source: Path, target: Path, terms: list[tuple[str, re.Pattern]],
     check = pymupdf.open(target)
     left = fold_same("\n".join(page.get_text() for page in check))
     check.close()
-    for f in sorted({f.text for f in report.found}):
-        loose = _loose_pattern(f)
-        if loose and loose.search(left):
+    for kind, f in sorted({(f.kind, f.text) for f in report.found}):
+        # A number is read even inside a longer word; a name as whole words.
+        loose = _number_pattern(f) if kind == CLIENT_KIND else _loose_pattern(f)
+        if loose and loose.search(left) and f not in report.leftover:
             report.leftover.append(f)
     return report

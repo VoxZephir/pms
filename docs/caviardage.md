@@ -76,3 +76,8 @@ changements :
   cherche des mots entiers : un nom dans un mot plus long n'est pas lui.
 
 Les deux cas ont leur test, qui échoue sans le changement.
+
+**Le numéro de client** (27.10) : la règle « Client 1234567 » ne le voyait pas quand le
+libellé et le numéro sont dans deux blocs de la page de garde. Le numéro que le relevé a
+donné à la lecture est désormais cherché partout, chiffre à chiffre (espacé, ou dans un
+mot plus long, qui part en entier), et relu de même.
