@@ -492,3 +492,38 @@ def test_the_months_of_a_series_read_as_said():
     assert plans.months_phrase([4, 5, 6, 7, 8, 9, 10, 11, 12]) == "d'avril à décembre"
     assert plans.months_phrase([8, 9, 10]) == "d'août à octobre"
     assert plans.in_months_of(["13", "x", "5", 5]) == [5]
+
+
+# --- smoothing the transfers to the brokerage account ----------------------------------------
+
+def test_lumpy_brokerage_transfers_become_one_standing_order_with_the_same_low_point(client, plan_file):
+    keys = [r["key"] for r in _forecast(client)["projection"]["rows"] if not r["partial"]]
+    for key, amount in ((keys[1], "6000"), (keys[6], "9000")):
+        _edit(client, {"action": "add", "month": key, "label": "Vers IBKR", "amount": amount,
+                       "destination": "taxable"})
+    _edit(client, {"action": "plan-save-as", "name": "À-coups"})
+    preview = api(client, "/api/previsions/smooth?scenario=À-coups&months=12&step=50")
+    assert preview["amount"] > 0 and preview["amount"] % 50 == 0
+    assert preview["after"]["low"] >= preview["before"]["low"]
+    assert preview["before"]["moved"] == 15000
+    assert len(preview["rows"]) >= 12 and "declarations" not in preview
+    # Limited to some months of the year: a larger amount in fewer months.
+    may_on = api(client, "/api/previsions/smooth?scenario=À-coups&months=12&in_months=5,6,7,8,9,10,11,12")
+    assert may_on["in_months"] == [5, 6, 7, 8, 9, 10, 11, 12]
+    assert may_on["in_months_label"] == "de mai à décembre"
+    assert may_on["after"]["low"] >= may_on["before"]["low"]
+
+    response = client.post("/api/previsions/smooth", json={"scenario": "À-coups", "months": 12})
+    assert response.status_code == 200 and response.get_json()["name"] == "À-coups — IBKR mensuel"
+    plan = plans.Plan.load(plan_file)
+    assert plan.active == "À-coups"
+    smooth = plan.plan_scenarios["À-coups — IBKR mensuel"]
+    assert not [e for e in smooth["one_offs"] if e.get("transfer") == "taxable"]
+    (series,) = [c for c in smooth["contributions"] if c["pocket"] == "taxable"]
+    assert (series["amount"], series["every"]) == (preview["amount"], "month")
+    assert len([e for e in plan.one_offs if e.get("transfer") == "taxable"]) == 2
+    # The same name twice is refused, not overwritten.
+    again = client.post("/api/previsions/smooth", json={"scenario": "À-coups", "months": 12})
+    assert again.status_code == 400 and "smooth-name" in again.get_json()["errors"]
+    gone = api(client, "/api/previsions/smooth?scenario=Inconnu")
+    assert gone["error"].startswith("Ce scénario n'existe plus")

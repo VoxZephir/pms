@@ -1,7 +1,7 @@
 /** Whole plans under a name: compared on one axis, then one card each --
  * created from any plan, renamed, copied, deleted with an undo, and the
  * one being edited always said where the plan is edited. */
-import { Copy, MoreHorizontal, Pencil, Plus, Sparkles, SquarePen, Trash2 } from "lucide-react";
+import { Copy, MoreHorizontal, Pencil, Plus, Sparkles, SquarePen, Trash2, Waves } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -9,9 +9,12 @@ import { toast } from "sonner";
 import { Lines, spreadTicks } from "@/charts/Lines";
 import { Input } from "@/components/Form";
 import { Sheet } from "@/components/Sheet";
-import { Button, Chip, Dot, Note, Panel, cx } from "@/components/ui";
+import { Button, Chip, Dot, Note, Panel, Segmented, Skeleton, cx } from "@/components/ui";
+import { ApiError, send, useApi } from "@/lib/api";
 import { MONTHS_SHORT, chf, signedChf } from "@/lib/format";
 import { NEW_SCENARIO_EVENT, planAction, type FieldErrors, type Previsions } from "@/lib/previsions";
+
+import { MonthsOfYear } from "./Plan";
 
 type Plan = Previsions["comparison"][number];
 
@@ -61,6 +64,7 @@ export function Scenarios({ d }: { d: Previsions }) {
   const plans = usePlans(d);
   const [creating, setCreating] = useState<string | null>(null);   // the plan to start from
   const [renaming, setRenaming] = useState<Plan | null>(null);
+  const [smoothing, setSmoothing] = useState<Plan | null>(null);
   const labels = ["aujourd'hui", ...d.projection.rows.map((r) => r.label)];
   // The top bar's "Nouveau scénario…" opens the same sheet.
   useEffect(() => {
@@ -97,7 +101,7 @@ export function Scenarios({ d }: { d: Previsions }) {
         {c.map((s) => (
           <PlanCard key={s.name ?? "_"} s={s} d={d} busy={plans.busy}
                     onShow={() => show(s)} onCopy={() => setCreating(s.name ?? "")}
-                    onRename={() => setRenaming(s)} onDelete={s.name ? () => remove(s) : undefined} />
+                    onRename={() => setRenaming(s)} onSmooth={() => setSmoothing(s)} onDelete={s.name ? () => remove(s) : undefined} />
         ))}
         <button type="button" onClick={() => setCreating(d.active ?? "")}
                 className="group flex w-[82%] shrink-0 snap-center flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-hairline-2 p-5 text-center transition hover:border-ink-2 hover:bg-surface-2/40 sm:w-auto">
@@ -109,13 +113,14 @@ export function Scenarios({ d }: { d: Previsions }) {
       <Note>Un scénario est un plan complet — revenu, dépense, ponctuels, versements, rendement. Le plan affiché est celui que « Le plan », plus bas, modifie ; en changer garde ce qui a été saisi.</Note>
       <CreateSheet d={d} from={creating} plans={plans} onClose={() => setCreating(null)} />
       <RenameSheet d={d} plan={renaming} plans={plans} onClose={() => setRenaming(null)} />
+      <SmoothSheet d={d} plan={smoothing} onClose={() => setSmoothing(null)} />
     </Panel>
   );
 }
 
-function PlanCard({ s, d, busy, onShow, onCopy, onRename, onDelete }: {
+function PlanCard({ s, d, busy, onShow, onCopy, onRename, onSmooth, onDelete }: {
   s: Plan; d: Previsions; busy: boolean;
-  onShow: () => void; onCopy: () => void; onRename: () => void; onDelete?: () => void;
+  onShow: () => void; onCopy: () => void; onRename: () => void; onSmooth: () => void; onDelete?: () => void;
 }) {
   return (
     <div className={cx("relative flex w-[82%] shrink-0 snap-center flex-col rounded-2xl border p-4 transition sm:w-auto",
@@ -129,6 +134,7 @@ function PlanCard({ s, d, busy, onShow, onCopy, onRename, onDelete }: {
           {s.active && <Item icon={<SquarePen size={14} />} onSelect={toPlan}>Modifier le plan</Item>}
           <Item icon={<Copy size={14} />} onSelect={onCopy}>Dupliquer…</Item>
           <Item icon={<Pencil size={14} />} onSelect={onRename}>{s.name ? "Renommer…" : "Nommer…"}</Item>
+          <Item icon={<Waves size={14} />} onSelect={onSmooth}>Lisser les virements IBKR…</Item>
           {onDelete && <Item icon={<Trash2 size={14} />} onSelect={onDelete} danger>Supprimer</Item>}
         </Menu>
       </div>
@@ -280,6 +286,122 @@ function RenameSheet({ d, plan, plans, onClose }: {
         <div className="flex justify-end gap-2">
           <Button type="button" onClick={onClose}>Annuler</Button>
           <Button type="submit" variant="primary" disabled={!name.trim() || taken || plans.busy}>{plan?.name ? "Renommer" : "Enregistrer"}</Button>
+        </div>
+      </form>
+    </Sheet>
+  );
+}
+
+interface Smoothing {
+  error?: string;
+  amount: number; months: number; in_months: number[]; in_months_label: string;
+  before: { low: number; low_label: string; moved: number };
+  after: { low: number; low_label: string; moved: number };
+  rows: { key: string; label: string; before: number; after: number }[];
+}
+
+/** A plan's transfers to the brokerage account made one standing order:
+ * the highest constant amount that keeps the same low point of cash, shown
+ * month by month against the plan, then saved as a new scenario beside it. */
+function SmoothSheet({ d, plan, onClose }: { d: Previsions; plan: Plan | null; onClose: () => void }) {
+  const [months, setMonths] = useState(12);
+  const [step, setStep] = useState(50);
+  const [inMonths, setInMonths] = useState<number[] | null>(null);
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (plan) { setName(`${plan.name ?? "Plan"} — IBKR mensuel`); setError(null); setInMonths(null); }
+  }, [plan]);
+  const params = new URLSearchParams({ scenario: plan?.name ?? "", months: String(months), step: String(step) });
+  (inMonths ?? []).forEach((m) => params.append("in_months", String(m)));
+  const ready = plan != null && (inMonths === null || inMonths.length > 0);
+  const { data, isFetching } = useApi<Smoothing>("/api/previsions/smooth", params, ready);
+  const taken = d.comparison.some((p) => p.name === name.trim());
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await send<{ name: string; amount: number }>("/api/previsions/smooth", {
+        scenario: plan?.name ?? "", months, step, in_months: inMonths ?? [], name: name.trim(),
+      });
+      toast.success(`« ${r.name} » créé`, { description: `${chf(r.amount, 0)} CHF par mois vers IBKR. Le plan affiché n'a pas changé.` });
+      onClose();
+    } catch (err) {
+      const errors = err instanceof ApiError && err.data && typeof err.data === "object" && "errors" in err.data
+        ? (err.data as { errors: FieldErrors }).errors : null;
+      setError(errors ? Object.values(errors)[0] : (err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ok = data && !data.error;
+  const low = ok ? Math.min(...data.rows.map((r) => Math.min(r.before, r.after))) : 0;
+  const high = ok ? Math.max(...data.rows.map((r) => Math.max(r.before, r.after))) : 1;
+  return (
+    <Sheet open={plan != null} onOpenChange={(o) => !o && onClose()} title={`Lisser les virements IBKR — ${plan ? title(plan) : ""}`}
+           description="Les virements vers le placement remplacés par un ordre permanent : le plus haut montant constant qui garde le même point bas de cash. Le 3a et le reste ne bougent pas.">
+      <form onSubmit={save} className="space-y-4">
+        <div className="flex flex-wrap gap-x-5 gap-y-3">
+          <div>
+            <div className="mb-1.5 text-[12.5px] font-medium text-ink-2">Sur</div>
+            <Segmented<number> label="Durée vérifiée" size="sm" value={months} onChange={setMonths}
+                               options={[12, 24, 36].map((m) => ({ id: m, label: `${m / 12} an${m > 12 ? "s" : ""}` }))} />
+          </div>
+          <div>
+            <div className="mb-1.5 text-[12.5px] font-medium text-ink-2">Arrondi</div>
+            <Segmented<number> label="Arrondi du versement" size="sm" value={step} onChange={setStep}
+                               options={[50, 100, 250].map((s) => ({ id: s, label: `${s} CHF` }))} />
+          </div>
+        </div>
+        <MonthsOfYear value={inMonths} onChange={setInMonths} invalid={inMonths !== null && inMonths.length === 0} />
+        <div aria-live="polite" className={cx("rounded-2xl border border-hairline p-3.5 transition-opacity", isFetching && "opacity-60")}>
+          {!ready ? <p className="text-[13px] text-muted">Choisis au moins un mois.</p>
+            : !data ? <Skeleton className="h-28" />
+            : data.error ? <p className="text-[13px] text-critical">{data.error}</p>
+            : (
+              <>
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span data-smooth-amount className="num text-[24px] font-semibold tracking-tight">{chf(data.amount, 0)} CHF</span>
+                  <span className="text-[13px] text-muted">par mois{data.in_months.length ? `, ${data.in_months_label}` : ""}</span>
+                </div>
+                <dl className="mt-2 grid grid-cols-[auto_1fr_1fr] gap-x-3 gap-y-0.5 text-[12.5px]">
+                  <dt /><dd className="text-right text-muted">avant</dd><dd className="text-right text-muted">lissé</dd>
+                  <dt className="text-muted">Point bas</dt>
+                  <dd className="num text-right">{chf(data.before.low, 0)} <span className="text-muted">{data.before.low_label}</span></dd>
+                  <dd className="num text-right font-medium">{chf(data.after.low, 0)} <span className="font-normal text-muted">{data.after.low_label}</span></dd>
+                  <dt className="text-muted">Vers IBKR</dt>
+                  <dd className="num text-right">{chf(data.before.moved, 0)}</dd>
+                  <dd className={cx("num text-right font-medium", data.after.moved >= data.before.moved ? "text-good" : "text-ink")}>{chf(data.after.moved, 0)}</dd>
+                </dl>
+                <div className="mt-3 flex h-20 items-end gap-[3px]" role="img"
+                     aria-label="Cash en fin de mois, avant et lissé">
+                  {data.rows.map((r) => (
+                    <div key={r.key} className="relative h-full flex-1" title={`${r.label} : ${chf(r.before, 0)} → ${chf(r.after, 0)} CHF`}>
+                      <i className="absolute inset-x-0 bottom-0 rounded-t-sm bg-surface-2"
+                         style={{ height: `${8 + 92 * (r.before - low) / Math.max(1, high - low)}%` }} />
+                      <i className="absolute inset-x-[25%] bottom-0 rounded-t-sm bg-s0"
+                         style={{ height: `${8 + 92 * (r.after - low) / Math.max(1, high - low)}%` }} />
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1.5 flex flex-wrap gap-x-3 text-[11.5px] text-muted">
+                  <span className="inline-flex items-center gap-1"><i className="size-2 rounded-sm bg-surface-2 ring-1 ring-hairline-2" />cash avant</span>
+                  <span className="inline-flex items-center gap-1"><i className="size-2 rounded-sm bg-s0" />cash lissé</span>
+                  <span>fin de mois, {data.rows[0]?.label} → {data.rows[data.rows.length - 1]?.label}</span>
+                </p>
+              </>
+            )}
+        </div>
+        <div>
+          <label htmlFor="smooth-name" className="text-[12.5px] font-medium text-ink-2">Enregistrer sous</label>
+          <Input id="smooth-name" value={name} maxLength={60} className="mt-1.5" invalid={taken || !!error}
+                 onChange={(e) => { setName(e.target.value); setError(null); }} />
+          {(taken || error) && <p role="alert" className="mt-1.5 text-[12px] text-critical">{error ?? "Un scénario porte déjà ce nom."}</p>}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" onClick={onClose}>Annuler</Button>
+          <Button type="submit" variant="primary" disabled={!ok || !name.trim() || taken || busy || !ready}>Créer ce scénario</Button>
         </div>
       </form>
     </Sheet>

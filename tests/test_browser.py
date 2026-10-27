@@ -550,3 +550,27 @@ def test_the_manual_opens_on_the_page_being_read_and_its_demos_answer(page):
     if os.environ.get("PMS_SHOTS"):
         page.wait_for_timeout(600)
         page.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "aide.png"), full_page=True)
+
+
+def test_a_scenario_smooths_its_brokerage_transfers_into_a_new_one(page, server):
+    page.goto("/previsions")
+    _ready(page)
+    rows = page.request.get("/api/previsions").json()["projection"]["rows"]
+    keys = [r["key"] for r in rows if not r["partial"]]
+    for key, amount in ((keys[1], 5000), (keys[5], 7000)):
+        page.request.post("/api/previsions", headers={"Origin": server}, data={
+            "action": "add", "month": key, "label": "Vers IBKR", "amount": str(amount), "destination": "taxable"})
+    page.request.post("/api/previsions", headers={"Origin": server},
+                      data={"action": "plan-save-as", "name": "À lisser"})
+    page.reload()
+    _ready(page)
+    page.get_by_role("button", name="Actions sur « À lisser »").click()
+    page.get_by_role("menuitem", name=re.compile("^Lisser les virements IBKR")).click()
+    sheet = page.get_by_role("dialog")
+    expect(sheet.locator("[data-smooth-amount]")).to_have_text(re.compile(r"^\d[\d'’]* CHF$"))
+    sheet.get_by_role("radio", name="certains mois seulement").click()
+    expect(sheet.get_by_text("par mois, de mai à décembre")).to_be_visible()
+    if os.environ.get("PMS_SHOTS"):
+        sheet.screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "lisser.png"))
+    sheet.get_by_role("button", name="Créer ce scénario").click()
+    expect(page.get_by_role("button", name="Actions sur « À lisser — IBKR mensuel »")).to_be_visible()

@@ -159,3 +159,61 @@ def previsions_edit():
         return payload({"errors": errors, "values": values}), 400
     plan.save()
     return payload({"ok": True, "months": applied})
+
+
+def _smoothing(plan, args):
+    """The smoothing asked for by `scenario` (the plan on screen when
+    blank), over `months` with `step` rounding, in `in_months` only."""
+    name = (args.get("scenario") or "").strip()
+    if name and name not in plan.plan_scenarios:
+        return name, None, "Ce scénario n'existe plus : rechargez la page."
+    source = plan.scenario_plan(name) if name else plan
+    try:
+        months = max(3, min(60, int(args.get("months") or 12)))
+        step = max(10, min(1000, int(args.get("step") or 50)))
+    except ValueError:
+        return name, None, "Durée ou arrondi invalide."
+    in_months = ",".join(args.getlist("in_months"))
+    result = plans_module.smooth_taxable(store().statement, source, months=months, step=step,
+                                         in_months=in_months)
+    if result is None:
+        return name, None, ("Même sans aucun virement vers le placement, le cash descend plus bas "
+                            "que dans ce plan : rien à lisser.")
+    return name, result, None
+
+
+@api.route("/api/previsions/smooth")
+def previsions_smooth():
+    """The plan's transfers to the brokerage account made one monthly
+    standing order with the same low point of cash: a preview."""
+    if store().empty:
+        return payload({"empty": True})
+    _, result, error = _smoothing(_plan(), request.args)
+    if error:
+        return payload({"error": error})
+    result.pop("declarations")
+    return payload(result)
+
+
+@api.route("/api/previsions/smooth", methods=["POST"])
+def previsions_smooth_save():
+    """The smoothed plan saved as a new scenario beside its source, which
+    stays as it was; the plan on screen does not change."""
+    body = request.get_json(silent=True) or {}
+    args = MultiDict()
+    for key, value in body.items():
+        for item in (value if isinstance(value, list) else [value]):
+            if item is not None:
+                args.add(key, str(item))
+    plan = _plan()
+    source, result, error = _smoothing(plan, args)
+    if error:
+        return payload({"errors": {"smooth": error}}), 400
+    name = (args.get("name") or "").strip() or f"{source or 'Plan'} — IBKR mensuel"
+    if len(name) > 60:
+        return payload({"errors": {"smooth-name": "60 caractères au plus."}}), 400
+    if name in plan.plan_scenarios:
+        return payload({"errors": {"smooth-name": "Un scénario porte déjà ce nom."}}), 400
+    plan.plan_scenarios[name] = result["declarations"]
+    plan.save()
+    return payload({"ok": True, "name": name, "amount": result["amount"]})

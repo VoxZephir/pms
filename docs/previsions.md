@@ -396,3 +396,20 @@ crypto 5 % (70 %), titres non cotés 12 % (0 ; surtout le dividende, que le reve
 une médiane mensuelle, ne voit pas, plus un peu de réévaluation), le commun 4 % (12 %).
 Le raisonnement est dans le commentaire du code ; ce sont des hypothèses de long terme,
 pas une prévision d'année.
+
+## Lisser les virements IBKR (27.10)
+
+Le menu d'une carte de scénario, « Lisser les virements IBKR… », fait ce que faisait
+`tools/lisser_ibkr.py` (qui reste, sur la même fonction) : `plans.smooth_taxable` retire
+du plan tous les virements vers le placement (ponctuels « vers le placement » et séries
+`taxable`), puis cherche par dichotomie le plus haut montant mensuel, multiple de
+l'arrondi, qui garde le point bas du cash sur la durée vérifiée (1 à 3 ans) au moins à
+celui du plan. Le point bas ne fait que baisser quand le montant monte : la dichotomie
+est juste. On peut limiter l'ordre à des mois de l'année (« de mai à décembre », le même
+choix que les versements programmés) : le montant monte d'autant. Le 3a et le reste du
+plan ne bougent pas.
+
+La feuille montre le montant, les deux points bas, ce qui part vers IBKR avant et après,
+et le cash de fin de mois des deux plans côte à côte ; « Créer ce scénario » l'enregistre
+à côté de l'original (`POST /api/previsions/smooth`), sans changer le plan affiché.
+Un aperçu est un `GET` : rien ne s'écrit avant le clic.

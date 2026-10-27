@@ -343,7 +343,7 @@ const MONTH_PRESETS: { label: string; months: number[] }[] = [
 /** Which months of the year a series pays in: the whole year, or the months
  * clicked. A month chip is a toggle; a range is a shift-click from the last
  * one touched. Empty stays a choice to finish, not "all". */
-function MonthsOfYear({ value, onChange, invalid }: { value: number[] | null; onChange: (v: number[] | null) => void; invalid?: boolean }) {
+export function MonthsOfYear({ value, onChange, invalid }: { value: number[] | null; onChange: (v: number[] | null) => void; invalid?: boolean }) {
   const [anchor, setAnchor] = useState<number | null>(null);
   const limited = value !== null;
   const toggle = (m: number, shift: boolean) => {

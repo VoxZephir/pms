@@ -1649,3 +1649,63 @@ def project_pockets(projection: dict, pockets: dict[str, float],
         "flows": flows,
         "moved": round(sum(paid.values()), 2) if include_cash else 0.0,
     }
+
+
+def smooth_taxable(statement: Statement, plan: Plan, months: int = 12, step: int = 50,
+                   in_months=None) -> dict | None:
+    """The plan's transfers to the taxable pocket made one standing order:
+    every one-off "vers le placement" and taxable series taken out, then the
+    highest whole amount (a multiple of `step`) paid each month -- or in the
+    months `in_months` only -- that keeps the lowest month-end cash over
+    `months` at or above the plan's own. The 3a and everything else stay.
+
+    The projection is `project`, the one the page draws. The low point only
+    falls as the amount rises, so the amount is found by halving. None when
+    even no transfer at all goes lower than the plan does."""
+    def lowest(p: Plan) -> tuple[float, str, list[dict]]:
+        rows = project(statement, p, months_ahead=months)["rows"]
+        low = min(rows, key=lambda r: r["end"])
+        return low["end"], low["label"], rows
+
+    def moved(rows: list[dict]) -> float:
+        return sum(o["amount"] for r in rows for o in r["one_offs"] if o.get("transfer") == TAXABLE)
+
+    original = plan._declarations()
+    target, target_label, before = lowest(plan)
+    base = json.loads(json.dumps(original))
+    base["one_offs"] = [e for e in base["one_offs"] if e.get("transfer") != TAXABLE]
+    base["contributions"] = [c for c in base["contributions"] if c["pocket"] != TAXABLE]
+    limited = in_months_of(in_months)
+
+    def candidate(amount: int) -> Plan:
+        spec = json.loads(json.dumps(base))
+        if amount > 0:
+            spec["contributions"].append(_series(TAXABLE, float(amount), "month", months, "", limited))
+        return _detached(spec)
+
+    if lowest(candidate(0))[0] < target - 0.005:
+        return None
+    lo, hi = 0, step
+    while lowest(candidate(hi))[0] >= target - 0.005:
+        lo, hi = hi, hi * 2
+        if hi > 10_000_000:
+            break
+    while hi - lo > step:
+        mid = (lo + hi) // 2 // step * step
+        if mid in (lo, hi):
+            break
+        if lowest(candidate(mid))[0] >= target - 0.005:
+            lo = mid
+        else:
+            hi = mid
+    smooth = candidate(lo)
+    low_after, low_label, after = lowest(smooth)
+    return {
+        "amount": lo, "months": months, "step": step,
+        "in_months": limited, "in_months_label": months_phrase(limited),
+        "before": {"low": round(target, 2), "low_label": target_label, "moved": round(moved(before), 2)},
+        "after": {"low": round(low_after, 2), "low_label": low_label, "moved": round(moved(after), 2)},
+        "rows": [{"key": b["key"], "label": b["label"], "before": round(b["end"], 2), "after": round(a["end"], 2)}
+                 for b, a in zip(before, after)],
+        "declarations": smooth._declarations(),
+    }
