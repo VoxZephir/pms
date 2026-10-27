@@ -115,6 +115,7 @@ inbox/ ─▶ banks ─▶ parser ─▶ ledger.json ─▶ categories ┤
 | `export.py` | CSV et xlsx de la vue courante ; écrivain OOXML sans dépendance |
 | `redact.py` | caviarder un PDF hors de l'app : IBAN, noms (titulaire, contreparties, personnes), adresses retirés du fichier, relu après coup (`--redact`, `caviarder.bat`) |
 | `plans.py` | suggestions de ponctuels saisonniers, `data/plans.json` (plans entiers sous un nom : les scénarios), projection de trésorerie |
+| `hindsight.py` | prévu contre réel : la prévision du plan gardée chaque mois (`data/forecasts.json`), la méthode rejouée depuis les fins de mois passées, l'écart partagé entre revenu et sorties |
 | `budgets.py` | objectifs mensuels par catégorie, `data/budgets.json`, jauges dans le panneau mensuel |
 | `finpension.py` | journal CSV + rapports de performance du 3a, `data/finpension.json` |
 | `ibkr.py` | lit `data/ibkr.json` — l'épargne hors relevé (Interactive Brokers), snapshot figé |
@@ -141,7 +142,7 @@ contre une première version qui semblait évidente.
 
 | Avant de toucher | Lire |
 |---|---|
-| `plans.py`, `/previsions`, `views/previsions.py`, la courbe de patrimoine, le rendement par année et par poche, `freedom.py` | `docs/previsions.md` |
+| `plans.py`, `hindsight.py`, `/previsions`, `views/previsions.py`, la courbe de patrimoine, le rendement par année et par poche, `freedom.py` | `docs/previsions.md` |
 | `/analyse`, `lookback.py`, `swiss.py`, `cpi.py`, le panneau « Dépenses par mois » et ses budgets, `plans.monthly_profile` | `docs/analyse.md` |
 | `frontend/`, `web/api/`, l'état dans l'URL, les graphiques, le sommaire et « Haut de page », le téléphone, le bouton ⟳, le brush, les panneaux repliés, les panneaux « Engagements sans passage récent », « D'où vient l'argent » et « Évolution des parts » | `docs/app-web.md` |
 | le panneau Épargne, le bouton « Rafraîchir », `refresh.py`, `ibkr.py`, `flex.py`, `finpension.py`, `snapshots.py`, `crypto.py`, `benchmarks.py`, `fiscal.py`, `allocation.py`, `views/savings.py`, `views/savings_reads.py`, la skill `/epargne` | `docs/epargne.md` |
