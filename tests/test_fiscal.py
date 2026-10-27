@@ -130,3 +130,15 @@ def test_the_reserve_counts_months_of_needs():
     assert reserve["excess"] == pytest.approx(24000 - 6 * 12000 / 9, abs=0.01)
     # Two months of history say nothing.
     assert _reserve(statement, 24000.0, D(2026, 3, 10)) is None
+
+
+def test_the_3a_room_is_recalled_from_november_to_the_year_s_end():
+    rows = [_txn(D(2026, 9, 30), -2000.0, 0.0, subcategory="Prévoyance 3a")]
+    assert fiscal.pillar3a_reminder(FINPENSION, rows, D(2026, 10, 31)) is None   # too early
+    r = fiscal.pillar3a_reminder(FINPENSION, rows, D(2026, 11, 20))
+    assert (r["left"], r["days_left"]) == (5258.0, 41)
+    assert r["text"] == "3a : 5’258 CHF de plafond encore libres pour 2026, à verser avant le 31.12 (41 j)."
+    # Paid in full: nothing to say. No 3a at all: nothing either.
+    full = rows + [_txn(D(2026, 11, 2), -5258.0, 0.0, subcategory="Prévoyance 3a")]
+    assert fiscal.pillar3a_reminder(FINPENSION, full, D(2026, 11, 20)) is None
+    assert fiscal.pillar3a_reminder(None, [_txn(D(2026, 9, 30), -50.0, 0.0)], D(2026, 11, 20)) is None

@@ -41,10 +41,11 @@ def _week_sums(spend, end: dt.date, weeks: int, first: dt.date) -> list[float]:
 
 
 def summary(statement, today: dt.date, budgets: dict[str, float] | None = None,
-            floor: str | None = None) -> dict:
+            floor: str | None = None, pillar: str | None = None) -> dict:
     """The week that ends on the statement's last day, and the one ahead of
     today. Facts first, then the lines of the message. `floor` is the
-    forecast's cash alert, already a sentence (`plans.floor_alert`)."""
+    forecast's cash alert, already a sentence (`plans.floor_alert`);
+    `pillar` the 3a room left at the year's end (`fiscal.pillar3a_reminder`)."""
     end = statement.period_end
     start = end - dt.timedelta(days=WEEK - 1)
     spend = analysis.spending(statement)
@@ -80,6 +81,7 @@ def summary(statement, today: dt.date, budgets: dict[str, float] | None = None,
         "deadlines": [{"by": d["by"], "days": d["days"], "title": d["title"]} for d in deadlines],
         "over_budget": [{"category": b["category"], "over": round(b["spent"] - b["budget"], 2)} for b in over],
         "floor": floor,
+        "pillar": pillar,
     }
     return {**facts, **message(facts)}
 
@@ -112,6 +114,8 @@ def message(f: dict) -> dict:
         lines.append(f"⏰ {d['title']} : avant le {d['by']:%d.%m} ({d['days']} j).")
     if f.get("floor"):
         lines.append(f"⚠ {f['floor']}")
+    if f.get("pillar"):
+        lines.append(f["pillar"])
     if f["stale"] > 10:
         lines.append(f"Le relevé s'arrête il y a {f['stale']} jours : un nouveau rendrait ce résumé juste.")
     title = "Ta semaine"

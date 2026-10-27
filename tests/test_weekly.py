@@ -83,3 +83,10 @@ def test_the_page_saves_draws_a_topic_and_tests(client, monkeypatch):
                            headers=ORIGIN).status_code == 400
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_the_cash_floor_and_the_3a_room_close_the_message(held):
+    s = weekly.summary(held, dt.date(2026, 11, 20), floor="Cash projeté sous ton seuil.",
+                       pillar="3a : 1'000 CHF de plafond encore libres.")
+    at = s["lines"].index("⚠ Cash projeté sous ton seuil.")
+    assert s["lines"][at + 1] == "3a : 1'000 CHF de plafond encore libres."

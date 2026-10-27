@@ -1,5 +1,5 @@
 /** The dashboard: one window, every panel that has something to say on it. */
-import { HeartPulse, Inbox, Sparkles, TriangleAlert } from "lucide-react";
+import { HeartPulse, Inbox, PiggyBank, Sparkles, TriangleAlert } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 
@@ -9,7 +9,7 @@ import { TxGroups } from "@/components/TxList";
 import { TxSheet } from "@/components/TxSheet";
 import { ButtonLink, Callout, Card, Panel, Skeleton, cx } from "@/components/ui";
 import { useApi } from "@/lib/api";
-import { frDate, pct, plural } from "@/lib/format";
+import { chf, frDate, pct, plural } from "@/lib/format";
 import { useDesktop, useStored } from "@/lib/hooks";
 import type { Dashboard, Meta, Tx, TxPage } from "@/lib/types";
 import { useView } from "@/lib/url";
@@ -106,6 +106,12 @@ function Notices({ data, meta }: { data: Dashboard; meta?: Meta }) {
     rows.push({ key: "floor", icon: <TriangleAlert size={17} />, tone: "text-warn", title: "Cash projeté sous ton seuil",
       detail: <>{meta.floor.text} Le plan de Prévisions, sur un an.</>,
       action: <Link to="/previsions" className="shrink-0 rounded-lg border border-hairline-2 px-2.5 py-1 text-[12.5px] font-medium no-underline hover:bg-surface-2">Prévisions</Link> });
+  }
+  if (meta?.pillar3a) {
+    const p = meta.pillar3a;
+    rows.push({ key: "pillar3a", icon: <PiggyBank size={17} />, tone: "text-s2", title: `3a ${p.year} : ${chf(p.left, 0)} CHF encore déductibles`,
+      detail: <>{chf(p.paid, 0)} versés sur {chf(p.ceiling, 0)} · à verser avant le 31.12, dans {p.days_left} jours (compter quelques jours de virement)</>,
+      action: <Link to="/impots" className="shrink-0 rounded-lg border border-hairline-2 px-2.5 py-1 text-[12.5px] font-medium no-underline hover:bg-surface-2">Impôts</Link> });
   }
   for (const l of meta?.late ?? []) {
     rows.push({ key: `late-${l.bank}`, icon: <Inbox size={17} />, tone: "text-warn", title: `Relevé ${l.bank} attendu`,

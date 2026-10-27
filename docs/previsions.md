@@ -399,8 +399,8 @@ pas une prévision d'année.
 
 ## Lisser les virements IBKR (27.10)
 
-Le menu d'une carte de scénario, « Lisser les virements IBKR… », fait ce que faisait
-`tools/lisser_ibkr.py` (qui reste, sur la même fonction) : `plans.smooth_taxable` retire
+Le menu d'une carte de scénario, « Lisser les virements IBKR… » (l'outil en ligne de
+commande qui le précédait est retiré, l'app fait la même chose) : `plans.smooth_taxable` retire
 du plan tous les virements vers le placement (ponctuels « vers le placement » et séries
 `taxable`), puis cherche par dichotomie le plus haut montant mensuel, multiple de
 l'arrondi, qui garde le point bas du cash sur la durée vérifiée (1 à 3 ans) au moins à

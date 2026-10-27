@@ -1,6 +1,6 @@
 # Ce qui manque
 
-État au 18.10.2026. L'app fait ce pour quoi elle a été construite : parser, réconcilier,
+État au 27.10.2026. L'app fait ce pour quoi elle a été construite : parser, réconcilier,
 catégoriser, corriger à la main, naviguer dans le temps, en ressortir les données, prévoir
 la trésorerie et le patrimoine (`/previsions`), analyser le passé mois par mois
 (`/analyse`), suivre l'épargne hors relevé (Interactive Brokers, 3a, crypto) et comparer
@@ -235,6 +235,18 @@ l'IPC, son mois contre le ménage moyen) ; **l'indépendance financière** dans 
 règles ne lisent plus l'adresse (le nom de rue d'un employeur faisait d'un salaire une
 sortie culturelle), les virements entre ses propres comptes ne sont plus des revenus, et
 la règle d'un assureur ne prend plus un autre assureur dont le nom contient le sien.
+
+**Fait du 20 au 27.10 — devant, et la même mesure pour le plan** : UBS et camt.053
+(`docs/releves.md`), les titres et biens hors relevé (`docs/impots.md`), le caviardage
+d'un PDF (`docs/caviardage.md`) ; dans Prévisions, les ponctuels modifiables, les
+versements limités à des mois de l'année, **le lissage des virements IBKR** au même point
+bas, **le seuil d'alerte du cash** (rappelé partout et dans le résumé de la semaine),
+**prévu contre réel** (`hindsight.py`) ; dans Impôts, **les impôts encore dus** estimés au
+taux déjà payé et **les acomptes mensuels** (`docs/impots.md`) ; **le rappel 3a** de
+novembre à décembre ; la médiane des colonnes, trimestre et semestre, la barre latérale
+repliable, **le manuel** (`/aide`, `?`) ; la suite en parallèle (~1 min). En chemin, le
+caviardage du vrai relevé était refusé (un nom accentué à un endroit, sans accent à un
+autre ; le numéro de client loin de son libellé) : corrigé, avec un test par cas.
 
 Un point ouvert : **une autre banque sans écrire de parser** (point 8). Entretien : la valeur du 3a lue dans l'app de temps en temps
 (`--3a-value`), le jeton Flex à renouveler chaque année, et tous les deux ans le

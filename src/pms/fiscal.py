@@ -209,3 +209,26 @@ def year_end(statement, ibkr: dict | None, finpension: dict | None,
                                    if d <= day), 2)
         if finpension else None,
     }
+
+
+# From this month on, the room left under the year's 3a ceiling is said
+# (the weekly summary, the dashboard): late enough to know the year, early
+# enough for a transfer to arrive before December 31.
+REMIND_FROM_MONTH = 11
+
+
+def pillar3a_reminder(finpension: dict | None, transactions, today: dt.date) -> dict | None:
+    """The 3a room left this year, from November to the year's end -- only
+    for someone who pays into a 3a at all (a journal, or a transfer to one
+    in the ledger), and only while there is room."""
+    if today.month < REMIND_FROM_MONTH:
+        return None
+    if not finpension and not any(t.subcategory == SUBCATEGORY_3A for t in transactions):
+        return None
+    p = pillar3a(finpension, transactions, today.year, today)
+    if p["left"] < 1 or p["days_left"] is None:
+        return None
+    return {"year": p["year"], "left": p["left"], "paid": p["paid"], "ceiling": p["ceiling"],
+            "days_left": p["days_left"],
+            "text": f"3a : {analysis.chf(p['left'], 0)} CHF de plafond encore libres pour {p['year']}, "
+                    f"à verser avant le 31.12 ({p['days_left']} j)."}

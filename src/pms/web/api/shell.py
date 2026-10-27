@@ -6,7 +6,8 @@ import datetime as dt
 
 from flask import current_app, request
 
-from ... import analysis, backup
+from ... import analysis, backup, fiscal
+from ... import finpension as finpension_module
 from ... import plans as plans_module
 from .. import news as news_module
 from .. import periods
@@ -70,6 +71,12 @@ def floor_notice(data) -> dict | None:
     return _FLOOR_CACHE[key]
 
 
+def pillar3a_notice(data, today: dt.date | None = None) -> dict | None:
+    """The 3a room left before December 31, from November (`fiscal`)."""
+    finpension = finpension_module.load(data.path.with_name("finpension.json"))
+    return fiscal.pillar3a_reminder(finpension, data.statement.transactions, today or dt.date.today())
+
+
 @api.route("/api/meta")
 def meta():
     """The ledger as a whole: its span, its health, what just came in and
@@ -98,4 +105,5 @@ def meta():
         # not read back, no run for two weeks (backup.health).
         "backup": None if empty else backup.health(data.path.parent),
         "floor": None if empty else floor_notice(data),
+        "pillar3a": None if empty else pillar3a_notice(data),
     })

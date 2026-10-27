@@ -16,6 +16,8 @@ et l'aperçu sont en bas de la page À venir (`pages/upcoming/Weekly.tsx`).
   30 jours ou moins (`upcoming.deadlines`) ;
 - le cash projeté sous le seuil d'alerte de Prévisions, sur un an (`plans.floor_alert`,
   `docs/previsions.md`) ;
+- de novembre au 31.12, le plafond 3a encore libre de l'année (`fiscal.pillar3a_reminder`),
+  pour qui verse dans un 3a ; le tableau de bord le dit aussi ;
 - un relevé vieux de plus de dix jours.
 
 **Jamais un nom.** Le message traverse un serveur de notifications : il dit « assurance
