@@ -495,8 +495,10 @@ def test_the_median_is_drawn_over_the_columns_when_asked(page):
     _ready(page)
     page.get_by_role("button", name="Médiane").click()
     page.wait_for_url(re.compile(r"median=1"))
-    expect(page.get_by_text(re.compile(r"^médiane "))).to_be_visible()
-    expect(page.get_by_text(re.compile(r"sur \d+ périodes complètes"))).to_be_visible()
+    # The timeline's own panel: another panel may print a median of its own.
+    timeline = page.locator("section").filter(has=page.get_by_role("button", name="Médiane")).last
+    expect(timeline.locator("svg text").filter(has_text=re.compile(r"^médiane "))).to_be_visible()
+    expect(timeline.get_by_text(re.compile(r"sur \d+ périodes complètes"))).to_be_visible()
     if os.environ.get("PMS_SHOTS"):
         page.locator("section").filter(has=page.get_by_role("button", name="Médiane")).last \
             .screenshot(path=os.path.join(os.environ["PMS_SHOTS"], "median.png"))
