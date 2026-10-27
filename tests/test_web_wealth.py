@@ -241,3 +241,34 @@ def test_baseline_claude_sets_every_pocket_from_the_common_barème(client, share
     assert plans.Plan.load(plans_path(client)).own_rates("finp") == {"rate_segments": [(12, 0.045)], "vol": 0.14}
     card = next(s for s in _wealth(client)["builtin_scenarios"] if s["key"] == "baseline-claude")
     assert {p["id"] for p in card["pockets"]} == set(plans.POCKET_KEYS)
+
+
+def test_another_good_is_its_own_class_in_the_projection(client, pockets):
+    path = client.application.extensions["pms_store"].path.with_name("holdings.json")
+    watch = {"id": "w1", "name": "Montre Exemple", "kind": "other", "quantity": 1, "payer": "",
+             "withholding": False, "since": 2025, "values": {"2025": 4000, "2026": 4200}}
+    path.write_text(json.dumps({"holdings": [*SHARE["holdings"], watch]}), encoding="utf-8")
+    try:
+        parts = _wealth(client)["wealth"]["parts"]
+        classes = parts["classes"]
+        assert {"key": "goods", "name": "Autres biens", "slot": 6} in classes["series"]
+        # The share stays equity, the watch is goods -- measured and projected.
+        for point in (classes["observed"][-1], classes["projected"][-1]):
+            assert point["goods"] == pytest.approx(4200, abs=0.01)
+        assert classes["projected"][0]["goods"] == pytest.approx(4200, abs=0.01)
+        assert next(t for t in parts["table"] if t["key"] == "titres")["name"] == "Hors marché"
+        assert _pocket_rates(_wealth(client)["wealth"], "titres")["label"] == "Hors marché"
+    finally:
+        path.unlink(missing_ok=True)
+    # With the share alone the pocket keeps its name and is all equity.
+    path.write_text(json.dumps(SHARE), encoding="utf-8")
+    try:
+        parts = _wealth(client)["wealth"]["parts"]
+        assert "goods" not in classes_of(parts)
+        assert next(t for t in parts["table"] if t["key"] == "titres")["name"] == "Titres non cotés"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def classes_of(parts: dict) -> set[str]:
+    return {s["key"] for s in parts["classes"]["series"]}

@@ -204,7 +204,7 @@ def _wealth(data, plan: plans_module.Plan, projection: dict) -> tuple[dict, int]
     wealth["parts"] = _parts(rows, keys, invested, projection, plan, include_cash, split)
     # Each pocket's barème and band as the rate panel shows them.
     wealth["pockets_rates"] = [_pocket_rates(plan, k, last.get(k) or 0.0, vols.get(k), measured.get(k),
-                                             projection)
+                                             projection, _pocket_name(k, last) if k == "titres" else None)
                                for k in plans_module.POCKET_KEYS if last.get(k) is not None]
     # What the scenario comparison needs to project another plan the same way.
     wealth["pockets_start"], wealth["routes"] = invested, routes
@@ -225,13 +225,13 @@ def _rated(plan: plans_module.Plan) -> bool:
 
 
 def _pocket_rates(plan: plans_module.Plan, key: str, value: float, vol: float | None,
-                  measured: float | None, projection: dict) -> dict:
+                  measured: float | None, projection: dict, label: str | None = None) -> dict:
     """One pocket in the rate panel: its value today, whether it follows the
     common barème, the barème it grows by, per year over the horizon."""
     own = plan.own_rates(key)
     segments = own["rate_segments"] if own is not None else plan.rate_segments
     return {
-        "id": key, "label": plans_module.POCKET_LABELS[key], "slot": POCKETS[key][1],
+        "id": key, "label": label or plans_module.POCKET_LABELS[key], "slot": POCKETS[key][1],
         "value": round(value, 2), "own": own is not None,
         "fixed_by_default": key in plans_module.FIXED_BY_DEFAULT,
         "rate_segments": [[m, r] for m, r in segments],
@@ -249,11 +249,21 @@ POCKETS = {"swiss": ("Comptes", 0), "ibkr": ("IBKR", 2), "finp": ("3a", 3),
            "crypto": ("Crypto", 5), "titres": ("Titres non cotés", 4)}
 CLASSES = {"cash": ("Cash", 0), "actions": ("Actions", 2),
            "mf": ("Trend-Following", 3), "crypto": ("Crypto", 5),
-           "other": ("Non réparti", None)}
+           "goods": ("Autres biens", 6), "other": ("Non réparti", None)}
 # Which classes each pocket holds, read off the savings page's own split
 # (`_evolution_row`): the brokerage's keys, the 3a's, the rest whole.
 POCKET_CLASSES = {"ibkr": {"actions": "ibkr_actions", "mf": "ibkr_mf"},
-                  "finp": {"cash": "finp_cash", "actions": "finp_actions"}}
+                  "finp": {"cash": "finp_cash", "actions": "finp_actions"},
+                  # Unlisted shares are equity; another good (a watch) is
+                  # no class of the portfolio, as on the savings page.
+                  "titres": {"actions": "titres_share", "goods": "titres_other"}}
+
+
+def _pocket_name(key: str, last: dict) -> str:
+    """A pocket's name; the declared holdings' one says what they are."""
+    if key == "titres" and last.get("titres_other"):
+        return "Hors marché"
+    return POCKETS[key][0]
 VIEW_POCKETS = {"all": ("swiss", "ibkr", "finp", "crypto", "titres"),
                 "taxable": ("swiss", "ibkr", "crypto", "titres"), "sheltered": ("finp",)}
 
@@ -282,8 +292,6 @@ def _mix(last: dict, pocket: str) -> dict[str, float]:
         return {"cash": 1.0}
     if pocket == "crypto":
         return {"crypto": 1.0}
-    if pocket == "titres":
-        return {"actions": 1.0}  # a Swiss company's equity, as on the savings page
     keys = POCKET_CLASSES[pocket]
     amounts = {c: last.get(k) or 0.0 for c, k in keys.items()}
     total = sum(amounts.values())
@@ -331,8 +339,6 @@ def _parts(rows: list[dict], keys: list[str], invested: dict[str, float], projec
                 out["cash"] = out.get("cash", 0.0) + (r.get("swiss") or 0.0)
             elif pocket == "crypto":
                 out["crypto"] = out.get("crypto", 0.0) + (r.get("crypto") or 0.0)
-            elif pocket == "titres":
-                out["actions"] = out.get("actions", 0.0) + (r.get("titres") or 0.0)
             else:
                 for cls, key in POCKET_CLASSES[pocket].items():
                     out[cls] = out.get(cls, 0.0) + (r.get(key) or 0.0)
@@ -350,8 +356,9 @@ def _parts(rows: list[dict], keys: list[str], invested: dict[str, float], projec
 
     end_cash = projection["rows"][-1]["end"] if projection["rows"] else projection["cash"]
     table = []
+    names = {k: (_pocket_name(k, last), POCKETS[k][1]) for k in keys}
     for k in keys:
-        name, slot = POCKETS[k]
+        name, slot = names[k]
         if k == "swiss":
             table.append({"key": k, "name": name, "slot": slot,
                           "start": round(projection["cash"], 2),
@@ -363,12 +370,12 @@ def _parts(rows: list[dict], keys: list[str], invested: dict[str, float], projec
                           "paid": split["paid"].get(k, 0.0),
                           "growth": split["growth"].get(k, 0.0),
                           "end": split["end"].get(k, 0.0)})
-    flows = [{**f, "label": (f"{f['label']} {POCKETS[f['pocket']][0]}"
+    flows = [{**f, "label": (f"{f['label']} {names.get(f['pocket'], POCKETS[f['pocket']])[0]}"
                              if f.get("pocket") else f["label"]),
               "slot": POCKETS[f["pocket"]][1] if f.get("pocket") else None}
              for f in split["flows"]]
     return {
-        "pockets": {"series": series({k: POCKETS[k] for k in keys}, seen_pockets + projected_pockets),
+        "pockets": {"series": series(names, seen_pockets + projected_pockets),
                     "observed": seen_pockets, "projected": projected_pockets},
         "classes": {"series": series(CLASSES, seen_classes + projected_classes),
                     "observed": seen_classes, "projected": projected_classes},

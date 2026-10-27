@@ -239,7 +239,10 @@ trois vues fiscales). Les classes sont les poches **à composition constante** :
 poche garde la répartition mesurée aujourd'hui (`_evolution_row`, la même que la barre
 de l'Épargne), et l'argent nouveau la suit — l'app ne suppose aucun rééquilibrage. Une
 poche vide aujourd'hui qui reçoit un versement n'a pas de composition à suivre : son
-argent est « Non réparti », pas deviné. Le graphique empile les parts (pleines mesurées,
+argent est « Non réparti », pas deviné. La poche des titres hors relevé se répartit
+comme sur l'Épargne : une action non cotée en Actions, un autre bien (une montre) en
+« Autres biens » (`POCKET_CLASSES["titres"]`), et la poche s'appelle « Hors marché » dès
+qu'un autre bien y est. Le graphique empile les parts (pleines mesurées,
 plus claires et traitillées projetées, le total par-dessus) ; une part sous zéro ne
 s'empile pas honnêtement, elles sont alors dessinées en lignes et la page le dit. Mêmes
 teintes que l'Épargne : une poche garde sa couleur d'une page à l'autre.
