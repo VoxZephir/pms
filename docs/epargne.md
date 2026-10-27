@@ -498,6 +498,14 @@ de tout, d'un clic. Elle n'apparaît que si un titre est déclaré.
   dividende)).
 - La table de risque garde ses colonnes (IBKR, 3a, crypto) ; le total y inclut le titre
   quand il est compté.
+- **Par classe d'actifs, une ligne à part** (courbe et barre), pas dans « Actions » : elle y
+  était additionnée, donc comptée mais invisible. L'allocation cible, elle, la range en
+  Actions (`titres_in_actions`) : ses cibles nomment des classes, et une part qu'aucune
+  cible ne nomme est visée à zéro — elle proposerait de vendre un titre invendable.
+- **Plusieurs titres** (une action, une montre…) : la poche ouverte (`?focus=titres`) en
+  trace un par ligne et les montre un par un dans sa composition (`titre_<id>` sur chaque
+  point de la courbe) ; partout ailleurs, leur somme. Un objet sans dividende se déclare
+  comme un titre sans payeur ; l'allocation le compte aussi en Actions.
 
 ## Rafraîchir depuis l'app (26.10)
 

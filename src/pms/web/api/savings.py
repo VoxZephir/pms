@@ -99,7 +99,10 @@ def savings():
     out["total"] = ibkr["total"]
     out["stale"] = _stale_notes(ibkr, finpension, end, book.crypto)
     out["parts"] = _savings_parts(ibkr, values["swissquote"], finpension, values["finpension"],
-                                  split, focus, book.crypto, values["crypto"], values["titres"])
+                                  split, focus, book.crypto, values["crypto"], values["titres"],
+                                  titres_each=[(h["name"], holdings_module.value_on([h], end))
+                                               for h in book.securities
+                                               if end >= holdings_module.start(h)])
     fees = _fees(custodian["total_chf"], custodian["count"], ibkr, finpension, values,
                  start, end, book.crypto)
     out["fees"] = fees
@@ -114,7 +117,8 @@ def savings():
 
     targets = allocation_module.Allocation.load(data.path.with_name("allocation.json")).targets
     by_class = _savings_parts(ibkr, values["swissquote"], finpension, values["finpension"],
-                              "asset", "total", book.crypto, values["crypto"], values["titres"])
+                              "asset", "total", book.crypto, values["crypto"], values["titres"],
+                              titres_in_actions=True)
     total_by_class = sum(p["value"] for p in by_class) or 1.0
     exposure = allocation_module.exposure(by_class, allocation_module.leverage(ibkr["positions"]))
     out["allocation"] = {
@@ -150,7 +154,7 @@ def savings():
     # the chosen breakdown; in base 100 the indices ride along, dashed.
     rows = _evolution_rows(data.statement, ibkr, finpension, start, end, period["grain"], book.crypto,
                            book.securities)
-    spec = _split_series(split, finpension, focus, bool(book.crypto), bool(book.securities))
+    spec = _split_series(split, finpension, focus, bool(book.crypto), book.securities)
     out["invested"] = _invested(book, [r["date"] for r in rows], focus)
     if scale == "index":
         rows = [dict(row) for row in rows]

@@ -336,3 +336,33 @@ def test_the_share_is_in_the_curve_and_the_split(client, share):
     assert sum(p["value"] for p in s["parts"]) == pytest.approx(s["total"], abs=1)
     focus = api(client, "/api/savings?from=2025-01-01&to=2026-07-30&focus=titres")
     assert focus["hero"]["pocket"] == "titres"
+
+
+def test_by_asset_class_the_share_is_its_own_line_but_the_allocation_counts_it_as_equity(client, share):
+    q = "/api/savings?from=2025-01-01&to=2026-07-30&split=asset"
+    s = api(client, q)
+    assert any(p["key"] == "titres" for p in s["evolution"]["spec"])
+    assert any(p["name"] == "Titres non cotés" and p["value"] == 1250 for p in s["parts"])
+    assert sum(p["value"] for p in s["parts"]) == pytest.approx(s["total"], abs=1)
+    # "Actions" no longer carries it, on the curve as in the bar.
+    off = api(client, q + "&titres=0")
+    actions = next(p["value"] for p in s["parts"] if p["name"] == "Actions")
+    assert actions == pytest.approx(next(p["value"] for p in off["parts"] if p["name"] == "Actions"), abs=0.01)
+    # The targets name classes: the share stays equity there, never a class
+    # aimed at zero.
+    assert "Titres non cotés" not in s["allocation"]["current"]
+
+
+def test_several_holdings_each_have_their_line_in_their_pocket(client, pockets):
+    path = client.application.extensions["pms_store"].path.with_name("holdings.json")
+    two = {"holdings": [*SHARE["holdings"],
+                        {"id": "w1", "name": "Montre Exemple", "quantity": 1, "payer": "",
+                         "withholding": False, "since": 2025, "values": {"2025": 4000, "2026": 4200}}]}
+    path.write_text(json.dumps(two), encoding="utf-8")
+    try:
+        s = api(client, "/api/savings?from=2025-01-01&to=2026-07-30&focus=titres")
+        assert [p["name"] for p in s["evolution"]["spec"]] == ["Port Exemple SA", "Montre Exemple"]
+        assert {p["name"]: p["value"] for p in s["parts"]} == {"Port Exemple SA": 1250, "Montre Exemple": 4200}
+        assert s["hero"]["value"] == pytest.approx(5450, abs=0.01)
+    finally:
+        path.unlink(missing_ok=True)

@@ -790,7 +790,7 @@ def _risk_table(book: SavingsBook, start: dt.date, end: dt.date,
 
 def _split_series(split: str, finpension: dict | None,
                   focus: str = "total", crypto: bool = False,
-                  titres: bool = False) -> list[dict]:
+                  titres: list[dict] | bool = False) -> list[dict]:
     """The plot's lines for the chosen breakdown -- the same parts as the
     bar, so the curve and the split never disagree. Slots stay within the
     eight validated hues; the total rides on top.
@@ -845,7 +845,15 @@ def _split_series(split: str, finpension: dict | None,
     elif focus == "crypto":
         spec = [part("crypto", "Crypto (Revolut)", 5)]
     elif focus == "titres":
-        spec = [part("titres", "Titres non cotés", 4)]
+        # Several declared (a share, a watch): a line each, in hues the
+        # other pockets leave free.
+        held = titres if isinstance(titres, list) else []
+        if len(held) > 1:
+            free = (4, 6, 7, 5, 2, 3, 0)
+            spec = [part(f"titre_{h['id']}", h["name"], free[i % len(free)])
+                    for i, h in enumerate(held)]
+        else:
+            spec = [part("titres", "Titres non cotés", 4)]
     elif split == "currency":
         spec = [part("chf", "CHF", 0), part("usd", "USD", 2)]
     elif split == "asset":
@@ -853,6 +861,10 @@ def _split_series(split: str, finpension: dict | None,
                 part("mf", "Trend-Following", 3)]
         if crypto:
             spec.append(part("crypto", "Crypto", 5))
+        # Equity too, but a line of their own: folded into "Actions" they
+        # were there and nowhere to be seen.
+        if titres:
+            spec.append(part("titres", "Titres non cotés", 4))
     elif split == "fund":
         spec = [part("cash", "Cash", 0), part("rss", "RSST", 2)]
         for isin, holding in (finpension["holdings"].items()
@@ -885,7 +897,9 @@ def _split_series(split: str, finpension: dict | None,
 def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                    finp_value: float, split: str,
                    focus: str = "total", crypto: dict | None = None,
-                   crypto_value: float = 0.0, titres_value: float = 0.0) -> list[dict]:
+                   crypto_value: float = 0.0, titres_value: float = 0.0,
+                   titres_in_actions: bool = False,
+                   titres_each: list[tuple[str, float]] | None = None) -> list[dict]:
     """The savings split for the bar, one of three views of the same money.
 
     By account (the default), by currency, or by asset class. A focus
@@ -893,6 +907,11 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
     the 3a its funds -- and the bar fills to the pocket, not to the whole
     portfolio. Whatever the view cannot classify -- a declared account
     with no currency -- folds into "Autres", so the bar always fills.
+
+    By asset class, unlisted shares are a part of their own, as on the
+    curve. The allocation asks `titres_in_actions`: its targets name
+    classes, and a part no target names is aimed at zero -- it would
+    propose selling a share nobody can sell.
     """
     finp = finp_value
     nav = ibkr["nav_chf"]
@@ -984,7 +1003,9 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
         # the view, the box fills with the balance.
         parts = [("CHF" if split == "currency" else "Cash", round(swiss, 2))]
     elif focus == "titres":
-        parts = [("Titres non cotés", round(titres_value, 2))]
+        parts = ([(name, round(value, 2)) for name, value in titres_each]
+                 if titres_each and len(titres_each) > 1
+                 else [("Titres non cotés", round(titres_value, 2))])
     elif focus == "crypto":
         # One coin per part, in the proportions of the last capture.
         held = [(p["symbol"], p["value_chf"] or 0.0)
@@ -1038,13 +1059,15 @@ def _savings_parts(ibkr: dict, swiss: float, finpension: dict | None,
                         + finp * weight / total_weight
             else:
                 classes["Autres"] = classes.get("Autres", 0.0) + finp
-        if titres_value:
+        if titres_value and titres_in_actions:
             classes["Actions"] = classes.get("Actions", 0.0) + titres_value
         labels = {"MF": "Trend-Following"}
         for name in ("Actions", "Obligations", "MF"):
             if classes.get(name):
                 parts.append((labels.get(name, name),
                               round(classes[name], 2)))
+        if titres_value and not titres_in_actions:
+            parts.append(("Titres non cotés", round(titres_value, 2)))
         if crypto_value:
             parts.append(("Crypto", round(crypto_value, 2)))
         if classes.get("Autres"):
@@ -1139,6 +1162,10 @@ def _evolution_row(statement, ibkr: dict, finpension: dict | None,
     # Unlisted shares at their declared value: a Swiss company's equity.
     owned = [h for h in securities or [] if point_day >= holdings_module.start(h)]
     titres = holdings_module.value_on(owned, point_day) if owned else 0.0
+    # Each one too, for the pocket's own breakdown: a share, a watch.
+    each = {f"titre_{h['id']}": (holdings_module.value_on([h], point_day)
+                                 if h in owned else None)
+            for h in securities or []}
 
     cash_chf = sum(c["amount"] for c in ibkr["cash"] if c["currency"] == "CHF")
     usd_cash_chf = sum(c["amount"] for c in ibkr["cash"]
@@ -1159,13 +1186,15 @@ def _evolution_row(statement, ibkr: dict, finpension: dict | None,
         "total": round(swiss + nav0 + finp + coins + titres, 2),
         "crypto": round(coins, 2) if started else None,
         "titres": round(titres, 2) if owned else None,
+        **each,
         # breakdown views of the same money. The IBKR cash is inside
         # the NAV series, so it is not added again.
         "chf": round(swiss + finp + cash_chf + titres, 2),
         "usd": (round(nav0 + coins, 2)
                 if nav is not None or started else None),
         "cash": round(swiss + finp * cash_share, 2),
-        "actions": round(nav0 * 0.5 + finp * fund_share + titres, 2),
+        # Listed equity only: the unlisted shares are their own line ("titres").
+        "actions": round(nav0 * 0.5 + finp * fund_share, 2),
         "mf": round(nav * 0.5, 2) if nav is not None else None,
         "rss": round(nav, 2) if nav is not None else None,
         # The focused pocket's own breakdown: the breakdown views
