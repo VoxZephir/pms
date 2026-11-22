@@ -128,6 +128,20 @@ export interface Stacked {
   launch?: StackedRead | null;
   position: null | { value: number; pnl: number; pnl_pct: number };
   sources?: Record<string, string>;
+  periods?: null | TrendPeriods;
+}
+
+/** The trend pocket against SG Trend, DBMF against SG CTA, period by
+ * period, above cash (`stacked.periods`). */
+export interface TrendPeriods {
+  rows: (TrendRead & { period: string; sources: string })[];
+  total: TrendRead;
+  note: string;
+  estimated: boolean;
+}
+
+export interface TrendRead {
+  pocket: number; sg_trend: number; sg_cta: number; dbmf: number; gap_trend: number; gap_cta: number;
 }
 
 export interface StackedRead {

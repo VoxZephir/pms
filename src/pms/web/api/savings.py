@@ -219,7 +219,8 @@ def _stacked(path, ibkr: dict, start: dt.date, end: dt.date) -> dict | None:
               for k in stacked_module.NEEDED}
     window = stacked_module.analyse(series, start, end)
     if window is None:
-        return {"missing": True, "position": None}
+        return {"missing": True, "position": None,
+                "periods": stacked_module.periods(path.with_name("trend_periods.json"))}
     # The fund is older than the statement: "since launch" is not a window
     # the page can show, so it comes along, read up to the same end.
     launch = stacked_module.analyse(series, dt.date.min, end)
@@ -229,6 +230,7 @@ def _stacked(path, ibkr: dict, start: dt.date, end: dt.date) -> dict | None:
         "position": ({k: held[k] for k in ("value", "pnl", "pnl_pct")}
                      if all(held.get(k) is not None for k in ("value", "pnl", "pnl_pct")) else None),
         "sources": {k: benchmarks_module.source(k) for k in stacked_module.NEEDED},
+        "periods": stacked_module.periods(path.with_name("trend_periods.json")),
     }
 
 

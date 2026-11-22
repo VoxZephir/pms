@@ -8,7 +8,7 @@ import { useMemo, useState } from "react";
 import { Lines, monthTicks } from "@/charts/Lines";
 import { Callout, Dot, Note, Panel, Segmented, cx } from "@/components/ui";
 import { chf, day, frDate, signedRate } from "@/lib/format";
-import type { Savings, StackedLine } from "@/lib/savings";
+import type { Savings, StackedLine, TrendPeriods as TrendPeriodsData, TrendRead } from "@/lib/savings";
 
 const LINES: { key: StackedLine; name: string; color: string; dash?: boolean; width: number; why: string }[] = [
   { key: "fund", name: "RSST", color: "var(--s0)", width: 2.5, why: "le fonds, dividendes réinvestis" },
@@ -45,6 +45,7 @@ export function StackedFund({ s }: { s: Savings }) {
     return (
       <Panel id="p-stacked" title={title}>
         <Note className="mt-0">Les séries du fonds et de ses composantes ne sont pas capturées : « Rafraîchir », ou <code>python -m pms --benchmarks</code>.</Note>
+        {pack.periods && <TrendPeriods p={pack.periods} />}
       </Panel>
     );
   }
@@ -60,6 +61,7 @@ export function StackedFund({ s }: { s: Savings }) {
           {st.days ?? 0} jours de cotation sur la fenêtre : trop peu pour une volatilité ou une régression (40 au moins).
           {toggle && " « Depuis le lancement » lit le fonds sur toute son histoire."}
         </Note>
+        {pack.periods && <TrendPeriods p={pack.periods} />}
       </Panel>
     );
   }
@@ -151,6 +153,8 @@ export function StackedFund({ s }: { s: Savings }) {
                            sub={`en moyenne : S&P ${signedRate(st.falls.stocks)}, RSST ${signedRate(st.falls.fund)}, trend ${signedRate(st.falls.leg)} (positive ${st.falls.leg_up} fois)`} />}
       </div>
 
+      {pack.periods && <TrendPeriods p={pack.periods} />}
+
       {pos && (
         <Callout className="mt-4" title="Ta position">
           {chf(pos.value, 0)} CHF à la dernière capture IBKR ·{" "}
@@ -168,6 +172,68 @@ export function StackedFund({ s }: { s: Savings }) {
         {pack.sources && <> Sources : {Object.values(pack.sources).join(" ; ")}.</>}
       </Note>
     </Panel>
+  );
+}
+
+/** A return already in % (12.3), signed. */
+function sp(v: number) {
+  if (Math.abs(v) < 0.05) return "0.0 %";
+  return `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(1)} %`;
+}
+
+function pctTone(v: number) {
+  return v >= 0.05 ? "text-good" : v <= -0.05 ? "text-critical" : "";
+}
+
+/** The pocket against its index, DBMF against its own, above cash, period
+ * by period then cumulated: the skill's reading, figures gathered by hand
+ * since SG keeps its index histories private. */
+function TrendPeriods({ p }: { p: TrendPeriodsData }) {
+  const cols: { key: keyof TrendRead; label: string; gap?: boolean }[] = [
+    { key: "pocket", label: "Poche trend RSST" },
+    { key: "sg_trend", label: "SG Trend" },
+    { key: "gap_trend", label: "Poche − SG Trend", gap: true },
+    { key: "dbmf", label: "DBMF" },
+    { key: "sg_cta", label: "SG CTA" },
+    { key: "gap_cta", label: "DBMF − SG CTA", gap: true },
+  ];
+  const cells = (r: TrendRead, strong = false) => cols.map((c) => (
+    <td key={c.key} className={cx("num whitespace-nowrap px-3 py-2 text-right", c.gap && pctTone(r[c.key]), strong && "font-semibold")}>{sp(r[c.key])}</td>
+  ));
+  return (
+    <div id="stacked-periods" className="mt-5">
+      <h3 className="text-[14px] font-semibold text-ink">Contre les indices SG, en excès du cash</h3>
+      <p className="mt-0.5 text-[12.5px] text-muted">
+        Rendements totaux en USD par période ; la poche est RSST moins le S&amp;P 500 TR, nette des frais du fonds ; les indices et DBMF moins les bons du Trésor.
+      </p>
+      <div className="-mx-4 mt-2 overflow-x-auto sm:-mx-5">
+        <table className="w-full min-w-[680px] border-collapse text-[13px]">
+          <thead>
+            <tr className="border-b border-hairline text-[11.5px] font-semibold uppercase tracking-[0.06em] text-muted">
+              <th className="px-4 py-2 text-left sm:px-5">Période</th>
+              {cols.map((c) => <th key={c.key} className="px-3 py-2 text-right">{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {p.rows.map((r) => (
+              <tr key={r.period} className="border-b border-hairline" title={r.sources}>
+                <td className="px-4 py-2 sm:px-5">{r.period}</td>
+                {cells(r)}
+              </tr>
+            ))}
+            <tr className="border-t-2 border-hairline-2">
+              <td className="px-4 py-2 font-semibold sm:px-5">Cumul</td>
+              {cells(p.total, true)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <Note>
+        SG ne publie pas l'historique de ses indices : ces chiffres sont rassemblés à la main (skill <code>analyse-poche-trend-rsst</code>),
+        la source de chaque ligne au survol. {p.estimated && "Certaines cases sont déduites ou estimées : environ ±1 point par chiffre. "}
+        {p.note}
+      </Note>
+    </div>
   );
 }
 

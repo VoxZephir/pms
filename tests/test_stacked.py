@@ -97,6 +97,26 @@ def test_months_are_whole_and_the_falls_count_them():
     assert falls["stocks"] < 0
 
 
+def test_the_pocket_and_the_indices_above_cash_by_period(tmp_path):
+    """Invented returns: a pocket exactly the fund minus the S&P 500, indices
+    over cash, cumulated period after period."""
+    rows = [{"periode": "A", "ordre": 1, "rsst": 21.0, "sptr": 10.0, "sg_trend": 6.0, "sg_cta": 4.0,
+             "dbmf": 9.0, "cash": 4.0, "sources": "inventé"},
+            {"periode": "B", "ordre": 2, "rsst": -5.0, "sptr": -5.0, "sg_trend": 1.0, "sg_cta": 1.0,
+             "dbmf": 1.0, "cash": 1.0, "sources": "est."}]
+    path = tmp_path / "trend_periods.json"
+    path.write_text(json.dumps({"rows": rows[::-1], "meta": []}), encoding="utf-8")
+    read = stacked.periods(path)
+    a, b = read["rows"]                                    # sorted by `ordre`
+    assert a["period"] == "A" and a["pocket"] == pytest.approx((10 + 11) / 2, abs=0.01)
+    assert a["sg_cta"] == pytest.approx(0.0, abs=1e-9)     # 4 % against 4 % of cash
+    assert b["pocket"] == pytest.approx(0.0) and b["sg_trend"] == pytest.approx(0.0)
+    assert read["total"]["pocket"] == pytest.approx(a["pocket"], abs=0.01)
+    assert read["total"]["gap_trend"] == pytest.approx(read["total"]["pocket"] - read["total"]["sg_trend"])
+    assert read["estimated"]                               # one row says "est."
+    assert stacked.periods(tmp_path / "absent.json") is None
+
+
 def test_the_components_are_captured_but_not_offered(tmp_path):
     out = tmp_path / "benchmarks.json"
     snap = benchmarks.capture(out, D(2026, 1, 1), D(2026, 7, 1),

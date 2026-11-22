@@ -362,6 +362,18 @@ les deux lectures, et « depuis le lancement » s'impose tant que la fenêtre a 
 40 jours de cotation (le mois en cours, le défaut). Le panneau n'apparaît que si IBKR
 détient RSST. Il juge le fonds, pas le moment des achats : la position est rappelée à part.
 
+**Contre les indices SG, en excès du cash** (`stacked.periods`, bas du panneau). SG ne publie
+pas l'historique de ses indices (flux publics : le mois et l'année en cours seulement, SG Trend
+figé depuis juillet 2025 ; BarclayHedge reprend les mêmes estimations du jour). Il n'y a donc
+pas de série quotidienne : des rendements totaux par période (années civiles, l'année en cours
+au dernier mois complet, ce mois seul), rassemblés à la main par la skill
+`analyse-poche-trend-rsst`, dans `data/trend_periods.json` (gitignoré ; le script qui l'écrit,
+`data/trend_periods.py`, est gardé dans son `meta`). La poche = RSST moins S&P 500 TR (moyenne
+des lectures multiplicative et additive, nette des frais du fonds) ; SG Trend, SG CTA et DBMF
+moins le cash ; cumul période après période ; écarts poche − SG Trend et DBMF − SG CTA (l'indice
+de DBMF). Chaque ligne garde ses sources (au survol), les cases déduites ou estimées sont
+signalées : ±1 point environ. Le même fichier alimente le tableau de bord de la skill.
+
 Mesuré au 20.11.2026 depuis le lancement : RSST +12,3 %/an, réplique +18,2 %/an
 (écart −5,8 pts/an, frais compris) ; bêta actions 1,14, bêta trend 0,83 (R² 0,86) ;
 jambe trend +1,9 %/an contre +6,9 % pour DBMF (corrélation 0,82). Le franc d'actions est

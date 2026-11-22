@@ -205,6 +205,60 @@ def analyse(series: dict[str, list[tuple[dt.date, float]]], start: dt.date,
     return out
 
 
+INDEX_KEYS = ("sg_trend", "sg_cta", "dbmf")
+
+
+def pocket(rsst: float, sptr: float) -> float:
+    """RSST's trend pocket over a period, in %, net of all its fees: the
+    fund with the S&P 500 taken out, the mean of the multiplicative and the
+    additive readings (they part a little in a big year)."""
+    mult = ((1 + rsst / 100) / (1 + sptr / 100) - 1) * 100
+    return (mult + (rsst - sptr)) / 2
+
+
+def excess(x: float, cash: float) -> float:
+    """A return above cash, in %: what a trend index adds over its T-bills."""
+    return ((1 + x / 100) / (1 + cash / 100) - 1) * 100
+
+
+def periods(path) -> dict | None:
+    """The trend pocket against the SG Trend Index, and DBMF against the SG
+    CTA Index (its own index), period by period and cumulated, from
+    `data/trend_periods.json` -- returns gathered by hand (the
+    `analyse-poche-trend-rsst` skill): SG keeps its histories private, so no
+    daily series exists to compute this from. Each row keeps its sources."""
+    import json
+    from pathlib import Path
+    path = Path(path)
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    rows = sorted(raw.get("rows") or [], key=lambda r: r.get("ordre", 0))
+    if not rows:
+        return None
+    cum = {k: 1.0 for k in ("pocket", *INDEX_KEYS)}
+    out = []
+    for r in rows:
+        read = {"pocket": pocket(r["rsst"], r["sptr"]),
+                **{k: excess(r[k], r["cash"]) for k in INDEX_KEYS}}
+        for k in cum:
+            cum[k] *= 1 + read[k] / 100
+        out.append({"period": r["periode"], **{k: round(v, 2) for k, v in read.items()},
+                    "gap_trend": round(read["pocket"] - read["sg_trend"], 2),
+                    "gap_cta": round(read["dbmf"] - read["sg_cta"], 2),
+                    "sources": r.get("sources", "")})
+    total = {k: round((v - 1) * 100, 2) for k, v in cum.items()}
+    total["gap_trend"] = round(total["pocket"] - total["sg_trend"], 2)
+    total["gap_cta"] = round(total["dbmf"] - total["sg_cta"], 2)
+    note = next((m["value"] for m in raw.get("meta") or [] if m.get("label") == "Collecte"), "")
+    return {"rows": out, "total": total, "note": note,
+            "estimated": any("est." in r.get("sources", "") or "déduit" in r.get("sources", "")
+                             for r in rows)}
+
+
 def _pct(v: float, signed: bool = True) -> str:
     text = f"{abs(v) * 100:.1f}"
     return (("+" if v >= 0 else "−") if signed else "") + text + " %"
