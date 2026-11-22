@@ -101,7 +101,8 @@ def main(argv: list[str]) -> int:
     message = f"Version du {dt.date.today():%d.%m.%Y}"
     commit = git("commit-tree", tree, "-p", parent, "-m", message, env=env)
     git("push", "--quiet", PUBLIC, f"{commit}:refs/heads/{BRANCH}")
-    print(f"Publié : {message} → {PUBLIC}")
+    # ASCII arrow: a cp1252 console cannot print "→", and the push is done.
+    print(f"Publié : {message} -> {PUBLIC}")
     return 0
 
 
