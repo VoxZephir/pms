@@ -104,8 +104,11 @@ la **copie de travail du scénario affiché** : chaque formulaire de la page la 
 `save()` la recopie dans le scénario actif. Changer de scénario range d'abord celle-ci,
 puis charge l'autre — rien de tapé ne se perd, et un fichier sans scénario se lit comme
 avant (un plan sans nom). « Enregistrer sous » copie le plan affiché et bascule sur la
-copie : on part d'un plan qui marche et on le varie. Supprimer le scénario affiché garde
-ses champs, sans nom — rien ne change à l'écran. Le tableau « Scénarios » projette chacun
+copie : on part d'un plan qui marche et on le varie. Supprimer le scénario affiché le retire
+aussi de l'écran : le premier plan enregistré qui reste s'affiche, ou un plan vide s'il
+n'en reste aucun. L'annulation le remet à l'écran. Jusqu'au 22.11, ses champs restaient
+affichés sous « Plan sans nom », et la suppression semblait ne pas avoir eu lieu. La
+courbe de cash des scénarios se dessine dès un seul plan. Le tableau « Scénarios » projette chacun
 sur le même horizon et répond aux questions d'un scénario : point bas du cash, cash à
 l'horizon, versé aux placements, patrimoine (les poches partent de leur valeur du jour et
 croissent au barème de chaque scénario, dans la vue de patrimoine affichée). Les scénarios
