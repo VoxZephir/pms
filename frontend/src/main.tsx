@@ -7,7 +7,13 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router";
 
 import { queryClient } from "./lib/api";
+import { reloadOnce } from "./lib/stale";
 import { router } from "./router";
+
+// A chunk's dependency missing after a new build (lib/stale.ts): reload.
+window.addEventListener("vite:preloadError", (event) => {
+  if (reloadOnce()) event.preventDefault();
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

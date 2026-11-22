@@ -1,13 +1,30 @@
-import { CircleAlert } from "lucide-react";
-import type { ReactNode } from "react";
+import { CircleAlert, RefreshCw } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { isRouteErrorResponse, useRouteError } from "react-router";
 
-import { ButtonLink } from "./ui";
+import { isStaleBuild, reloadOnce } from "@/lib/stale";
+
+import { Button, ButtonLink } from "./ui";
 
 export function PageError({ notFound, error }: { notFound?: boolean; error?: unknown }) {
   const routeError = useRouteError();
   const err = error ?? routeError;
   const missing = notFound || (isRouteErrorResponse(err) && err.status === 404);
+  // The page's code belongs to a build replaced since the tab opened.
+  const stale = !missing && isStaleBuild(err);
+  const [reloading] = useState(() => stale && reloadOnce());
+  if (stale) {
+    return (
+      <div className="mx-auto max-w-md py-20 text-center">
+        <RefreshCw className="mx-auto text-muted" size={32} />
+        <h1 className="mt-4 text-xl font-semibold">Une nouvelle version de l'app est là</h1>
+        <p className="mt-2 text-[14px] text-muted">
+          {reloading ? "Rechargement…" : "Cette page a été ouverte avec l'ancienne : il faut la recharger."}
+        </p>
+        {!reloading && <Button className="mt-6" variant="primary" onClick={() => window.location.reload()}>Recharger la page</Button>}
+      </div>
+    );
+  }
   return (
     <div className="mx-auto max-w-md py-20 text-center">
       <CircleAlert className="mx-auto text-muted" size={32} />
