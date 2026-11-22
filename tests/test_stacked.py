@@ -117,6 +117,31 @@ def test_the_pocket_and_the_indices_above_cash_by_period(tmp_path):
     assert stacked.periods(tmp_path / "absent.json") is None
 
 
+def test_the_sg_lines_join_their_anchors_in_francs():
+    """No franc move and an index returning what DBMF returned: the SG CTA
+    line lands where DBMF does at each anchor, and is None outside."""
+    series = _series(n=520)
+    # DBMF over 2024, in the invented series (no exchange rate: fx = 1).
+    lv = dict(series[stacked.TREND])
+    a, z = D(2024, 1, 31), D(2024, 12, 31)
+    day_a = max(d for d in lv if d <= a)
+    day_z = max(d for d in lv if d <= z)
+    dbmf = (lv[day_z] / lv[day_a] - 1) * 100
+    read = stacked.analyse(series, D(2024, 1, 1), D(2026, 1, 1))
+    rows = [{"debut": a.isoformat(), "fin": z.isoformat(), "dbmf": dbmf, "sg_cta": dbmf, "sg_trend": 0.0}]
+    stacked.overlay(read, rows, series[stacked.TREND])
+    curve = read["rows"]
+    at_z = next(r for r in reversed(curve) if r["date"] <= z)
+    start = next(r for r in reversed(curve) if r["date"] <= a)
+    assert read["anchors"]["sg_cta"][-1]["level"] == pytest.approx(
+        start["trend"] * lv[day_z] / lv[day_a], rel=1e-3)
+    assert at_z["sg_cta"] == pytest.approx(at_z["trend"], rel=0.02)
+    assert curve[0]["sg_cta"] is None and curve[-1]["sg_cta"] is None
+    # An index that made nothing in USD stays flat in a USD world.
+    assert read["anchors"]["sg_trend"][-1]["level"] == pytest.approx(
+        read["anchors"]["sg_trend"][0]["level"], rel=1e-9)
+
+
 def test_the_components_are_captured_but_not_offered(tmp_path):
     out = tmp_path / "benchmarks.json"
     snap = benchmarks.capture(out, D(2026, 1, 1), D(2026, 7, 1),

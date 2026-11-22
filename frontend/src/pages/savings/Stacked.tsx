@@ -20,6 +20,15 @@ const LINES: { key: StackedLine; name: string; color: string; dash?: boolean; wi
     why: "RSST − S&P 500 + bons du Trésor : le trend que le fonds a vraiment livré" },
 ];
 
+// The SG indices: no daily series, their period ends joined, each from the
+// level of the line it is compared with (`stacked.overlay`).
+const SG_LINES: { key: "sg_trend" | "sg_cta"; name: string; color: string; why: string }[] = [
+  { key: "sg_trend", name: "SG Trend", color: "var(--s4)",
+    why: "indice de la poche trend de RSST · fins de période reliées, part du niveau de la jambe trend" },
+  { key: "sg_cta", name: "SG CTA", color: "var(--s3)",
+    why: "indice de DBMF · fins de période reliées, part du niveau de DBMF" },
+];
+
 const TONE: Record<string, string> = { good: "text-good", warn: "text-warn", bad: "text-critical" };
 
 function rateTone(v: number | null | undefined) {
@@ -72,6 +81,7 @@ export function StackedFund({ s }: { s: Savings }) {
   const yearly = stats.fund.annual != null;
   const shown = (k: StackedLine) => (yearly ? stats[k].annual : stats[k].total);
   const pos = pack.position;
+  const sgLines = SG_LINES.filter((l) => rows.some((r) => r[l.key] != null));
 
   return (
     <Panel id="p-stacked" title={title} actions={toggle}
@@ -86,10 +96,16 @@ export function StackedFund({ s }: { s: Savings }) {
       </ul>
 
       <Lines xs={xs} height={240} zero={false}
-             series={LINES.filter((l) => !hidden.has(l.key)).map((l) => ({
-               key: l.key, name: l.name, color: l.color, dash: l.dash, width: l.width,
-               values: rows.map((r) => r[l.key]),
-             }))}
+             series={[
+               ...LINES.filter((l) => !hidden.has(l.key)).map((l) => ({
+                 key: l.key, name: l.name, color: l.color, dash: l.dash, width: l.width,
+                 values: rows.map((r) => r[l.key]),
+               })),
+               ...sgLines.filter((l) => !hidden.has(l.key)).map((l) => ({
+                 key: l.key, name: l.name, color: l.color, dash: true, width: 1.75,
+                 values: rows.map((r) => r[l.key] ?? null),
+               })),
+             ]}
              format={(v) => v.toFixed(0)}
              tipFormat={(v) => v.toFixed(1)}
              xLabel={(i) => frDate(rows[i].date)}
@@ -97,7 +113,7 @@ export function StackedFund({ s }: { s: Savings }) {
              refs={[{ value: 100, color: "var(--axis)", dash: true }]}
              ariaLabel="RSST, sa réplique et ses composantes, base 100" />
       <div className="mt-3 flex flex-wrap gap-2">
-        {LINES.map((l) => {
+        {[...LINES, ...sgLines.map((l) => ({ ...l, dash: true }))].map((l) => {
           const off = hidden.has(l.key);
           return (
             <button key={l.key} type="button" aria-pressed={!off} title={l.why}
@@ -169,6 +185,7 @@ export function StackedFund({ s }: { s: Savings }) {
         La jambe trend retire au fonds son franc d'actions : c'est le trend qu'il a vraiment livré. Le fonds managed futures (DBMF) est un repère,
         pas le modèle de RSST : un écart dit aussi que les deux modèles trend diffèrent, pas seulement que le fonds coûte.
         Le bêta trend mesuré contre ce repère est tiré vers le bas pour la même raison.
+        {sgLines.length > 0 && " SG Trend et SG CTA n'ont pas de série quotidienne publique : leurs lignes relient les fins de période du tableau plus bas, converties en francs, et partent du niveau de la ligne à laquelle chacune se compare (la jambe trend, DBMF)."}
         {pack.sources && <> Sources : {Object.values(pack.sources).join(" ; ")}.</>}
       </Note>
     </Panel>

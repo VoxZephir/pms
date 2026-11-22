@@ -221,20 +221,27 @@ def excess(x: float, cash: float) -> float:
     return ((1 + x / 100) / (1 + cash / 100) - 1) * 100
 
 
-def periods(path) -> dict | None:
-    """The trend pocket against the SG Trend Index, and DBMF against the SG
-    CTA Index (its own index), period by period and cumulated, from
-    `data/trend_periods.json` -- returns gathered by hand (the
-    `analyse-poche-trend-rsst` skill): SG keeps its histories private, so no
-    daily series exists to compute this from. Each row keeps its sources."""
+def load_periods(path) -> dict | None:
+    """`data/trend_periods.json` as written ({rows, meta}), or None."""
     import json
     from pathlib import Path
     path = Path(path)
     if not path.exists():
         return None
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+
+
+def periods(path) -> dict | None:
+    """The trend pocket against the SG Trend Index, and DBMF against the SG
+    CTA Index (its own index), period by period and cumulated, from
+    `data/trend_periods.json` -- returns gathered by hand (the
+    `analyse-poche-trend-rsst` skill): SG keeps its histories private, so no
+    daily series exists to compute this from. Each row keeps its sources."""
+    raw = load_periods(path)
+    if raw is None:
         return None
     rows = sorted(raw.get("rows") or [], key=lambda r: r.get("ordre", 0))
     if not rows:
@@ -257,6 +264,59 @@ def periods(path) -> dict | None:
     return {"rows": out, "total": total, "note": note,
             "estimated": any("est." in r.get("sources", "") or "déduit" in r.get("sources", "")
                              for r in rows)}
+
+
+def _level_on(series: list[tuple[dt.date, float]], day: dt.date) -> float | None:
+    before = [v for d, v in series if d <= day]
+    return before[-1] if before else None
+
+
+def overlay(read: dict, rows: list[dict], dbmf_chf: list[tuple[dt.date, float]]) -> None:
+    """Add the SG indices to a read's curve, in place: `sg_trend` next to the
+    trend leg, `sg_cta` next to DBMF. SG gives no daily series, only the
+    periods' returns (in USD), so each line is its anchors -- the periods'
+    ends -- joined geometrically, and None outside them.
+
+    In francs like the rest: a period's USD-to-CHF factor is read off DBMF
+    itself, its CHF level move over its USD return; the franc's move is the
+    same for every USD asset. Each line starts at the level of the line it
+    is compared with on the first anchor, so their gap is the difference
+    since then."""
+    if not rows or read.get("short") or not read.get("rows"):
+        return
+    curve = read["rows"]
+    first, last = curve[0]["date"], curve[-1]["date"]
+    periods_ = sorted((r for r in rows if r.get("debut") and r.get("fin")),
+                      key=lambda r: r["debut"])
+    for key, ref in (("sg_trend", "leg"), ("sg_cta", "trend")):
+        anchors: list[tuple[dt.date, float]] = []
+        for r in periods_:
+            a, z = dt.date.fromisoformat(r["debut"]), dt.date.fromisoformat(r["fin"])
+            if a < first or z > last:
+                continue
+            d0, d1 = _level_on(dbmf_chf, a), _level_on(dbmf_chf, z)
+            if not d0 or not d1:
+                continue
+            fx = (d1 / d0) / (1 + r["dbmf"] / 100)
+            if anchors and anchors[-1][0] != a:
+                break                    # a gap between periods: stop there
+            if not anchors:
+                start = next((row[ref] for row in reversed(curve) if row["date"] <= a), curve[0][ref])
+                anchors.append((a, start))
+            anchors.append((z, anchors[-1][1] * (1 + r[key] / 100) * fx))
+        for row in curve:
+            row[key] = None
+        if len(anchors) < 2:
+            continue
+        for row in curve:
+            d = row["date"]
+            if not anchors[0][0] <= d <= anchors[-1][0]:
+                continue
+            i = next(i for i in range(1, len(anchors)) if d <= anchors[i][0])
+            (a, la), (z, lz) = anchors[i - 1], anchors[i]
+            share = (d - a).days / ((z - a).days or 1)
+            row[key] = round(la * (lz / la) ** share, 3)
+        read.setdefault("anchors", {})[key] = [{"date": d, "level": round(v, 3)} for d, v in anchors]
 
 
 def _pct(v: float, signed: bool = True) -> str:

@@ -151,7 +151,7 @@ export interface StackedRead {
   from?: string;
   to?: string;
   span_days?: number;
-  rows?: ({ date: string } & Record<StackedLine, number>)[];
+  rows?: ({ date: string; sg_trend?: number | null; sg_cta?: number | null } & Record<StackedLine, number>)[];
   stats?: Record<StackedLine, StackedStat>;
   tracking?: { difference: number; difference_pa: number | null; error_pa: number; corr: number | null; leg_corr_trend: number | null };
   regression?: null | { alpha_pa: number; beta_stocks: number; beta_trend: number; r2: number | null; days: number };

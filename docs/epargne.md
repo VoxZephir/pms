@@ -374,6 +374,14 @@ moins le cash ; cumul période après période ; écarts poche − SG Trend et D
 de DBMF). Chaque ligne garde ses sources (au survol), les cases déduites ou estimées sont
 signalées : ±1 point environ. Le même fichier alimente le tableau de bord de la skill.
 
+**Les indices SG sur la courbe** (`stacked.overlay`) : deux lignes pointillées qui relient les
+fins de période (`debut`/`fin` de chaque ligne du fichier), jointes géométriquement, `None`
+hors de leurs ancres. En francs comme le reste : le facteur USD→CHF d'une période est lu sur
+DBMF lui-même (son mouvement en CHF sur son rendement en USD), le change étant le même pour
+tout actif en dollars. SG Trend part du niveau de la jambe trend à la première ancre, SG CTA
+de celui de DBMF : l'écart entre deux lignes appariées est la différence depuis ce jour-là.
+Une ancre hors de la fenêtre (ou une période manquante) arrête la ligne, on n'invente rien.
+
 Mesuré au 20.11.2026 depuis le lancement : RSST +12,3 %/an, réplique +18,2 %/an
 (écart −5,8 pts/an, frais compris) ; bêta actions 1,14, bêta trend 0,83 (R² 0,86) ;
 jambe trend +1,9 %/an contre +6,9 % pour DBMF (corrélation 0,82). Le franc d'actions est

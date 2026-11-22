@@ -224,6 +224,10 @@ def _stacked(path, ibkr: dict, start: dt.date, end: dt.date) -> dict | None:
     # The fund is older than the statement: "since launch" is not a window
     # the page can show, so it comes along, read up to the same end.
     launch = stacked_module.analyse(series, dt.date.min, end)
+    by_period = (stacked_module.load_periods(path.with_name("trend_periods.json")) or {}).get("rows") or []
+    for read in (window, launch):
+        if read:
+            stacked_module.overlay(read, by_period, series[stacked_module.TREND])
     return {
         "missing": False, "window": window, "launch": launch,
         # `ibkr.load` has already named the position's fields for the page.
