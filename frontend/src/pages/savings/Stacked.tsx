@@ -15,7 +15,7 @@ const LINES: { key: StackedLine; name: string; color: string; dash?: boolean; wi
   { key: "replica", name: "Réplique", color: "var(--ink-2)", dash: true, width: 1.75,
     why: "S&P 500 + managed futures − bons du Trésor : ce que le fonds promet" },
   { key: "stocks", name: "S&P 500", color: "var(--s2)", width: 1.5, why: "la jambe actions seule" },
-  { key: "trend", name: "Managed futures", color: "var(--s3)", width: 1.5, why: "un fonds trend ordinaire (DBMF)" },
+  { key: "trend", name: "DBMF", color: "var(--s3)", width: 1.5, why: "managed futures : réplique l'indice SG CTA" },
   { key: "leg", name: "Jambe trend de RSST", color: "var(--s4)", width: 1.5,
     why: "RSST − S&P 500 + bons du Trésor : le trend que le fonds a vraiment livré" },
 ];

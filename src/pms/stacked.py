@@ -229,7 +229,7 @@ def verdict(read: dict) -> list[dict]:
     corr = tr["leg_corr_trend"]
     out.append({"tone": "good" if gap >= -0.02 else "warn" if gap >= -0.05 else "bad",
                 "text": f"Sa jambe trend a rendu {_pct(leg)}{unit}, contre {_pct(trend)} pour un fonds "
-                        f"managed futures" + (f" (corrélation {corr:.2f})." if corr is not None else ".")})
+                        f"managed futures, DBMF" + (f" (corrélation {corr:.2f})." if corr is not None else ".")})
     diff = tr["difference_pa"] if yearly else tr["difference"]
     out.append({"tone": "good" if diff >= -0.015 else "warn" if diff >= -0.04 else "bad",
                 "text": f"Contre sa réplique (S&P 500 + managed futures − bons du Trésor) : "

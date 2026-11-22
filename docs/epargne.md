@@ -347,7 +347,8 @@ travail ? » (`p-stacked`, sous « Baisses ») le mesure contre ce qu'il promet,
 
 Séries : `RSST` et `BIL` (bons du Trésor 1-3 mois) capturés par `--benchmarks` à côté du
 catalogue mais hors du menu des repères (`benchmarks.COMPONENTS`) ; `DBMF` entre au
-catalogue (« Managed futures »), choisissable comme repère. Toutes en clôtures US ajustées
+catalogue (« DBMF »), choisissable comme repère dans le bandeau et la
+courbe en base 100 ; DBMF est construit pour répliquer l'indice SG CTA. Toutes en clôtures US ajustées
 des dividendes : les quatre rendements d'un jour sont pris au même moment.
 
 **DBMF est un repère, pas le modèle de RSST** (ReSolve fait son propre trend) : un écart à
