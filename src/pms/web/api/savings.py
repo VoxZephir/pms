@@ -20,6 +20,7 @@ from ... import finpension as finpension_module
 from ... import fiscal
 from ... import holdings as holdings_module
 from ... import ibkr as ibkr_module
+from ... import stacked as stacked_module
 from .. import periods
 from ..views.common import (
     PERFS, RATES, SCALES, SPLITS, bench_mode, focus_mode, perf_mode, rate_mode, titres_mode,
@@ -159,6 +160,8 @@ def savings():
                                  "source": entry.get("source", "indice de prix"),
                                  "total_return": entry.get("total_return", False)})
 
+    out["stacked"] = _stacked(data.path.with_name("benchmarks.json"), ibkr, start, end)
+
     # The curve: the rows the old chart was drawn from, one line per part of
     # the chosen breakdown; in base 100 the indices ride along, dashed.
     rows = _evolution_rows(data.statement, ibkr, finpension, start, end, period["grain"], book.crypto,
@@ -201,6 +204,32 @@ def savings():
                      "name": holdings_module.pocket_name(declared),
                      "value": holdings_module.value_on(declared, end) if declared else 0.0}
     return payload(out)
+
+
+def _stacked(path, ibkr: dict, start: dt.date, end: dt.date) -> dict | None:
+    """The stacked fund against its replica (`stacked.py`), when the
+    portfolio holds it and its series are captured; the position rides
+    along so the panel can say what it weighs."""
+    held = next((p for p in ibkr.get("positions") or []
+                 if p.get("name", "").upper() == stacked_module.FUND.upper()), None)
+    if held is None:
+        return None
+    raw = (benchmarks_module.load_raw(path) or {}).get("series", {})
+    series = {k: [(dt.date.fromisoformat(d), v) for d, v in raw.get(k) or []]
+              for k in stacked_module.NEEDED}
+    window = stacked_module.analyse(series, start, end)
+    if window is None:
+        return {"missing": True, "position": None}
+    # The fund is older than the statement: "since launch" is not a window
+    # the page can show, so it comes along, read up to the same end.
+    launch = stacked_module.analyse(series, dt.date.min, end)
+    return {
+        "missing": False, "window": window, "launch": launch,
+        # `ibkr.load` has already named the position's fields for the page.
+        "position": ({k: held[k] for k in ("value", "pnl", "pnl_pct")}
+                     if all(held.get(k) is not None for k in ("value", "pnl", "pnl_pct")) else None),
+        "sources": {k: benchmarks_module.source(k) for k in stacked_module.NEEDED},
+    }
 
 
 def _invested(book, dates: list, focus: str) -> dict | None:

@@ -44,11 +44,24 @@ CATALOGUE = [
     ("smi", "SMI", "SMICHA.SW", "CHF", "UBS ETF SMI, dividendes réinvestis"),
     ("eurostoxx50", "Euro Stoxx 50", "SXRT.DE", "EUR", "iShares Core Euro Stoxx 50 (capitalisant)"),
     ("emerging", "Marchés émergents", "EEM", "USD", "iShares MSCI Emerging Markets, dividendes réinvestis"),
+    ("managed_futures", "Managed futures", "DBMF", "USD",
+     "iMGP DBi Managed Futures ETF, dividendes réinvestis"),
     ("gold", "Or", "GC=F", "USD", "once d'or (contrat à terme), sans dividende"),
     ("bitcoin", "Bitcoin", "BTC-USD", "USD", "cours, sans dividende"),
     ("ethereum", "Ethereum", "ETH-USD", "USD", "cours, sans dividende"),
 ]
 KEYS = [key for key, *_ in CATALOGUE]
+
+# Captured with the catalogue but kept out of the menu: what the stacked
+# fund's check reads (`stacked.py`) -- the fund itself, and the cash rate
+# its leverage is financed at.
+COMPONENTS = [
+    ("rsst", "RSST", "RSST", "USD",
+     "Return Stacked US Stocks & Managed Futures ETF, dividendes réinvestis"),
+    ("tbill", "Bons du Trésor US", "BIL", "USD",
+     "SPDR Bloomberg 1-3 Month T-Bill ETF, dividendes réinvestis"),
+]
+COMPONENT_KEYS = [key for key, *_ in COMPONENTS]
 DEFAULT = ("msci_world", "smi")
 # What a capture reads; a snapshot without it predates the switch and holds
 # price indices.
@@ -68,7 +81,7 @@ PROXY_SOURCES = {"SMI": ("^SSMI", None), "URTHxCHF": ("URTH", "CHF=X"),
 
 
 def _entry(key: str) -> tuple:
-    return next(c for c in CATALOGUE if c[0] == key)
+    return next(c for c in CATALOGUE + COMPONENTS if c[0] == key)
 
 
 def label(key: str) -> str:
@@ -163,7 +176,7 @@ def capture(out: Path, start: dt.date, end: dt.date | None = None,
     previous = raw.get("series", {})
     previous_basis = raw.get("bases") or {key: raw.get("basis", "price") for key in previous}
     series, bases, failed = {}, {}, []
-    for key in KEYS:
+    for key in KEYS + COMPONENT_KEYS:
         try:
             series[key] = fetcher(key, start, end)
             bases[key] = BASIS

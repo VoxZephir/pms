@@ -97,6 +97,7 @@ export interface Savings {
   bench: { name: string; rate: number; rate_pa: number | null; since: string | null; source: string; total_return: boolean }[];
   bench_options: { key: string; name: string; on: boolean; available: boolean; source: string }[];
   risk: null | { columns: string[]; rows: { label: string; why: string; cells: { text: string }[] }[]; points: number; yearly: boolean; mode: "annual" | "period"; extrapolated: boolean; cash_share: number | null };
+  stacked: null | Stacked;
   attribution: null | { fund_name: string; fund: number; fx: number; rest: number; total: number };
   invested: null | {
     rows: { date: string; contributed: number; value: number }[];
@@ -111,4 +112,35 @@ export interface Savings {
     stats: { id: string; label: string; title: string }[];
     focuses: { id: string; label: string }[];
   };
+}
+
+export type StackedLine = "fund" | "replica" | "stocks" | "trend" | "leg";
+
+export interface StackedStat {
+  total: number; annual: number | null; vol: number; drawdown: number; corr_stocks: number | null;
+}
+
+/** The stacked fund (RSST) against its replica, from `stacked.py`: over
+ * the page's window, and since the fund's launch. */
+export interface Stacked {
+  missing: boolean;
+  window?: StackedRead;
+  launch?: StackedRead | null;
+  position: null | { value: number; pnl: number; pnl_pct: number };
+  sources?: Record<string, string>;
+}
+
+export interface StackedRead {
+  short: boolean;
+  since?: string;
+  days?: number;
+  from?: string;
+  to?: string;
+  span_days?: number;
+  rows?: ({ date: string } & Record<StackedLine, number>)[];
+  stats?: Record<StackedLine, StackedStat>;
+  tracking?: { difference: number; difference_pa: number | null; error_pa: number; corr: number | null; leg_corr_trend: number | null };
+  regression?: null | { alpha_pa: number; beta_stocks: number; beta_trend: number; r2: number | null; days: number };
+  falls?: null | { months: number; of: number; stocks: number; fund: number; leg: number; leg_up: number };
+  verdict?: { tone: "good" | "warn" | "bad"; text: string }[];
 }

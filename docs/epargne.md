@@ -328,6 +328,44 @@ série *et* son étiquette : une série de prix n'est jamais rebaptisée rendeme
 Des repères qui s'arrêtent plus d'une semaine avant la fin de la fenêtre sont signalés
 comme les poches (`_stale_benchmarks`).
 
+## Le fonds empilé fait-il son travail ? (`stacked.py`, 22.11)
+
+RSST promet, pour chaque franc, un franc d'actions américaines **et** un franc de managed
+futures, le second financé au taux des bons du Trésor. Le panneau « RSST fait-il son
+travail ? » (`p-stacked`, sous « Baisses ») le mesure contre ce qu'il promet, jour par jour :
+
+- **la réplique** : r(S&P 500 TR) + r(managed futures) − r(bons du Trésor). Les trois sont
+  lus en CHF ; les poids somment à 1, donc le change s'annule *exactement* — la réplique en
+  francs est la réplique en dollars convertie (testé, `test_the_franc_cancels_out_of_the_replica`) ;
+- **la jambe trend de RSST** : r(RSST) − r(S&P 500) + r(bons du Trésor), le fonds sans son
+  franc d'actions — le trend qu'il a vraiment livré, face à un fonds managed futures ordinaire ;
+- **une régression** des rendements excédentaires de RSST sur ceux du S&P 500 et du fonds
+  managed futures : bêta actions et bêta trend, 1 et 1 visés ; l'alpha est par an ;
+- **les mois où le S&P 500 baisse** (mois entiers seulement) : ce que font RSST et sa jambe
+  trend ces mois-là — la diversification, la raison d'être du second franc ;
+- **trois verdicts** en mots, calculés par Flask (`stacked.verdict`), avec leurs seuils.
+
+Séries : `RSST` et `BIL` (bons du Trésor 1-3 mois) capturés par `--benchmarks` à côté du
+catalogue mais hors du menu des repères (`benchmarks.COMPONENTS`) ; `DBMF` entre au
+catalogue (« Managed futures »), choisissable comme repère. Toutes en clôtures US ajustées
+des dividendes : les quatre rendements d'un jour sont pris au même moment.
+
+**DBMF est un repère, pas le modèle de RSST** (ReSolve fait son propre trend) : un écart à
+la réplique dit aussi que les deux trends diffèrent, et le bêta trend mesuré contre DBMF est
+tiré vers le bas pour la même raison (erreur sur la variable explicative). La corrélation de
+la jambe trend à DBMF dit à quel point ils se ressemblent.
+
+**Fenêtre ou depuis le lancement**, bascule locale : le fonds (sept. 2023) est plus ancien
+que le relevé, si bien que « Tout l'historique » de la page ne le couvre pas ; Flask envoie
+les deux lectures, et « depuis le lancement » s'impose tant que la fenêtre a moins de
+40 jours de cotation (le mois en cours, le défaut). Le panneau n'apparaît que si IBKR
+détient RSST. Il juge le fonds, pas le moment des achats : la position est rappelée à part.
+
+Mesuré au 20.11.2026 depuis le lancement : RSST +12,3 %/an, réplique +18,2 %/an
+(écart −5,8 pts/an, frais compris) ; bêta actions 1,14, bêta trend 0,83 (R² 0,86) ;
+jambe trend +1,9 %/an contre +6,9 % pour DBMF (corrélation 0,82). Le franc d'actions est
+là ; c'est le trend de ReSolve qui a moins rendu que celui des grands CTA.
+
 ## Versements et valeur
 
 Sous la courbe, le panneau « Versements et valeur » compare ce qui a été versé dans le

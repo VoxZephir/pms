@@ -86,7 +86,8 @@ inbox/ ─▶ banks ─▶ parser ─▶ ledger.json ─▶ categories ┤
 | `ubs.py` | l'export PDF « Account transactions » d'UBS (anglais) → le même `Statement`, par géométrie ; 500 mouvements au plus par export (`docs/releves.md`) |
 | `camt.py` | relevé ISO 20022 camt.053 (XML) → le même `Statement` : la plupart des banques suisses, un seul parser ; le solde d'une ligne est calculé depuis l'ouverture du relevé, la clôture imprimée sur sa dernière ligne (`docs/releves.md`) |
 | `crypto.py` | relevé crypto Revolut → la poche « Crypto » : quantités jour par jour, flux, valeur aux cours publics figés (`data/crypto.json`, `--crypto`) |
-| `benchmarks.py` | catalogue d'indices de référence publics en CHF, dividendes réinvestis (`data/benchmarks.json`, `--benchmarks`), choisis dans l'URL (`?bench=`) |
+| `benchmarks.py` | catalogue d'indices de référence publics en CHF, dividendes réinvestis (`data/benchmarks.json`, `--benchmarks`), choisis dans l'URL (`?bench=`) ; capture aussi les composantes du fonds empilé, hors menu |
+| `stacked.py` | RSST fait-il son travail : contre sa réplique (S&P 500 + managed futures − bons du Trésor, le change s'y annule), sa jambe trend, bêtas, mois de baisse |
 | `ai.py` | l'assistant, tenu court : fournisseur et modèle (choisis dans la page Assistant, `data/ai.json` : Claude, DeepSeek ou Ollama), clé par fournisseur, schéma de réponse, chiffres vérifiés contre les faits, noms masqués, journal et cache |
 | `assist/` | un module par tâche de l'assistant (`merchants`, `month`, `savings`, `questions`, ce qu'elles partagent dans `common`) : ce que chacune de l'assistant envoie et ce qui est fait de sa réponse : catégories des commerçants, revue en mots, « pourquoi ce mois », l'épargne en mots, question en français |
 | `twint.py` | les suggestions du tri des Twint, apprises des Twint déjà classés et mesurées sur eux (`--twint-report`) |
@@ -145,7 +146,7 @@ contre une première version qui semblait évidente.
 | `plans.py`, `hindsight.py`, `/previsions`, `views/previsions.py`, la courbe de patrimoine, le rendement par année et par poche, `freedom.py` | `docs/previsions.md` |
 | `/analyse`, `lookback.py`, `swiss.py`, `cpi.py`, le panneau « Dépenses par mois » et ses budgets, `plans.monthly_profile` | `docs/analyse.md` |
 | `frontend/`, `web/api/`, l'état dans l'URL, les graphiques, le sommaire et « Haut de page », le téléphone, le bouton ⟳, le brush, les panneaux repliés, les panneaux « Engagements sans passage récent », « D'où vient l'argent » et « Évolution des parts » | `docs/app-web.md` |
-| le panneau Épargne, le bouton « Rafraîchir », `refresh.py`, `ibkr.py`, `flex.py`, `finpension.py`, `snapshots.py`, `crypto.py`, `benchmarks.py`, `fiscal.py`, `allocation.py`, `views/savings.py`, `views/savings_reads.py`, la skill `/epargne` | `docs/epargne.md` |
+| le panneau Épargne, le bouton « Rafraîchir », `refresh.py`, `ibkr.py`, `flex.py`, `finpension.py`, `snapshots.py`, `crypto.py`, `benchmarks.py`, `stacked.py`, `fiscal.py`, `allocation.py`, `views/savings.py`, `views/savings_reads.py`, la skill `/epargne` | `docs/epargne.md` |
 | `export.py`, les routes d'export, l'écrivain xlsx | `docs/export.md` |
 | le reclassement en masse, les alias de bénéficiaires, le tri des Twint (`/corrections/tri`), les avances (`overrides.split_advances`, payé pour quelqu'un et remboursé), les notes sur un mouvement (`overrides.notes`), `tidy.py`, les filtres (dont le compte, `?acct=`) et le résumé de `/transactions` | `docs/corrections.md` |
 | `ai.py`, `assist/`, `twint.py`, `web/api/assist/`, `components/assist/`, tout ce qui appelle un modèle de langage | `docs/assistant.md` |

@@ -22,6 +22,7 @@ import { useDesktop } from "@/lib/hooks";
 import type { PocketRow, Savings } from "@/lib/savings";
 import { useView } from "@/lib/url";
 import { Falls, MonthGrid, PocketCards, WhereFrom } from "./savings/Reads";
+import { StackedFund } from "./savings/Stacked";
 
 const PART_COLORS = ["var(--s0)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)", "var(--s7)"];
 
@@ -87,6 +88,7 @@ function SavingsBody({ s }: { s: Savings }) {
         {s.invested && s.invested.rows.length > 1 && <Invested s={s} />}
         <MonthGrid s={s} />
         <Falls s={s} />
+        {s.stacked && <StackedFund s={s} />}
         <Notes s={s} />
         <Pockets s={s} />
         <Allocation s={s} />
