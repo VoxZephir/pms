@@ -189,3 +189,26 @@ imprimé. Quand toute la ligne est avancée, elle n'est pas coupée : elle devie
 « Avances » ne fait pas partie des catégories qu'on peut épingler : une épingle
 nommerait la catégorie sans dire quelle part a été avancée. L'annulation passe par
 `snapshot`/`restore`, qui gardent aussi les avances.
+
+## Les notes (22.11)
+
+Une note dit de quoi il s'agit : « parking à Lausanne » sur un Twint que la banque laisse
+vide, « cadeau pour Léa » sur un achat dont la boutique ne dit rien. Elle se saisit :
+- dans la fiche de n'importe quelle transaction ;
+- dans le tri des Twint, sous la carte.
+
+La touche Entrée l'enregistre, et l'annulation passe par le toast. Elle est gardée dans
+`overrides.notes` (`data/overrides.json`, indexée sur la clé du mouvement), sur une seule
+ligne de 200 caractères au plus. Une note posée sur la moitié avancée d'une ligne coupée
+va sur la ligne imprimée.
+
+Ce qu'une note fait :
+- elle s'affiche sous le bénéficiaire, dans les listes et dans la table ;
+- la recherche de la table la lit ;
+- l'export a une colonne « Note ».
+
+Ce qu'une note ne fait pas :
+- elle ne corrige rien : la ligne ne devient pas « corrigé » et la note ne compte pas
+  parmi les corrections ;
+- aucune règle ne la lit ;
+- elle n'est jamais envoyée à l'assistant : une note peut nommer quelqu'un.

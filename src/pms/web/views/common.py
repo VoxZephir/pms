@@ -300,7 +300,7 @@ def _haystack(t) -> str:
     (1234.50 and 1'234.50) and the date as shown (14.10.2026)."""
     return _fold(" ".join([
         t.label, t.merchant, t.location, t.kind, " ".join(t.detail),
-        t.category, t.subcategory, t.bucket, t.account,
+        t.category, t.subcategory, t.bucket, t.account, t.note,
         f"{abs(t.amount):.2f}", chf(abs(t.amount), 2), t.currency,
         t.date.strftime("%d.%m.%Y"),
     ]))

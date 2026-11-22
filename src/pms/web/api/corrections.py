@@ -188,6 +188,29 @@ def advance():
                     "undo": {"scope": "pin", "key": key, "restore": before}})
 
 
+@api.route("/api/note", methods=["POST"])
+def note():
+    """Set the note of one movement (`text` empty removes it). The key may be
+    the split-off half of an advance: the note lives on the printed row.
+    Answers the previous note, which the toast's "Annuler" sends back."""
+    data = store()
+    body = request.get_json(silent=True) or {}
+    key = str(body.get("key") or "").strip()
+    rows = data.statement.transactions
+    txn = next((t for t in rows if overrides_module.key_of(t) == key), None)
+    if txn is not None and txn.advance_of:
+        key = txn.advance_of
+        txn = next((t for t in rows if overrides_module.key_of(t) == key), None)
+    if txn is None:
+        return payload({"error": f"mouvement introuvable : {key}"}), 404
+    previous = (data.overrides.notes.get(key) or {}).get("text", "")
+    text = data.overrides.annotate(key, str(body.get("text") or ""))
+    data.overrides.save()
+    data.invalidate()
+    return payload({"ok": True, "key": key, "text": text,
+                    "undo": {"key": key, "text": previous}})
+
+
 @api.route("/api/triage")
 def triage():
     data = store()

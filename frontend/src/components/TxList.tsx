@@ -50,6 +50,7 @@ export function TxRow({
             {showDate ? `${tx.date.slice(8, 10)}.${tx.date.slice(5, 7)}.${tx.date.slice(0, 4)} · ` : ""}
             {sub}{tx.overridden ? " · corrigé" : ""}
           </span>
+          {tx.note && <span className="block truncate text-[12.5px] italic text-ink-2">« {tx.note} »</span>}
         </span>
         <span className="flex flex-col items-end">
           <Amount tx={tx} className="text-[14.5px]" />

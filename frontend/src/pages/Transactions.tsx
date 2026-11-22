@@ -393,6 +393,7 @@ function DesktopTable({
                 {(t.subcategory || t.location || t.account) && (
                   <div className="truncate text-[12px] text-muted">{[t.subcategory, t.location, t.account].filter(Boolean).join(" · ")}</div>
                 )}
+                {t.note && <div className="truncate text-[12px] italic text-ink-2">« {t.note} »</div>}
               </td>
               <td className="px-3 py-2.5">
                 <span className="flex flex-wrap gap-1"><Chip><span className="inline-flex items-center gap-1.5">

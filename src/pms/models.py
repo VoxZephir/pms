@@ -80,6 +80,11 @@ class Transaction:
     advance_of: str = ""
     printed: float | None = None
 
+    # The owner's own words on what the movement was for ("parking à
+    # Lausanne", "cadeau de Léa"), from `data/overrides.json`. Set by
+    # overrides.apply; searched, shown and exported, never read by a rule.
+    note: str = ""
+
     @property
     def is_debit(self) -> bool:
         return self.amount < 0

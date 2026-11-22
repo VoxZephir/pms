@@ -98,6 +98,8 @@ function TxDetail({ tx, onDone }: { tx: Tx; onDone: () => void }) {
         )}
       </dl>
 
+      <TxNote tx={tx} />
+
       <TxAdvance tx={tx} onDone={onDone} />
 
       {!tx.advance_of && <>
@@ -178,7 +180,59 @@ function TxDetail({ tx, onDone }: { tx: Tx; onDone: () => void }) {
   );
 }
 
-type AdvanceMode = "none" | "half" | "all" | "due" | "other";
+/** A few words on what the movement was for -- a Twint the bank leaves
+ * blank, a card payment whose shop says nothing. Saved with Entrée or the
+ * button; searched in the table, exported, never read by a rule. */
+export function NoteField({ txKey, initial, compact }: { txKey: string; initial: string; compact?: boolean }) {
+  const [text, setText] = useState(initial);
+  const [saved, setSaved] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const changed = text.trim() !== saved;
+
+  const save = async () => {
+    if (!changed || busy) return;
+    setBusy(true);
+    try {
+      const r = await send<{ text: string; undo: { key: string; text: string } }>("/api/note", { key: txKey, text });
+      setText(r.text);
+      setSaved(r.text);
+      toast.success(r.text ? "Note enregistrée" : "Note effacée", {
+        action: {
+          label: "Annuler",
+          onClick: async () => {
+            await send("/api/note", r.undo);
+            setText(r.undo.text);
+            setSaved(r.undo.text);
+            toast("Annulé");
+          },
+        },
+      });
+    } catch (e) {
+      toast.error("La note n'a pas été enregistrée", { description: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div data-note>
+      {!compact && <div className="eyebrow mb-2">Note</div>}
+      <div className="flex gap-2">
+        <input value={text} onChange={(e) => setText(e.target.value)} maxLength={200}
+               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(); } }}
+               placeholder="De quoi s'agit-il ? (ex. parking à Lausanne)" aria-label="Note sur ce mouvement"
+               className="h-10 min-w-0 flex-1 rounded-xl border border-hairline-2 bg-surface px-3 text-[16px] sm:text-[14px]" />
+        {changed && <Button onClick={save} disabled={busy}>{text.trim() ? "Enregistrer" : "Effacer"}</Button>}
+      </div>
+    </div>
+  );
+}
+
+function TxNote({ tx }: { tx: Tx }) {
+  return <NoteField txKey={tx.advance_of || tx.key} initial={tx.note} />;
+}
+
+type AdvanceMode ="none" | "half" | "all" | "due" | "other";
 interface Advances { owed: number; advanced: number; repaid: number; count: number; open_since: string | null }
 
 /** Paid for someone who pays it back (a Twint for a partner without Twint),

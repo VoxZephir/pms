@@ -147,7 +147,7 @@ contre une première version qui semblait évidente.
 | `frontend/`, `web/api/`, l'état dans l'URL, les graphiques, le sommaire et « Haut de page », le téléphone, le bouton ⟳, le brush, les panneaux repliés, les panneaux « Engagements sans passage récent », « D'où vient l'argent » et « Évolution des parts » | `docs/app-web.md` |
 | le panneau Épargne, le bouton « Rafraîchir », `refresh.py`, `ibkr.py`, `flex.py`, `finpension.py`, `snapshots.py`, `crypto.py`, `benchmarks.py`, `fiscal.py`, `allocation.py`, `views/savings.py`, `views/savings_reads.py`, la skill `/epargne` | `docs/epargne.md` |
 | `export.py`, les routes d'export, l'écrivain xlsx | `docs/export.md` |
-| le reclassement en masse, les alias de bénéficiaires, le tri des Twint (`/corrections/tri`), les avances (`overrides.split_advances`, payé pour quelqu'un et remboursé), `tidy.py`, les filtres (dont le compte, `?acct=`) et le résumé de `/transactions` | `docs/corrections.md` |
+| le reclassement en masse, les alias de bénéficiaires, le tri des Twint (`/corrections/tri`), les avances (`overrides.split_advances`, payé pour quelqu'un et remboursé), les notes sur un mouvement (`overrides.notes`), `tidy.py`, les filtres (dont le compte, `?acct=`) et le résumé de `/transactions` | `docs/corrections.md` |
 | `ai.py`, `assist/`, `twint.py`, `web/api/assist/`, `components/assist/`, tout ce qui appelle un modèle de langage | `docs/assistant.md` |
 | `review.py`, le panneau « Revue du mois » | `docs/review.md` |
 | `web/guard.py`, `web/compress.py`, `web/__main__.py`, `/importer`, Tailscale, le manifest | `docs/acces-distant.md` |

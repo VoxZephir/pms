@@ -41,6 +41,7 @@ def tx(t: Transaction) -> dict:
         "advance_of": t.advance_of,
         # What the bank printed, before an advance took its part out.
         "printed": printed(t),
+        "note": t.note,
     }
 
 

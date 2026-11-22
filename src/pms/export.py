@@ -46,6 +46,7 @@ COLUMNS: list[tuple[str, object, str]] = [
     ("Montant CHF", lambda t: t.amount_chf, "amount"),
     ("Corrigé", lambda t: "oui" if t.overridden else "non", "text"),
     ("Compte", lambda t: t.account.capitalize() if t.account else "Principal", "text"),
+    ("Note", lambda t: t.note, "text"),
 ]
 
 HEADERS = [name for name, _, _ in COLUMNS]
@@ -125,7 +126,7 @@ ILLEGAL_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # Cell format indices into the `cellXfs` list built in `_styles`.
 STYLE_TEXT, STYLE_HEADER, STYLE_DATE, STYLE_AMOUNT = 0, 1, 2, 3
 
-COLUMN_WIDTHS = [12, 34, 22, 24, 20, 13, 8, 13, 9]
+COLUMN_WIDTHS = [12, 34, 22, 24, 20, 13, 8, 13, 9, 12, 40]
 
 
 def _escape(value: str) -> str:

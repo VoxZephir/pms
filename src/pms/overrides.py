@@ -36,6 +36,8 @@ from . import categories
 from .models import Transaction
 
 VERSION = 1
+# A note says what a movement was for, in a few words: a sentence, not a diary.
+NOTE_MAX = 200
 EXACT = "exact"
 CONTAINS = "contains"
 
@@ -70,6 +72,8 @@ class Overrides:
         # key -> {"amount": part of the row advanced or repaid, in the row's
         # currency, unsigned; "label", "at"}. See `split_advances`.
         self.advances: dict[str, dict] = {}
+        # key -> {"text": the owner's note on that movement, "at"}.
+        self.notes: dict[str, dict] = {}
 
     # --- persistence -----------------------------------------------------
 
@@ -97,6 +101,11 @@ class Overrides:
             if isinstance(entry, dict) and isinstance(entry.get("amount"), (int, float))
             and entry["amount"] > 0
         }
+        store.notes = {
+            key: entry for key, entry in (raw.get("notes") or {}).items()
+            if isinstance(entry, dict) and isinstance(entry.get("text"), str)
+            and entry["text"].strip()
+        }
         return store
 
     def save(self) -> Path:
@@ -108,6 +117,7 @@ class Overrides:
             "aliases": self.aliases,
             "alias_patterns": self.alias_patterns,
             "advances": self.advances,
+            "notes": self.notes,
         }
         # Write then move, so an interrupted save cannot leave a truncated file.
         temporary = self.path.with_suffix(".tmp")
@@ -123,7 +133,7 @@ class Overrides:
     @property
     def empty(self) -> bool:
         return not (self.pins or self.rules or self.aliases or self.alias_patterns
-                    or self.advances)
+                    or self.advances or self.notes)
 
     # --- editing ---------------------------------------------------------
 
@@ -153,6 +163,17 @@ class Overrides:
             entry = {"amount": amount, "label": label, "at": _now()}
             self.advances[key] = entry
         return entry
+
+    def annotate(self, key: str, text: str) -> str:
+        """Set the note of one movement; an empty text removes it. Returns
+        the note as kept: trimmed, one line, at most NOTE_MAX characters."""
+        text = " ".join((text or "").split())[:NOTE_MAX]
+        with self._lock:
+            if text:
+                self.notes[key] = {"text": text, "at": _now()}
+            else:
+                self.notes.pop(key, None)
+        return text
 
     def unadvance(self, key: str) -> bool:
         with self._lock:
@@ -405,6 +426,12 @@ class Overrides:
                 if pin.get("bucket"):
                     txn.bucket_override = pin["bucket"]
                 applied = True
+
+            # A note says what the movement was for; it corrects nothing, so
+            # it neither marks the row "corrigé" nor counts as a correction.
+            note = self.notes.get(key_of(txn))
+            if note:
+                txn.note = note["text"]
 
             if applied:
                 txn.overridden = True

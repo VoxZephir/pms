@@ -25,6 +25,8 @@ export interface Tx {
   advance_of: string;
   /** The amount as the bank printed it, before an advance took its part out. */
   printed: number;
+  /** The owner's own words on what the movement was for; "" when none. */
+  note: string;
 }
 
 export interface Crumb { label: string; start: string; end: string; current: boolean }

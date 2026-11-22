@@ -10,6 +10,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/PageState";
+import { NoteField } from "@/components/TxSheet";
 import { Select } from "@/components/Form";
 import { Button, ButtonLink, Callout, Card, Skeleton, cx } from "@/components/ui";
 import { send, useApi } from "@/lib/api";
@@ -119,6 +120,9 @@ export default function TriagePage() {
                 {data.same_day.length > 0 && <SameDay rows={data.same_day} />}
               </SwipeCard>
             </AnimatePresence>
+          </div>
+          <div className="mt-3">
+            <NoteField key={data.current_key} txKey={data.current_key} initial={c.note} compact />
           </div>
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
             {data.targets.map((cat, i) => {
