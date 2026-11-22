@@ -1075,25 +1075,35 @@ class Plan:
         return True
 
     def remove_plan_scenario(self, name: str) -> bool:
-        """Forget a saved plan. Deleting the active one keeps the live
-        fields as they are, unnamed -- nothing on screen changes. The plan
-        is kept aside (`deleted`) until the next deletion, for the undo."""
+        """Forget a saved plan. The plan on screen goes too: the first saved
+        plan left is shown instead, or an empty plan when none is left.
+        Keeping the live fields as an unnamed plan (as until 22.11) read as
+        a deletion that had not happened. The plan is kept aside (`deleted`)
+        until the next deletion, for the undo."""
         if name not in self.plan_scenarios:
             return False
-        kept = self._declarations() if name == self.active else self.plan_scenarios[name]
-        self.deleted = {"name": name, "plan": kept}
+        was_active = name == self.active
+        kept = self._declarations() if was_active else self.plan_scenarios[name]
+        self.deleted = {"name": name, "plan": kept, "active": was_active}
         del self.plan_scenarios[name]
-        if self.active == name:
+        if was_active:
             self.active = None
+            if self.plan_scenarios:
+                self.switch_scenario(next(iter(self.plan_scenarios)))
+            else:
+                self._restore({})
         return True
 
     def undelete_scenario(self) -> str | None:
         """Bring back the last plan deleted, under its name -- unless another
-        took that name since. Returns the name, or None."""
+        took that name since -- and on screen again if it was. Returns the
+        name, or None."""
         if not self.deleted or self.deleted["name"] in self.plan_scenarios:
             return None
         name = self.deleted["name"]
         self.plan_scenarios[name] = self.deleted["plan"]
+        if self.deleted.get("active"):
+            self.switch_scenario(name)
         self.deleted = None
         return name
 

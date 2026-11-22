@@ -360,12 +360,12 @@ def test_plans_are_saved_switched_compared_and_deleted(client, plan_file):
     assert _edit(client, {"action": "plan-switch", "name": "Inconnu"})[1]["errors"]["plan-switch"] == "Scénario inconnu."
     assert _edit(client, {"action": "plan-save-as", "name": " "})[1]["errors"]["plan-new"] == "Le nom est requis."
 
-    # Deleting the plan on screen keeps it, unnamed.
+    # Deleting the plan on screen removes it: the one left is shown.
     _edit(client, {"action": "plan-delete", "name": "Prudent"})
     plan = plans.Plan.load(plan_file)
-    assert plan.active is None and plan.income == 8000.0
+    assert plan.active == "Loyer en hausse" and plan.spend == 4500.0
     assert list(plan.plan_scenarios) == ["Loyer en hausse"]
-    assert None in [c["name"] for c in _forecast(client)["comparison"]]
+    assert None not in [c["name"] for c in _forecast(client)["comparison"]]
 
 
 def test_a_plan_is_renamed_copied_from_another_and_its_deletion_undone(client, plan_file):

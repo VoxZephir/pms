@@ -77,9 +77,11 @@ export function Scenarios({ d }: { d: Previsions }) {
   const show = (p: Plan) => plans.act({ action: "plan-switch", name: p.name }, `« ${title(p)} » affiché — la page le montre maintenant`);
   return (
     <Panel title="Scénarios"
-           hint={c.length >= 2 ? `le cash de chaque plan sur ${d.horizon_label}, sur le même axe` : "garder un plan sous un nom, le copier, le varier — et comparer"}
+           hint={c.length >= 2 ? `le cash de chaque plan sur ${d.horizon_label}, sur le même axe` : `le cash du plan sur ${d.horizon_label} — copie-le pour comparer`}
            actions={<Button size="sm" variant="primary" onClick={() => setCreating(d.active ?? "")}><Plus size={14} />Nouveau scénario</Button>}>
-      {c.length >= 2 && (
+      {/* One plan still draws its line: the cash curve must not vanish
+          because the comparison has a single member (22.11). */}
+      {c.length >= 1 && (
         <div className="mb-4">
           <Lines xs={labels.map((_, i) => i)} height={220}
                  series={c.map((s, i) => ({
@@ -93,7 +95,7 @@ export function Scenarios({ d }: { d: Previsions }) {
                    const v = [d.projection.cash, ...s.line];
                    return { index: v.indexOf(Math.min(...v)), series: String(i), label: "" };
                  })}
-                 zero={false} endLabels ariaLabel={`Cash projeté de ${c.length} scénarios`} />
+                 zero={false} endLabels ariaLabel={c.length > 1 ? `Cash projeté de ${c.length} scénarios` : "Cash projeté"} />
         </div>
       )}
       {/* Cards scroll sideways on a phone, card by card; a grid from the tablet up. */}
@@ -106,7 +108,7 @@ export function Scenarios({ d }: { d: Previsions }) {
         <button type="button" onClick={() => setCreating(d.active ?? "")}
                 className="group flex w-[82%] shrink-0 snap-center flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-hairline-2 p-5 text-center transition hover:border-ink-2 hover:bg-surface-2/40 sm:w-auto">
           <span className="grid size-10 place-items-center rounded-full bg-surface-2 text-ink-2 transition group-hover:bg-ink group-hover:text-surface"><Plus size={18} /></span>
-          <span className="text-[14.5px] font-semibold">{c.length > 1 ? "Nouveau scénario" : "Créer un premier scénario"}</span>
+          <span className="text-[14.5px] font-semibold">{c.some((p) => p.name) ? "Nouveau scénario" : "Créer un premier scénario"}</span>
           <span className="max-w-[16rem] text-[12.5px] text-muted">Une copie d'un plan, à varier : un loyer, un salaire, un gros achat — puis comparer.</span>
         </button>
       </div>

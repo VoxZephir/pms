@@ -1029,7 +1029,16 @@ def test_plan_scenarios_keep_their_edits_and_survive_the_file(tmp_path):
     assert loaded.scenario_plan("Base") is loaded
     assert not loaded.switch_scenario("Absent")
     assert loaded.remove_plan_scenario("Base")
-    assert loaded.active is None and loaded.income == 7000.0
+    # The plan on screen goes with it: the one left is shown.
+    assert loaded.active == "Loyer" and loaded.spend == 4400.0
+    assert loaded.undelete_scenario() == "Base"
+    assert loaded.active == "Base" and loaded.spend is None
+    assert loaded.scenario_plan("Loyer").spend == 4400.0
+    # The last one deleted leaves an empty plan, not its figures unnamed.
+    loaded.remove_plan_scenario("Loyer")
+    loaded.remove_plan_scenario("Base")
+    assert loaded.active is None and loaded.income is None and loaded.one_offs == []
+    assert loaded.undelete_scenario() == "Base" and loaded.income == 7000.0
 
 
 def test_the_growth_path_compounds_like_the_projection():
