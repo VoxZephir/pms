@@ -8,9 +8,10 @@ import re
 from flask import request
 from werkzeug.datastructures import MultiDict
 
+from ... import analysis, tidy, twint
 from ... import categories as categories_module
-from ... import tidy, twint
 from ... import overrides as overrides_module
+from . import encode
 from ..views.corrections import (
     TRIAGE_KEYS, _edit_local_rules, _target_choices, triage_apply, triage_state,
 )
@@ -139,6 +140,52 @@ def corrections_edit():
     data.overrides.save()
     data.invalidate()
     return payload({"ok": True, "undo": undo})
+
+
+@api.route("/api/advances")
+def advances():
+    """What others still owe, and the movements behind it, newest first."""
+    data = store()
+    rows = [t for t in data.statement.transactions
+            if t.category == categories_module.ADVANCE]
+    rows.sort(key=lambda t: (t.date, t.seq), reverse=True)
+    return payload({
+        **data.overrides.advance_balance(rows),
+        "rows": rows[:60],
+    })
+
+
+@api.route("/api/advance", methods=["POST"])
+def advance():
+    """Mark the part of one movement paid for someone else -- or, on a
+    credit, repaid by them. `amount` 0 removes the mark. The key may be the
+    split-off row's: the mark lives on the row the bank printed."""
+    data = store()
+    body = request.get_json(silent=True) or {}
+    key = str(body.get("key") or "").strip()
+    try:
+        amount = round(abs(float(body.get("amount") or 0)), 2)
+    except (TypeError, ValueError):
+        return payload({"error": "montant illisible"}), 400
+    rows = data.statement.transactions
+    txn = next((t for t in rows if overrides_module.key_of(t) == key), None)
+    if txn is not None and txn.advance_of:
+        key = txn.advance_of
+        txn = next((t for t in rows if overrides_module.key_of(t) == key), None)
+    if txn is None:
+        return payload({"error": f"mouvement introuvable : {key}"}), 404
+    if analysis.is_fx_leg(txn) or txn.category == categories_module.INTERNAL:
+        return payload({"error": "un virement entre tes comptes n'est pas une avance"}), 409
+    gross = abs(encode.printed(txn))
+    if amount > gross + 0.005:
+        return payload({"error": f"au plus {gross:.2f} {txn.currency} : le montant de la ligne"}), 400
+    before = data.overrides.snapshot([key])
+    data.overrides.advance(key, amount, label=txn.label)
+    data.overrides.save()
+    data.invalidate()
+    return payload({"ok": True, "key": key, "amount": amount, "gross": gross,
+                    "currency": txn.currency,
+                    "undo": {"scope": "pin", "key": key, "restore": before}})
 
 
 @api.route("/api/triage")

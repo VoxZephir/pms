@@ -37,7 +37,17 @@ def tx(t: Transaction) -> dict:
         "chf": round(t.amount_chf, 2),
         "account": t.account,
         "overridden": t.overridden,
+        "advanced": t.advanced,
+        "advance_of": t.advance_of,
+        # What the bank printed, before an advance took its part out.
+        "printed": printed(t),
     }
+
+
+def printed(t: Transaction) -> float:
+    """The row's amount as the bank printed it: either half of a row split by
+    an advance (`overrides.split_advances`) holds only its own part."""
+    return t.amount if t.printed is None else t.printed
 
 
 def jsonable(value):

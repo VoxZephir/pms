@@ -62,6 +62,9 @@ class Store:
         classify_all(statement.transactions, rules, holder=statement.holder)
         self.overrides = Overrides.load(self.overrides_path)
         self.override_count = self.overrides.apply(statement.transactions)
+        # After the categories (an advance wins over them), before the
+        # conversion (both parts of a split row are converted alike).
+        self.overrides.split_advances(statement.transactions)
         analysis.annotate_chf(statement)
         buckets.annotate(statement.transactions)
 

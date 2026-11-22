@@ -71,6 +71,15 @@ class Transaction:
     # following a Swissquote one of 10'000 is not a 9'970 CHF break.
     account: str = ""
 
+    # Set by overrides.Overrides.split_advances. `advanced`: the part of this
+    # row (in its currency, unsigned) paid for someone else, or repaid by
+    # them. `advance_of`: on the row split off to carry that part, the key of
+    # the row it came from -- it exists only in memory, never in the ledger.
+    # `printed`: on both halves of a split row, the amount the bank printed.
+    advanced: float = 0.0
+    advance_of: str = ""
+    printed: float | None = None
+
     @property
     def is_debit(self) -> bool:
         return self.amount < 0

@@ -18,6 +18,9 @@ import { useHotkeys } from "@/lib/hooks";
 import type { Tx } from "@/lib/types";
 import { useView } from "@/lib/url";
 
+/** The category of a movement paid for someone else (`categories.ADVANCE`). */
+const ADVANCE = "Avances";
+
 interface Triage {
   queue_size: number; done: number; at: number;
   current: Tx | null; current_key: string; weekday: string | null;
@@ -127,7 +130,10 @@ export default function TriagePage() {
                           suggested ? "border-transparent bg-ink text-page" : "border-hairline-2 bg-surface hover:bg-surface-2",
                         )}>
                   {i < data.keys && <kbd className={cx("grid size-6 shrink-0 place-items-center rounded-md text-[12px] num", suggested ? "bg-page/20" : "bg-surface-2 text-muted")}>{i + 1}</kbd>}
-                  <span className="min-w-0 flex-1 leading-tight">{cat}</span>
+                  <span className="min-w-0 flex-1 leading-tight">
+                    {cat === ADVANCE ? "Avancé pour quelqu'un" : cat}
+                    {cat === ADVANCE && <span className={cx("block text-[11.5px] font-normal", suggested ? "text-page/70" : "text-muted")}>on me le rembourse</span>}
+                  </span>
                 </button>
               );
             })}

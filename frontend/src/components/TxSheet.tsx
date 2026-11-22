@@ -98,6 +98,9 @@ function TxDetail({ tx, onDone }: { tx: Tx; onDone: () => void }) {
         )}
       </dl>
 
+      <TxAdvance tx={tx} onDone={onDone} />
+
+      {!tx.advance_of && <>
       <TxProjects tx={tx} />
 
       <div>
@@ -170,6 +173,89 @@ function TxDetail({ tx, onDone }: { tx: Tx; onDone: () => void }) {
           {scope === "merchant" ? "Appliquer à tout le bénéficiaire" : "Appliquer"}
         </Button>
       </div>
+      </>}
+    </div>
+  );
+}
+
+type AdvanceMode = "none" | "half" | "all" | "due" | "other";
+interface Advances { owed: number; advanced: number; repaid: number; count: number; open_since: string | null }
+
+/** Paid for someone who pays it back (a Twint for a partner without Twint),
+ * or that repayment: the part named here leaves spending and income alike,
+ * and the rest of the row keeps its category (`overrides.split_advances`). */
+function TxAdvance({ tx, onDone }: { tx: Tx; onDone: () => void }) {
+  const { data: due } = useApi<Advances>("/api/advances");
+  const out = tx.printed < 0;
+  const gross = Math.abs(tx.printed);
+  const cents = (n: number) => Math.round(n * 100) / 100;
+  const half = cents(gross / 2);
+  // What is still owed, not counting this row's own repayment.
+  const owed = due ? cents(due.owed + (!out && tx.currency === "CHF" ? tx.advanced : 0)) : 0;
+  const offerDue = !out && tx.currency === "CHF" && owed > 0.005 && owed < gross - 0.005;
+  const initial: AdvanceMode = !tx.advanced ? "none"
+    : Math.abs(tx.advanced - gross) < 0.005 ? "all"
+    : out && Math.abs(tx.advanced - half) < 0.005 ? "half"
+    : offerDue && Math.abs(tx.advanced - owed) < 0.005 ? "due" : "other";
+  const [mode, setMode] = useState<AdvanceMode>(initial);
+  const [other, setOther] = useState(tx.advanced && initial === "other" ? String(tx.advanced) : "");
+  const [busy, setBusy] = useState(false);
+
+  if (tx.category === "Virement interne" || tx.kind.startsWith("Transfert automatisé") || tx.kind.startsWith("Transfert Forex") || !gross) return null;
+
+  const typed = Number(other.replace(/'/g, "").replace(",", "."));
+  const amount = mode === "none" ? 0 : mode === "all" ? gross : mode === "half" ? half
+    : mode === "due" ? owed : Number.isFinite(typed) ? cents(Math.abs(typed)) : NaN;
+  const valid = Number.isFinite(amount) && amount <= gross + 0.005 && (mode !== "other" || amount > 0);
+  const changed = valid && Math.abs(amount - tx.advanced) >= 0.005;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await send<{ undo: Undo }>("/api/advance", { key: tx.advance_of || tx.key, amount });
+      onDone();
+      toast.success(amount === 0 ? "Plus une avance"
+        : out ? `${chf(amount)} ${tx.currency} avancés : hors des dépenses`
+        : `${chf(amount)} ${tx.currency} remboursés : hors des revenus`, {
+        description: amount > 0 && amount < gross - 0.005 ? `Le reste (${chf(gross - amount)}) garde sa catégorie.` : undefined,
+        action: { label: "Annuler", onClick: async () => { await send("/api/reclassify/undo", r.undo); toast("Annulé"); } },
+      });
+    } catch (e) {
+      toast.error("L'avance n'a pas été enregistrée", { description: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const options: { id: AdvanceMode; label: string }[] = out
+    ? [{ id: "none", label: "Non" }, { id: "half", label: "La moitié" }, { id: "all", label: "Tout" }, { id: "other", label: "Montant" }]
+    : [{ id: "none", label: "Non" }, ...(offerDue ? [{ id: "due" as const, label: `Le dû · ${chf(owed)}` }] : []),
+       { id: "all", label: "Tout" }, { id: "other", label: "Montant" }];
+
+  return (
+    <div data-advance>
+      <div className="eyebrow mb-2">{out ? "Payé pour quelqu'un qui te rembourse ?" : "Rembourse une avance ?"}</div>
+      <Segmented label={out ? "Part avancée" : "Part remboursée"} value={mode} onChange={setMode} options={options} />
+      {mode === "other" && (
+        <div className="mt-2 flex items-center gap-2">
+          <input value={other} onChange={(e) => setOther(e.target.value)} inputMode="decimal" placeholder="0.00" aria-label="Montant avancé"
+                 className="num h-10 w-32 rounded-xl border border-hairline-2 bg-surface px-3 text-[16px] sm:text-[14px]" />
+          <span className="text-[13px] text-muted">{tx.currency} sur {chf(gross)}</span>
+        </div>
+      )}
+      <p className="mt-2 text-[12.5px] text-muted">
+        {mode === "none"
+          ? (out ? "Si tu as payé pour quelqu'un, la part avancée sort des dépenses ; elle reste due jusqu'à son remboursement."
+                 : "Si cet argent te rembourse un paiement fait pour quelqu'un, il sort des revenus.")
+          : !valid ? `Au plus ${chf(gross)} ${tx.currency}.`
+          : amount < gross - 0.005
+            ? `${chf(amount)} ${out ? "avancés" : "remboursés"}, hors ${out ? "dépenses" : "revenus"} ; ${chf(gross - amount)} restent ${tx.advance_of || tx.category === "Avances" ? "dans la catégorie de la ligne" : `en ${tx.category}`}.`
+            : `Toute la ligne sort des ${out ? "dépenses" : "revenus"}.`}
+        {due && due.count > 0 && <> {due.owed > 0.005 ? `On te doit en tout ${chf(due.owed)} CHF.` : "Toutes les avances sont remboursées."}</>}
+      </p>
+      {changed && (
+        <Button className="mt-2" onClick={save} disabled={busy}>{amount === 0 ? "Retirer l'avance" : "Enregistrer l'avance"}</Button>
+      )}
     </div>
   );
 }

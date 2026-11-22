@@ -27,7 +27,7 @@ import datetime as dt
 from collections import defaultdict
 
 from .analysis import bucket_bounds, is_internal, spending, timeseries
-from .categories import INTERNAL
+from .categories import ADVANCE, INTERNAL
 from .models import Statement, Transaction
 
 NEED = "Need"
@@ -84,6 +84,10 @@ DESCRIPTION = {
 def bucket_of(txn: Transaction) -> str:
     # A manual correction beats every derived answer: it is the one signal that
     # comes from someone who actually knows what the payment was for.
+    # An advance is owed money, not spending: no bucket, whatever the row's
+    # pin said before it was marked one.
+    if txn.category == ADVANCE:
+        return ""
     if txn.bucket_override:
         return txn.bucket_override
     # Money moved between one's own accounts is neither a need, a want nor

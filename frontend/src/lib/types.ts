@@ -19,6 +19,12 @@ export interface Tx {
   chf: number;
   account: string;
   overridden: boolean;
+  /** The part of the row paid for someone else, or repaid by them (unsigned, row currency). */
+  advanced: number;
+  /** On the row split off to carry that part: the key of the row the bank printed. */
+  advance_of: string;
+  /** The amount as the bank printed it, before an advance took its part out. */
+  printed: number;
 }
 
 export interface Crumb { label: string; start: string; end: string; current: boolean }

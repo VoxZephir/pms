@@ -147,7 +147,7 @@ contre une première version qui semblait évidente.
 | `frontend/`, `web/api/`, l'état dans l'URL, les graphiques, le sommaire et « Haut de page », le téléphone, le bouton ⟳, le brush, les panneaux repliés, les panneaux « Engagements sans passage récent », « D'où vient l'argent » et « Évolution des parts » | `docs/app-web.md` |
 | le panneau Épargne, le bouton « Rafraîchir », `refresh.py`, `ibkr.py`, `flex.py`, `finpension.py`, `snapshots.py`, `crypto.py`, `benchmarks.py`, `fiscal.py`, `allocation.py`, `views/savings.py`, `views/savings_reads.py`, la skill `/epargne` | `docs/epargne.md` |
 | `export.py`, les routes d'export, l'écrivain xlsx | `docs/export.md` |
-| le reclassement en masse, les alias de bénéficiaires, le tri des Twint (`/corrections/tri`), `tidy.py`, les filtres (dont le compte, `?acct=`) et le résumé de `/transactions` | `docs/corrections.md` |
+| le reclassement en masse, les alias de bénéficiaires, le tri des Twint (`/corrections/tri`), les avances (`overrides.split_advances`, payé pour quelqu'un et remboursé), `tidy.py`, les filtres (dont le compte, `?acct=`) et le résumé de `/transactions` | `docs/corrections.md` |
 | `ai.py`, `assist/`, `twint.py`, `web/api/assist/`, `components/assist/`, tout ce qui appelle un modèle de langage | `docs/assistant.md` |
 | `review.py`, le panneau « Revue du mois » | `docs/review.md` |
 | `web/guard.py`, `web/compress.py`, `web/__main__.py`, `/importer`, Tailscale, le manifest | `docs/acces-distant.md` |
@@ -524,7 +524,11 @@ parser écrit à la main (le modèle écrit une recette du format, l'app l'appli
 regarde aussi devant et autour : À venir, Impôts (le canton se choisit sur la page), Projets, le
 résumé de la semaine poussé par ntfy, le bilan de l'année, l'indépendance financière et
 la comparaison à la Suisse. Le travail se fait sur `main` ; le bouton « Mettre à jour »
-suit `main` (`web/updates.py`). Reste hors périmètre (section dédiée dans le ROADMAP), à ne
+suit `main` (`web/updates.py`). **Deux dépôts** : `origin` (privé, `pms-claude`) reçoit
+chaque commit ; le public (`VoxZephir/pms`, remote `public`) sert aux proches à qui l'app est
+passée, et ne reçoit jamais un push de `main` (l'historique privé garde d'anciennes données
+personnelles) : `python tools/publish.py` y publie l'arbre commité en un commit « Version du
+… », après ses contrôles. À lancer après chaque push sur `origin`. Reste hors périmètre (section dédiée dans le ROADMAP), à ne
 pas reproposer : l'exposition publique (VPS, port ouvert, `tailscale funnel`) avec la
 connexion applicative qu'elle exigerait. Aller chercher le relevé chez la banque reste
 manuel, et le restera (pas d'API Swissquote, pas d'agrégateur tiers).

@@ -24,6 +24,12 @@ UNCATEGORISED = "Non catégorisé"
 # Money moved between the user's own accounts: neither spent nor earned
 # (`analysis.is_internal`). Also a category the user can pin by hand.
 INTERNAL = "Virement interne"
+# Money paid for someone else and paid back later (a Twint for a partner who
+# has none): neither spent nor earned either, but it is owed until repaid.
+# Set by `overrides.Overrides.split_advances`, never by a rule.
+ADVANCE = "Avances"
+ADVANCE_OUT = "Avancé"
+ADVANCE_IN = "Remboursé"
 
 # Rules that would name an employer, a landlord, a doctor or a person do not
 # belong in a repository -- a categorisation file is otherwise a very precise

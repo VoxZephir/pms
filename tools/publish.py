@@ -61,7 +61,9 @@ def identifying() -> list[str]:
 
 def checks() -> list[str]:
     problems = []
-    if git("status", "--porcelain"):
+    # Untracked files never reach the published tree (it is HEAD's): a
+    # redacted statement left at the root must not block a publish.
+    if git("status", "--porcelain", "--untracked-files=no"):
         problems.append("des changements ne sont pas commités : commiter d'abord")
     tracked = git("ls-files").splitlines()
     # The examples of data/ (the format, no data) are meant to be public.

@@ -71,6 +71,7 @@ export default function CorrectionsPage() {
                   subtitle={`${data.total} correction${data.total > 1 ? "s" : ""} · ${data.touched} mouvement${data.touched > 1 ? "s" : ""} affecté${data.touched > 1 ? "s" : ""}`} />
       <div className="space-y-4 sm:space-y-5">
         <CoverageCard c={data.coverage} counts={data.counts} />
+        <AdvancesCard />
         <MerchantAssist choices={data.choices} />
         <MergeHints merges={data.merges} />
         <InPlace entries={data.entries} choices={data.choices} />
@@ -313,6 +314,32 @@ function CoverageCard({ c, counts }: { c: Coverage; counts: Corrections["counts"
           )}
         </div>
       )}
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------- advances */
+
+/** Money paid for someone and not yet paid back: every part marked as
+ * advanced, minus every repayment. Absent until something is marked. */
+function AdvancesCard() {
+  const { data } = useApi<{ owed: number; advanced: number; repaid: number; count: number; open_since: string | null }>("/api/advances");
+  if (!data || !data.count) return null;
+  const open = data.owed > 0.005;
+  return (
+    <Card className="p-5" data-advances>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div className="eyebrow">Avances</div>
+        <div className="text-[12.5px] text-muted">{chf(data.advanced, 0)} avancés · {chf(data.repaid, 0)} remboursés</div>
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className={cx("num text-[30px] font-semibold leading-none tracking-[-0.03em]", !open && "text-good")}>
+          {open ? `${chf(data.owed)} CHF` : data.owed < -0.005 ? `${chf(-data.owed)} CHF en trop` : "Tout est remboursé"}
+        </span>
+        {open && <span className="text-[13px] text-ink-2">te sont dus{data.open_since ? ` · le plus ancien du ${frDate(data.open_since)}` : ""}</span>}
+        <ButtonLink to="/transactions?preset=all&category=Avances" size="sm" className="ml-auto">Voir les lignes<ChevronRight size={14} /></ButtonLink>
+      </div>
+      <Note className="mt-3">Ce que tu paies pour quelqu'un, et ce qu'il te rend, sort des dépenses et des revenus. Pour marquer une ligne, ouvre-la et indique la part avancée.</Note>
     </Card>
   );
 }

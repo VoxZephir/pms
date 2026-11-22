@@ -24,6 +24,7 @@ correcting one odd payment never fights the rule you set for its merchant.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import re
@@ -66,6 +67,9 @@ class Overrides:
         self.rules: list[dict] = []
         self.aliases: dict[str, str] = {}
         self.alias_patterns: list[dict] = []
+        # key -> {"amount": part of the row advanced or repaid, in the row's
+        # currency, unsigned; "label", "at"}. See `split_advances`.
+        self.advances: dict[str, dict] = {}
 
     # --- persistence -----------------------------------------------------
 
@@ -88,6 +92,11 @@ class Overrides:
             if entry.get("pattern") and entry.get("canonical")
             and _valid(entry["pattern"])
         ]
+        store.advances = {
+            key: entry for key, entry in (raw.get("advances") or {}).items()
+            if isinstance(entry, dict) and isinstance(entry.get("amount"), (int, float))
+            and entry["amount"] > 0
+        }
         return store
 
     def save(self) -> Path:
@@ -98,6 +107,7 @@ class Overrides:
             "merchants": self.rules,
             "aliases": self.aliases,
             "alias_patterns": self.alias_patterns,
+            "advances": self.advances,
         }
         # Write then move, so an interrupted save cannot leave a truncated file.
         temporary = self.path.with_suffix(".tmp")
@@ -108,11 +118,12 @@ class Overrides:
 
     def __len__(self) -> int:
         return (len(self.pins) + len(self.rules)
-                + len(self.aliases) + len(self.alias_patterns))
+                + len(self.aliases) + len(self.alias_patterns) + len(self.advances))
 
     @property
     def empty(self) -> bool:
-        return not (self.pins or self.rules or self.aliases or self.alias_patterns)
+        return not (self.pins or self.rules or self.aliases or self.alias_patterns
+                    or self.advances)
 
     # --- editing ---------------------------------------------------------
 
@@ -130,6 +141,22 @@ class Overrides:
     def unpin(self, key: str) -> bool:
         with self._lock:
             return self.pins.pop(key, None) is not None
+
+    def advance(self, key: str, amount: float, *, label: str = "") -> dict:
+        """Mark `amount` of one movement as paid for someone else (a debit)
+        or repaid by them (a credit). Zero or less removes the mark."""
+        amount = round(abs(float(amount)), 2)
+        with self._lock:
+            if amount <= 0:
+                self.advances.pop(key, None)
+                return {}
+            entry = {"amount": amount, "label": label, "at": _now()}
+            self.advances[key] = entry
+        return entry
+
+    def unadvance(self, key: str) -> bool:
+        with self._lock:
+            return self.advances.pop(key, None) is not None
 
     def rule(self, match: str, *, mode: str = EXACT, category: str = "",
              subcategory: str = "", bucket: str = "") -> dict:
@@ -195,9 +222,11 @@ class Overrides:
             # Its place too: when two rules catch one row, the later one wins.
             return next(((i, r) for i, r in enumerate(self.rules) if r["match"] == match
                          and r.get("mode", EXACT) == mode), (None, None))
+        keys = list(keys)
         with self._lock:
             return {
                 "pins": {key: self.pins.get(key) for key in keys},
+                "advances": {key: self.advances.get(key) for key in keys},
                 "rules": [{"match": match, "mode": mode, "index": found(match)[0],
                            "entry": found(match)[1]}
                           for match in dict.fromkeys(matches)],
@@ -214,6 +243,12 @@ class Overrides:
                 else:
                     self.pins.pop(key, None)
                 count += 1
+            # Absent from a snapshot taken before advances existed: left alone.
+            for key, entry in (snapshot.get("advances") or {}).items():
+                if isinstance(entry, dict):
+                    self.advances[key] = entry
+                else:
+                    self.advances.pop(key, None)
             for item in snapshot.get("rules") or []:
                 match, mode = item.get("match"), item.get("mode", EXACT)
                 if not isinstance(match, str):
@@ -376,6 +411,82 @@ class Overrides:
                 touched += 1
 
         return touched
+
+    def split_advances(self, transactions: list[Transaction]) -> int:
+        """Take the advanced part out of each marked movement, in place.
+
+        A whole movement advanced (a Twint paid for a partner, her transfer
+        paying it back) becomes `ADVANCE` itself. A part -- a dinner for
+        two, 80 CHF of which 40 were hers -- is split in two: the row keeps
+        its own share and its category, and a row split off just before it
+        carries the advanced part as `ADVANCE`. Everything downstream then
+        sees two ordinary rows, so no total, chart or bucket needs to know
+        about advances: `analysis.is_internal` leaves the advanced part out
+        of spending and income alike, as a transfer between own accounts.
+
+        The split-off row is given the balance between the two parts, so
+        each account's chain still reads opening + amounts = closing; its key
+        (`<reference>/avance:<currency>`) never reaches the ledger.
+
+        Call after `apply` (an advance wins over the row's category) and
+        before `analysis.annotate_chf`, so both parts are converted alike.
+        """
+        if not self.advances:
+            return 0
+        out: list[Transaction] = []
+        count = 0
+        for txn in transactions:
+            entry = self.advances.get(key_of(txn))
+            if not entry or not txn.amount:
+                out.append(txn)
+                continue
+            count += 1
+            sign = 1 if txn.amount > 0 else -1
+            sub = categories.ADVANCE_IN if sign > 0 else categories.ADVANCE_OUT
+            part = min(round(entry["amount"], 2), abs(txn.amount))
+            txn.advanced = part
+            if abs(txn.amount) - part < 0.005:
+                txn.category, txn.subcategory = categories.ADVANCE, sub
+                txn.overridden = True
+                out.append(txn)
+                continue
+            own = round(txn.amount - sign * part, 2)
+            txn.printed = txn.amount
+            out.append(dataclasses.replace(
+                txn,
+                reference=f"{txn.reference}/avance",
+                amount=sign * part,
+                balance=(round(txn.balance - own, 2)
+                         if txn.balance is not None else None),
+                detail=list(txn.detail),
+                category=categories.ADVANCE, subcategory=sub,
+                overridden=True, bucket_override="",
+                advance_of=key_of(txn),
+            ))
+            txn.amount = own
+            txn.overridden = True
+            out.append(txn)
+        transactions[:] = out
+        return count
+
+    def advance_balance(self, transactions: Iterable[Transaction]) -> dict:
+        """What is still owed: every advanced part minus every repayment, in
+        francs. Positive is money others owe the owner."""
+        rows = [t for t in transactions if t.category == categories.ADVANCE]
+        out = sum(-t.amount_chf for t in rows if t.amount_chf < 0)
+        back = sum(t.amount_chf for t in rows if t.amount_chf > 0)
+        open_since = None
+        # The oldest advance not covered by the repayments that followed:
+        # repayments settle the oldest first.
+        left = back
+        for t in sorted((t for t in rows if t.amount_chf < 0), key=lambda t: t.date):
+            left += t.amount_chf
+            if left < -0.005:
+                open_since = t.date
+                break
+        return {"owed": round(out - back, 2), "advanced": round(out, 2),
+                "repaid": round(back, 2), "count": len(rows),
+                "open_since": open_since}
 
     # --- reporting -------------------------------------------------------
 

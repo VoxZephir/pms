@@ -26,6 +26,9 @@ def _target_choices(statement) -> dict:
     """
     known = {cat for cat, _, _ in categories_module.RULES}
     known.update(t.category for t in statement.transactions if t.category)
+    # An advance is marked with its amount (`/api/advance`), not pinned: a
+    # pin would name the category without saying how much was advanced.
+    known.discard(categories_module.ADVANCE)
     subs: dict[str, list[str]] = {}
     for cat, sub, _ in categories_module.RULES:
         subs.setdefault(cat, [])
@@ -305,10 +308,12 @@ def _twint_history(statement) -> dict:
 def _triage_targets(statement, overall: Counter) -> list[str]:
     """Where a Twint can go: the categories the owner used most for Twints
     first, so the keys 1-9 land on the usual ones; the rest alphabetically.
-    Income and the unidentified bucket itself are not destinations."""
+    Income and the unidentified bucket itself are not destinations; an
+    advance is (the whole Twint paid for someone who pays it back)."""
     spending = [c for c in _target_choices(statement)["categories"]
                 if c not in (categories_module.TWINT_UNKNOWN, "Revenus",
                              categories_module.UNCATEGORISED)]
+    spending.append(categories_module.ADVANCE)
     used = [c for c, _ in overall.most_common() if c in spending]
     return used + sorted((c for c in spending if c not in used), key=str.casefold)
 
@@ -355,6 +360,13 @@ def triage_apply(data, form) -> tuple[str, dict]:
         abort(400)
     before = data.overrides.snapshot(keys)
     for txn in rows:
+        if category == categories_module.ADVANCE:
+            # The whole Twint, paid for someone: marked, not pinned.
+            data.overrides.advance(overrides_module.key_of(txn), abs(txn.amount),
+                                   label=txn.label)
+            continue
+        if action == "undo":
+            data.overrides.unadvance(overrides_module.key_of(txn))
         _pin_category(data.overrides, txn, category)
     data.overrides.save()
     data.invalidate()

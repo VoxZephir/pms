@@ -30,7 +30,7 @@ import statistics
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 
-from .categories import INTERNAL
+from .categories import ADVANCE, INTERNAL
 from .models import Statement, Transaction
 
 FX_KINDS = ("Transfert automatisé", "Transfert Forex manuel")
@@ -52,8 +52,9 @@ def is_fx_leg(txn: Transaction) -> bool:
 
 
 def is_internal(txn: Transaction) -> bool:
-    """A conversion leg, or money moved between one's own accounts."""
-    return is_fx_leg(txn) or txn.category == INTERNAL
+    """A conversion leg, money moved between one's own accounts, or the part
+    of a payment advanced for someone and its repayment (`ADVANCE`)."""
+    return is_fx_leg(txn) or txn.category in (INTERNAL, ADVANCE)
 
 
 def _fx_index(statement: Statement) -> dict[str, tuple[list[dt.date], list[float]]]:

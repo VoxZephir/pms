@@ -146,3 +146,46 @@ le champ `bank` du journal, UBS, sinon l'extension du fichier, comme le rappel d
 retard). Le filtre passe par `_filtered`, donc la table, le reclassement « tout le filtre » et
 l'export CSV/xlsx voient les mêmes lignes. La recherche trouvait déjà « revolut » : le nom du
 compte est dans ce qu'elle lit.
+
+## Les avances (22.11)
+
+Le titulaire paie parfois par Twint à la place de quelqu'un qui n'a pas Twint, et cette
+personne le rembourse plus tard par virement. Avant, le Twint comptait comme une dépense et
+le virement comme un revenu : le solde restait juste, mais les dépenses et les revenus
+étaient gonflés du même montant, ce qui faussait la répartition. Classer le virement dans
+la catégorie du Twint ne l'annulait pas non plus : un crédit reste un revenu
+(`analysis.spending` ne compte que les montants négatifs).
+
+**On ne relie pas deux lignes, on marque une part.** `overrides.advances`, dans
+`data/overrides.json`, garde sur la clé d'un mouvement la part payée pour quelqu'un (sur un
+débit) ou remboursée (sur un crédit). Il n'y a pas d'appariement ligne à ligne : un
+virement qui rembourse trois Twint, ou un remboursement en deux fois, se marque aussi
+simplement qu'un Twint qui en rembourse un seul. La somme de ces parts, c'est ce qui reste dû
+(`advance_balance`, la carte « Avances » de Corrections, `/api/advances`).
+
+**Une part, pas toute la ligne.** Exemple : un dîner à deux à 80 CHF, dont 40 pour
+l'autre personne. `split_advances` coupe la ligne en deux au chargement (`Store._load`,
+après les corrections et avant `annotate_chf`) :
+- la ligne garde la part du titulaire et sa catégorie ;
+- une ligne ajoutée juste avant elle porte la part avancée, en `categories.ADVANCE`
+  (« Avances »). Sa clé, `<référence>/avance:<devise>`, n'existe qu'en mémoire.
+
+Tout ce qui est en aval voit donc deux lignes ordinaires : aucun total, graphique ou
+bloc n'a besoin de connaître les avances. `analysis.is_internal` sort `ADVANCE` des
+dépenses comme des revenus, de la même façon qu'un virement entre ses propres comptes. La
+ligne ajoutée reçoit le solde intermédiaire, donc la chaîne des soldes de chaque compte
+continue de tenir. `printed` garde, sur les deux moitiés, le montant que la banque a
+imprimé. Quand toute la ligne est avancée, elle n'est pas coupée : elle devient elle-même
+`ADVANCE`.
+
+**Comment on s'en sert :**
+- Dans la fiche d'une transaction : « Payé pour quelqu'un qui te rembourse ? », avec les
+  choix Non, La moitié, Tout ou un montant libre.
+- Sur un crédit : « Rembourse une avance ? », qui propose aussi « Le dû » quand ce qui
+  reste dû est plus petit que la ligne.
+- Dans le tri des Twint : le bouton « Avancé pour quelqu'un » marque tout le Twint. Une
+  fois utilisé souvent, il prend une touche 1–9 comme les autres catégories.
+
+« Avances » ne fait pas partie des catégories qu'on peut épingler : une épingle
+nommerait la catégorie sans dire quelle part a été avancée. L'annulation passe par
+`snapshot`/`restore`, qui gardent aussi les avances.
